@@ -566,6 +566,11 @@ cp Info.plist "$APP_BUNDLE/Contents/"
 BUILD_REVISION="$(git rev-parse --short=12 HEAD 2>/dev/null || printf 'unknown')"
 /usr/libexec/PlistBuddy -c "Set :TranscriptedBuildRevision $BUILD_REVISION" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :TranscriptedBuildRevision string $BUILD_REVISION" "$APP_BUNDLE/Contents/Info.plist"
+# Fork: Info.plist overrides for the side-by-side "Transcripted Dev" variant
+# (scripts/fork/build-dev.sh). Unset for every other build, which stays as it was.
+if [ -n "${TRANSCRIPTED_PLIST_OVERRIDES:-}" ]; then
+    bash "$TRANSCRIPTED_PLIST_OVERRIDES" "$APP_BUNDLE/Contents/Info.plist"
+fi
 
 # Copy bundled app resources (custom sounds, etc.) when present
 if [ -d "Resources" ]; then
