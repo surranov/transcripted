@@ -24,6 +24,19 @@ if pgrep -f "$DEST/Contents/MacOS/" >/dev/null; then
     exit 1
 fi
 
+# A stable signing identity keeps macOS permission grants (microphone,
+# Accessibility, screen and system audio) across rebuilds; an ad-hoc signature
+# changes every build and macOS forgets them. A free Personal Team
+# "Apple Development" certificate from Xcode is enough: local.plist asks only
+# for entitlements that need no provisioning profile.
+SIGN_IDENTITY_WANTED="${TRANSCRIPTED_DEV_SIGN_IDENTITY:-Apple Development}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY_WANTED"; then
+    export SIGN_IDENTITY="$SIGN_IDENTITY_WANTED"
+else
+    echo "⚠️  No valid \"$SIGN_IDENTITY_WANTED\" signing identity: signing ad-hoc, so permissions reset on every rebuild." >&2
+    unset SIGN_IDENTITY SIGNING_IDENTITY
+fi
+
 TRANSCRIPTED_PLIST_OVERRIDES="$REPO_ROOT/scripts/fork/dev-variant-plist.sh" \
 TRANSCRIPTED_SKIP_LAUNCH_SMOKE=1 \
     bash build.sh --no-open "$@"

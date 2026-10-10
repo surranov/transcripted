@@ -19,6 +19,10 @@ bash scripts/fork/test-dev-variant-plist.sh  # check the Info.plist overrides
 | `SUFeedURL` | removed | Sparkle never starts, so an official update can't replace the Dev app |
 | `TranscriptedSentryDSN`, `TranscriptedPostHog*` | removed | No crash reports or analytics to the upstream owner |
 
+## Signing
+
+`build-dev.sh` signs with the first valid `Apple Development` identity (override with `TRANSCRIPTED_DEV_SIGN_IDENTITY`), so permission grants survive rebuilds; without one it falls back to ad-hoc and macOS forgets the grants on every build. To get one: Xcode → Settings → Apple Accounts → add your Apple ID → Personal Team → Manage Certificates → + Apple Development. If `security find-identity -v -p codesigning` still shows 0 valid identities, the login keychain is missing the [Apple WWDR G3](https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer) intermediate: `security import AppleWWDRCAG3.cer -k ~/Library/Keychains/login.keychain-db`.
+
 ## Still shared, so don't use these in the Dev app
 
 - **Writing** (keyboard, `Transcripted/writing` models, port 17891): it doesn't start because the Dev suite has no finished setup. Don't set it up in Dev.
