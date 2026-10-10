@@ -149,7 +149,7 @@ final class SparkleUpdaterController: NSObject, ObservableObject {
     private var currentUpdateCheck: SPUUpdateCheck?
 
     private lazy var updaterController = SPUStandardUpdaterController(
-        startingUpdater: true,
+        startingUpdater: hasConfiguredFeedURL, // fork Dev variant has no SUFeedURL: never start
         updaterDelegate: self,
         userDriverDelegate: self
     )

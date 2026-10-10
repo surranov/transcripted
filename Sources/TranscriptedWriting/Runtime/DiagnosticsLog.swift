@@ -24,9 +24,15 @@ final class DiagnosticsLog: @unchecked Sendable {
     private init() {
         // Beside Transcripted's other logs (docs/storage-paths.md) rather than
         // under ~/Library/Logs as in Tilde; see the ledger's rename table.
+        // The folder follows the app's `TranscriptedAppSupportFolder` rule
+        // (Support, which Runtime may not name): the fork's Dev variant logs apart.
+        let folderName = (Bundle.main.object(forInfoDictionaryKey: "TranscriptedAppSupportFolderName") as? String)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { !$0.isEmpty && !$0.contains("/") && $0 != "." && $0 != ".." ? $0 : nil }
+            ?? "Transcripted"
         self.logURL = FileManager.default
             .homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Transcripted/logs")
+            .appendingPathComponent("Library/Application Support/\(folderName)/logs")
             .appendingPathComponent("writing-diagnostics.log")
         // Transcripted rule (AGENTS.md, "Harnesses must not touch real user
         // state"): test and smoke runs never write the real log. Same checks

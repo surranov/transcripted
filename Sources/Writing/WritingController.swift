@@ -45,7 +45,10 @@ final class WritingController {
     /// Tilde's app-owned keys (`TildeSettings.AppKey`, the model choice) live
     /// in this suite, apart from Transcripted's `.standard`. The keyboard's
     /// keys stay in the keyboard's own domain, shared with its process.
-    nonisolated static let appSuiteName = "com.justinbetker.draft.writing"
+    /// Named after the app's bundle id so the fork's Dev variant (its own id)
+    /// never reads the official app's Writing setup; the official app and the
+    /// id-less test binaries keep `com.justinbetker.draft.writing`.
+    nonisolated static let appSuiteName = "\(Bundle.main.bundleIdentifier ?? "com.justinbetker.draft").writing"
     /// Phase 2's switch in Transcripted's `.standard` defaults, kept for
     /// development: it starts Writing even before setup finishes.
     nonisolated static let debugEnabledKey = "WritingDebugEnabled"

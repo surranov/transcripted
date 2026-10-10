@@ -144,6 +144,29 @@ enum TranscriptedStoragePreferences {
     }
 }
 
+/// Name of the app-owned folder under Application Support. The fork's
+/// "Transcripted Dev" variant (scripts/fork/) sets `TranscriptedAppSupportFolderName`
+/// in its Info.plist so it runs beside the official app without sharing its data;
+/// the official app has no such key and keeps "Transcripted". Read from the bundle,
+/// not the environment, so every launch path (Finder, `open`, login item, a direct
+/// exec of the binary) lands in the same folder. Core (`CoreStoragePaths.default`)
+/// and Writing (`DiagnosticsLog`) read the same key themselves, since neither may
+/// name this Support type.
+enum TranscriptedAppSupportFolder {
+    static let infoPlistKey = "TranscriptedAppSupportFolderName"
+    static let defaultName = "Transcripted"
+
+    /// Anything but a single, non-empty path component falls back to the default.
+    static func name(infoDictionary: [String: Any]? = Bundle.main.infoDictionary) -> String {
+        guard let raw = (infoDictionary?[infoPlistKey] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty, !raw.contains("/"), raw != ".", raw != ".." else {
+            return defaultName
+        }
+        return raw
+    }
+}
+
 extension FileManager {
     private var userApplicationSupportDir: URL {
         urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -174,7 +197,7 @@ extension FileManager {
         if let override = transcriptedContainerOverrideURL {
             return override
         }
-        return userApplicationSupportDir.appendingPathComponent("Transcripted", isDirectory: true)
+        return userApplicationSupportDir.appendingPathComponent(TranscriptedAppSupportFolder.name(), isDirectory: true)
     }
 
     var transcriptedMCPDirectoriesManifestURL: URL {

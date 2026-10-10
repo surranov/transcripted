@@ -61,8 +61,14 @@ public struct CoreStoragePaths: Sendable {
     /// the temporary directory so Core can still boot in a degraded mode.
     public static let `default`: CoreStoragePaths = {
         let fm = FileManager.default
+        // Same Info.plist key and rule as the app's `TranscriptedAppSupportFolder`
+        // (Support), which Core may not name: the fork's Dev variant gets its own folder.
+        let folderName = (Bundle.main.object(forInfoDictionaryKey: "TranscriptedAppSupportFolderName") as? String)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { !$0.isEmpty && !$0.contains("/") && $0 != "." && $0 != ".." ? $0 : nil }
+            ?? "Transcripted"
         let appSupportRoot = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Transcripted", isDirectory: true)
+            .appendingPathComponent(folderName, isDirectory: true)
             ?? fm.temporaryDirectory.appendingPathComponent("TranscriptedFallback", isDirectory: true)
         let capturesRoot = appSupportRoot.appendingPathComponent("captures", isDirectory: true)
         let stateRoot = appSupportRoot.appendingPathComponent("state", isDirectory: true)

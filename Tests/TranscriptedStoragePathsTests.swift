@@ -631,6 +631,34 @@ func testTranscriptedStoragePaths() {
         )
     }
 
+    runSuite("Application Support folder — the fork's Dev variant names its own, everything else keeps Transcripted") {
+        let key = TranscriptedAppSupportFolder.infoPlistKey
+        assertEqual(TranscriptedAppSupportFolder.name(infoDictionary: nil), "Transcripted", "no Info.plist: official folder")
+        assertEqual(TranscriptedAppSupportFolder.name(infoDictionary: [:]), "Transcripted", "official app has no key")
+        assertEqual(
+            TranscriptedAppSupportFolder.name(infoDictionary: [key: "Transcripted Dev"]),
+            "Transcripted Dev",
+            "Dev variant's key picks its own folder"
+        )
+        assertEqual(
+            TranscriptedAppSupportFolder.name(infoDictionary: [key: "  Transcripted Dev\n"]),
+            "Transcripted Dev",
+            "surrounding whitespace is ignored"
+        )
+        for unsafe in ["", "   ", "a/b", "/abs", ".", ".."] {
+            assertEqual(
+                TranscriptedAppSupportFolder.name(infoDictionary: [key: unsafe]),
+                "Transcripted",
+                "'\(unsafe)' is not one path component, so it falls back"
+            )
+        }
+        assertEqual(
+            TranscriptedAppSupportFolder.name(infoDictionary: [key: 42]),
+            "Transcripted",
+            "a non-string value falls back"
+        )
+    }
+
     runSuite("Transcripted MCP directory manifest — the suites above left the real manifest untouched") {
         assertEqual(
             fingerprint(of: realManifestURL),
