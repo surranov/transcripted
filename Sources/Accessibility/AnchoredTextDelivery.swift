@@ -354,9 +354,12 @@ enum AnchoredTextDelivery {
                     return CGRect(x: next.minX, y: next.minY, width: 1, height: next.height)
                 }
                 if var atCaret {
-                    // After a line break the caret is on the line below it.
+                    // After a line break the caret starts the line below it.
+                    // Chromium puts the zero-length range after the text
+                    // above; the first character marks where lines start.
                     if characterBefore?.isNewline == true, let lineBreak = previous, atCaret.minY < lineBreak.maxY - 1 {
                         atCaret.origin.y = lineBreak.maxY
+                        if let first = bounds(of: field, NSRange(location: 0, length: 1)) { atCaret.origin.x = first.minX }
                     }
                     return atCaret
                 }
