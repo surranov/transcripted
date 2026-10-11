@@ -164,6 +164,27 @@ struct NotchIslandScreenSharingRow: View {
     }
 }
 
+/// Fork: Anchored paste (`AnchoredPastePolicy`), off by default.
+struct AnchoredPasteRow: View {
+    @AppStorage(AnchoredPastePreferences.enabledKey)
+    private var enabled = false
+
+    var body: some View {
+        GeneralToggleRow(
+            title: "Anchored paste",
+            isOn: $enabled,
+            help: enabled
+                ? "Words go where you started, even after you switch windows."
+                : "Words paste into whatever is in front when they're ready.",
+            info: GeneralInfo(
+                title: "Anchored paste",
+                message: "Pins each dictation to the text box you were in when you started, and shows a small marker there. Switch to another window or desktop while it transcribes: the words still go into that box, in the background, without bringing its window forward. Terminals, Chrome and other browser text fields, chat boxes like T3 Code, and native Mac text views are filled right away (and sent, if Press send after pasting is on for that app). Editors that can't be filled from outside, like Obsidian, get the words the moment you come back to them. Every dictation is still saved in Dictations."
+            ),
+            automationIdentifier: "transcripted.settings.general.anchored-paste"
+        )
+    }
+}
+
 /// Whether a recording meeting shows its live transcript in the island.
 struct NotchIslandLiveTranscriptRow: View {
     @AppStorage(NotchIslandPreferences.showsLiveTranscriptKey)

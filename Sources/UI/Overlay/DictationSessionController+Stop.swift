@@ -181,6 +181,7 @@ extension DictationSessionController {
         overlayController.escapeKeepsTake = true
         // Fork: before the stop writes its checkpoint over the spool's file.
         endRecordingSpool(keepingAudio: true)
+        markPasteAnchorWorking()
         releaseDictationMuffleForStop()
         sessionTimeoutTask?.cancel()
         sessionTimeoutTask = nil
@@ -424,12 +425,34 @@ extension DictationSessionController {
             lastCompletedText = text
             stopTiming.pasteStartedAt = CFAbsoluteTimeGetCurrent()
             let modelWaitSeconds = (stopTiming.modelReadyAt ?? 0) - (stopTiming.modelWaitStartedAt ?? 0)
-            let pasteOutcome = self.pasteWithClipboardRestore(
-                text,
-                followCurrentFocus: DictationPostStopModelWaitPolicy.pasteFollowsCurrentFocus(
-                    modelWaitSeconds: modelWaitSeconds
+            // Fork: Anchored paste delivers to the field focused at the start
+            // when the user has moved on, or waits for them to come back.
+            let pasteOutcome: DictationPasteOutcome
+            switch await self.deliverToPasteAnchor(text) {
+            case .delivered(let outcome):
+                pasteOutcome = outcome
+            case .deferred(let appName):
+                guard DictationSessionCompletionPolicy.canPublish(
+                    sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
+                    isDictating: self.isDictating, cancelled: Task.isCancelled
+                ) else { return }
+                await self.finalizeWithoutPaste(
+                    text: text,
+                    appState: appState,
+                    overlayController: overlayController,
+                    sessionID: taskSessionID,
+                    reason: .anchoredDeferred(appName: appName)
                 )
-            )
+                return
+            case .notAnchored:
+                pasteOutcome = self.pasteWithClipboardRestore(
+                    text,
+                    followCurrentFocus: DictationPostStopModelWaitPolicy.pasteFollowsCurrentFocus(
+                        modelWaitSeconds: modelWaitSeconds
+                    )
+                )
+                self.finishPasteAnchorAfterRegularPaste(pasteOutcome)
+            }
             stopTiming.pastedAt = CFAbsoluteTimeGetCurrent()
             // Paste confirmation pumps the run loop, so cancellation/restart can occur here too.
             guard DictationSessionCompletionPolicy.canPublish(

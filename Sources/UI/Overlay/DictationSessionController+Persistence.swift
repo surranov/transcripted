@@ -37,6 +37,8 @@ extension DictationSessionController {
             appState.logger.log("DICTATION | session cap reached, saved \(text.count) chars without pasting")
         case .escapeAfterStop:
             appState.logger.log("DICTATION | Esc after stop, saved \(text.count) chars without pasting")
+        case .anchoredDeferred:
+            appState.logger.log("DICTATION | anchored paste deferred until the user is back, saved \(text.count) chars")
         }
         DiagnosticsTrail.record(
             logger: appState.logger,
@@ -69,6 +71,27 @@ extension DictationSessionController {
         )
         // Hitting the 15-minute cap still saved the text: a notice, not an
         // error with a warning triangle and a shake.
+        if case .anchoredDeferred(let appName) = reason, saveFailureMessage == nil {
+            // Fork: the words go in once the user is back in that window;
+            // "Paste here" puts them where the user is now instead.
+            overlayController.showSavedNotice(
+                "Pastes when you're back in \(appName).",
+                actionTitle: "Paste here",
+                action: { [weak self] in
+                    guard let self else { return }
+                    self.cancelDeferredAnchoredPaste(text: text)
+                    switch DictationSessionCapSavePolicy.pasteItResult(self.pasteWithClipboardRestore(text)) {
+                    case .pasted:
+                        overlayController.showSuccessAndDismiss(title: "Pasted")
+                    case .error(let message):
+                        overlayController.showError(message)
+                    }
+                }
+            )
+            isDictating = false
+            appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: "anchored_paste_deferred")
+            return
+        }
         switch DictationSessionCapSavePolicy.presentation(saveFailureMessage: saveFailureMessage) {
         case .error(let message):
             overlayController.showError(message)

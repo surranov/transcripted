@@ -187,6 +187,8 @@ extension DictationSessionController {
         pasteOutcome: DictationPasteOutcome,
         sessionID: UUID
     ) async -> DictationAutoSendOutcome {
+        // Fork: a background (anchored) delivery presses send its own way.
+        if let anchored = await performAnchoredSendIfNeeded() { return anchored }
         guard autoSendRequestDecision.expected,
               pasteOutcome.allowsAutoSend else {
             return .disabled

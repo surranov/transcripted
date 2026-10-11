@@ -74,6 +74,8 @@ struct GeneralSettingsPage<
 
                 NotchIslandScreenSharingRow()
 
+                AnchoredPasteRow()
+
                 GeneralToggleRow(
                     title: "Clean up pasted text",
                     isOn: $dictationCleanupEnabled,

@@ -25,6 +25,8 @@ class DictationSessionController: ObservableObject {
                 processActivity.release()
                 processActivityLabel.sessionEnded()
                 DictationAudioMuffler.shared.micClosed()
+                // Fork: every way a take ends passes here.
+                pasteAnchorSessionEnded()
             }
         }
     }
@@ -151,6 +153,16 @@ class DictationSessionController: ObservableObject {
     /// feeds it (`DictationSessionController+RecordingSpool.swift`).
     var recordingSpool: DictationRecordingSpool?
     var recordingSpoolTask: Task<Void, Never>?
+    /// Fork: Anchored paste (`DictationSessionController+AnchoredPaste.swift`).
+    var pasteAnchor: DictationPasteAnchor?
+    var pasteAnchorTask: Task<Void, Never>?
+    var anchoredSend: (route: AnchoredPasteRoute, anchor: DictationPasteAnchor)?
+    lazy var anchorMarker = AnchorMarkerController()
+    var deferredAnchoredPastes: [DeferredAnchoredPaste] = []
+    var deferredAnchoredPasteTimer: Timer?
+    /// A returning user's window is being given time to show an unconfirmed
+    /// write; the watch waits for that before the next deferred paste.
+    var deferredAnchoredPasteSettling = false
     var autoSendRequestDecision = DictationAutoSendRequestDecision.notEvaluated
     /// A start-shortcut press that landed while the last take was still
     /// finishing. It starts as soon as that take is done. See
@@ -258,6 +270,7 @@ class DictationSessionController: ObservableObject {
         stoppedAudioRecoveryPreservationSessionID = nil
         stoppedAudioCheckpointSignal = nil
         beginRecordingSpool(sessionID: currentDictationSessionID)
+        beginPasteAnchor(sourceApp: sourceApp)
         sessionSourceApp = sourceApp
         sessionPasteTarget = DictationPasteTarget.capture(sourceApp: sourceApp)
         sessionAnchorRect = anchorRect

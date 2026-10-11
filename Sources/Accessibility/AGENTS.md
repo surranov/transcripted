@@ -1,12 +1,22 @@
 # Accessibility
 
-One file, `AccessibilityBridge.swift`: the AX (AXUIElement) queries that find the focused text field in the target app. Part of the `Support` module in `.agents/modules.json` (with `Sources/Support/` and `Sources/Reliability/`), so it may depend only on Core's `core-vocab` tier. The module card is in `Sources/AGENTS.md`.
+`AccessibilityBridge.swift`: the AX (AXUIElement) queries that find the focused text field in the target app. Fork: `AnchoredTextDelivery.swift` and `BackgroundKeystrokes.swift` deliver Anchored paste (below). Part of the `Support` module in `.agents/modules.json` (with `Sources/Support/` and `Sources/Reliability/`), so it may depend only on Core's `core-vocab` tier. The module card is in `Sources/AGENTS.md`.
 
 ## What it does
 
 - `AccessibilityBridge` is `@MainActor`. `focusedTextElement(for:)` returns the focused element only if AX is trusted and the role passes `AccessibilityFocusedTextPolicy`. `focusedTextFieldRect(for:)` returns its screen rect. `textValue(of:)` reads `kAXValueAttribute`.
 - One caller: `focusedFieldRect()` in `Sources/UI/Overlay/NotchIslandController.swift`. On a dictation opening with multiple displays, `NotchIslandScreenChoice.screenFrame` uses the field's center to choose its display, then the mouse display, then the main or first display. The island anchors on the chosen display; it does not position itself beside the field.
 - Other AX code does its own queries and doesn't go through this file: `Sources/Support/FocusedTextPasteConfirmation.swift` (did the paste land), `Sources/Meeting/BrowserWindowTitleReader.swift`, and the Writing Screen Memory readers in `Sources/TranscriptedWriting/Runtime/ScreenMemory/`.
+
+## Anchored paste (fork)
+
+The words go to the field focused when the take started, even after the user moved to another window or desktop, without raising it. Rules are in `Sources/Support/AnchoredPastePolicy.swift`; the session side is `Sources/UI/Overlay/DictationSessionController+AnchoredPaste.swift`.
+
+- `AnchoredTextDelivery.captureAnchor` records the focused field, its window (`_AXUIElementGetWindow`), the caret rect, the selection with 80 characters around it, and a context signature: window title plus the enclosing `AXWebArea`'s `AXURL`. T3 Code reuses one composer element across threads, and its URL holds the thread id, so the signature is what keeps a take out of another thread. Electron apps get `AXManualAccessibility` first.
+- Routes, as measured on macOS 26: Chromium and Electron web fields take an `AXValue` write on any desktop (`AXSelectedText` returns success there and changes nothing, so every write is read back); terminals take process-addressed keystrokes on any desktop (`BackgroundKeystrokes`, the SkyLight `SLEventPostToPid` recipe ported from trycua/cua, MIT); CodeMirror (Obsidian) ignores every AX write and inactive Electron windows drop keystrokes, so those wait for the user to come back.
+- **A write into a window on another desktop can't be trusted to read back.** T3 Code takes it but reports the old value until its window is shown again. Such a write is `AnchoredInsertion.unconfirmed`: the paste is deferred with the field's value from before, and on return the session polls up to `unconfirmedWriteSettleTime` (1.5 s) before pasting, so the words never arrive twice. A window on screen that doesn't show the words ignored the write (`notTaken`) and is pasted on return without waiting.
+- Background send (`AnchoredPastePolicy.sendMethod`): a terminal gets Return as a keystroke; a web field gets AXPress on a nearby button labelled Send / Submit message / Отправить (`isSubmitButtonLabel`); without one, a Chrome window on screen whose focus is still the field gets Return as a keystroke (a Google search). Anything else reports `backgroundSendUnavailable` instead of guessing.
+- `windowState` (`kCGWindowIsOnscreen`) drives the marker: off screen means another desktop, minimized or closed.
 
 ## Rules
 

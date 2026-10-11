@@ -76,6 +76,8 @@ enum DictationSaveWithoutPasteReason: Equatable, Sendable {
     case sessionCap
     /// Fork: Esc after the stop was admitted declined the paste but kept the take.
     case escapeAfterStop
+    /// Fork: Anchored paste waits for the user to come back to `appName`.
+    case anchoredDeferred(appName: String)
 }
 
 enum DictationSessionCapSavePolicy {

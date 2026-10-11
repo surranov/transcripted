@@ -224,6 +224,9 @@ enum DictationAutoSendFailure: Equatable {
     case accessibilityMissing
     case targetChanged
     case eventCreationFailed
+    /// Fork (Anchored paste): the words went into a window in the background
+    /// that takes no keystrokes and has no send button to press.
+    case backgroundSendUnavailable
 
     /// Shown after the text did paste. Settings calls this feature "Press
     /// send after pasting", and the key may be Return or ⌘Return, so the copy
@@ -236,6 +239,8 @@ enum DictationAutoSendFailure: Equatable {
             return "Pasted, but didn't press send because you switched apps."
         case .eventCreationFailed:
             return "Pasted, but couldn't press send. Press it yourself."
+        case .backgroundSendUnavailable:
+            return "Pasted in the background, but that window can't be sent from here. Press send there."
         }
     }
 
@@ -245,7 +250,7 @@ enum DictationAutoSendFailure: Equatable {
             return .accessibilityMissing
         case .targetChanged:
             return .targetChanged
-        case .eventCreationFailed:
+        case .eventCreationFailed, .backgroundSendUnavailable:
             return .eventCreationFailed
         }
     }

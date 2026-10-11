@@ -437,6 +437,7 @@ APP_SOURCES=(
     "Sources/Dictation/DictationStoppedAudioRecovery.swift"
     "Sources/Dictation/DictationLeftoverRecovery.swift"
     "Sources/Dictation/DictationRecordingSpool.swift"
+    "Sources/Support/AnchoredPastePolicy.swift"
     "Sources/Dictation/DictationTextRefiner.swift"
     "Sources/Support/TranscriptLLMPromptPreferences.swift"
     "Sources/TranscriptLLM/TranscriptLLMChat.swift"

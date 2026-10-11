@@ -1,0 +1,275 @@
+import Foundation
+
+/// Fork: Anchored paste. A dictation is pasted into the text field that had
+/// focus when it started, even after the user moved to another window or
+/// desktop, without bringing that window forward.
+///
+/// Measured on 2026-10-11 (Obsidian, T3 Code, Chrome, Terminal on macOS 26):
+/// - Accessibility writes reach a field in any window on any desktop at once:
+///   `AXSelectedText` in native text views, `AXValue` in Chromium/Electron
+///   inputs and text areas (T3's composer included; React sees the change).
+///   CodeMirror (Obsidian) ignores both while reporting success. A window on
+///   another desktop takes an `AXValue` write but can go on reporting its old
+///   value until it is on screen again (T3 Code), so a write there that can't
+///   be read back is unconfirmed, not failed.
+/// - Keystrokes addressed to a process reach terminals on any desktop, but
+///   an inactive Electron window drops them, so they're used for terminals only.
+/// - Apps can reuse one field for several documents (T3 keeps one composer
+///   for every thread), so a field is trusted only while its window title and
+///   page URL still match what they were when the dictation started.
+/// This file holds the decisions; `AnchoredTextDelivery` does the AX and
+/// keyboard work.
+enum AnchoredPasteRoute: String, Equatable {
+    /// The user is back in the anchored app: the regular paste-back runs.
+    case normalPaste = "normal_paste"
+    /// Typed into a terminal through keystrokes addressed to its process.
+    case terminalKeystrokes = "terminal_keystrokes"
+    /// Inserted through Accessibility into the anchored field.
+    case accessibilityInsert = "accessibility_insert"
+    /// Waits until the user returns to the anchored window, then pastes.
+    case deferred
+}
+
+/// How send is pressed for a take delivered in the background.
+enum AnchoredSendMethod: Equatable {
+    /// The field's own send button, through Accessibility.
+    case pressSubmitButton
+    /// Return addressed to the app's process.
+    case returnKeystroke
+    case unavailable
+}
+
+/// How a background Accessibility write ended.
+enum AnchoredInsertion: Equatable {
+    /// Read back in the field.
+    case landed
+    /// Nothing was written, or the window on screen shows the field without
+    /// the words: the app ignored the write.
+    case notTaken
+    /// The app took the write, but its window is off screen and still
+    /// reports the old value. Whether the words arrived shows once the user
+    /// is back: compare with `valueBefore` then, so they aren't pasted twice.
+    case unconfirmed(valueBefore: String)
+}
+
+/// What identifies the document a field belonged to when the dictation
+/// started. A field alone isn't enough: an app may keep the same field for
+/// another document (another thread, note or tab).
+struct AnchoredPasteContext: Equatable {
+    let windowTitle: String?
+    let documentURL: String?
+
+    /// Both captured values must still hold. A value that couldn't be read
+    /// at capture time isn't compared.
+    func stillMatches(_ current: AnchoredPasteContext) -> Bool {
+        if let windowTitle, windowTitle != current.windowTitle { return false }
+        if let documentURL, documentURL != current.documentURL { return false }
+        return true
+    }
+}
+
+enum AnchoredPastePolicy {
+    /// Text around the caret kept at capture time, to find the insertion
+    /// point again if the field changed while the dictation was processed.
+    static let contextSnippetLength = 80
+    /// UTF-16 units per synthesized key event; `CGEventKeyboardSetUnicodeString`
+    /// takes up to 20.
+    static let keystrokeChunkLength = 20
+    /// How long a deferred paste waits for the user to come back.
+    /// How long a returning user's window gets to show an unconfirmed write
+    /// before the words are pasted after all.
+    static let unconfirmedWriteSettleTime: TimeInterval = 1.5
+    static let deferredPasteLifetime: TimeInterval = 10 * 60
+
+    /// Terminals whose text view takes keystrokes addressed to the process
+    /// while it is inactive or on another desktop. Electron terminals
+    /// (Hyper) are left out: an inactive Electron window drops them.
+    static let terminalBundleIDs: Set<String> = [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "com.mitchellh.ghostty",
+        "com.cmuxterm.app",
+        "com.github.wez.wezterm",
+        "net.kovidgoyal.kitty",
+        "org.alacritty",
+        "dev.warp.Warp-Stable",
+    ]
+
+    /// Browsers whose window takes Return addressed to their process while
+    /// it is on screen but not in front (measured: Chrome submits a Google
+    /// search). Electron apps drop such keystrokes, and Chrome on another
+    /// desktop may hold them until it is shown, so neither is listed.
+    static let backgroundReturnBundleIDs: Set<String> = [
+        "com.google.Chrome",
+        "com.google.Chrome.beta",
+        "com.google.Chrome.dev",
+        "com.google.Chrome.canary",
+    ]
+
+    /// How send is pressed after a background delivery.
+    static func sendMethod(
+        route: AnchoredPasteRoute,
+        hasSubmitButton: Bool,
+        bundleID: String?,
+        windowIsOnScreen: Bool,
+        fieldIsFocused: Bool
+    ) -> AnchoredSendMethod {
+        switch route {
+        case .terminalKeystrokes:
+            return .returnKeystroke
+        case .accessibilityInsert:
+            if hasSubmitButton { return .pressSubmitButton }
+            // Return goes to whatever has focus in that window: only while
+            // it is still the field the words went into.
+            guard let bundleID, backgroundReturnBundleIDs.contains(bundleID),
+                  windowIsOnScreen, fieldIsFocused else { return .unavailable }
+            return .returnKeystroke
+        case .normalPaste, .deferred:
+            return .unavailable
+        }
+    }
+
+    static func route(
+        anchorAppIsFrontmost: Bool,
+        focusIsAnchorField: Bool,
+        hasField: Bool,
+        fieldAlive: Bool,
+        contextMatches: Bool,
+        isTerminal: Bool,
+        terminalWindowIsCurrent: Bool
+    ) -> AnchoredPasteRoute {
+        if anchorAppIsFrontmost {
+            // Still in the field, or moved to another document in the same
+            // app on purpose (another thread, note or tab): the regular
+            // paste goes where the user is, as before this feature. Only a
+            // move within the same document (to a search box, say) keeps the
+            // anchored field.
+            if focusIsAnchorField || !hasField || !fieldAlive || !contextMatches || isTerminal { return .normalPaste }
+            return .accessibilityInsert
+        }
+        // A terminal's title changes with the running command, so it is
+        // trusted while its window is still the app's focused one.
+        if isTerminal { return terminalWindowIsCurrent ? .terminalKeystrokes : .deferred }
+        guard hasField, fieldAlive, contextMatches else { return .deferred }
+        return .accessibilityInsert
+    }
+
+    /// The range of `current` the dictation replaces: the selection captured
+    /// when it started if the text around it is unchanged, else the spot
+    /// between that text found once elsewhere in the field, or the whole
+    /// value when the field is empty (Chromium contenteditable reports "\n").
+    /// Nil when the spot can't be found unambiguously.
+    static func insertionRange(
+        current: String,
+        capturedSelection: NSRange?,
+        textBefore: String,
+        textAfter: String
+    ) -> NSRange? {
+        let field = current as NSString
+        if current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return NSRange(location: 0, length: field.length)
+        }
+        if let selection = capturedSelection,
+           selection.location >= 0,
+           NSMaxRange(selection) <= field.length,
+           contextHolds(in: field, at: selection, before: textBefore, after: textAfter) {
+            return selection
+        }
+        guard !textBefore.isEmpty || !textAfter.isEmpty else { return nil }
+        let needle = textBefore + textAfter
+        let first = field.range(of: needle)
+        guard first.location != NSNotFound else { return nil }
+        let rest = NSRange(location: first.location + 1, length: field.length - first.location - 1)
+        guard rest.length <= 0 || field.range(of: needle, options: [], range: rest).location == NSNotFound else {
+            return nil
+        }
+        return NSRange(location: first.location + (textBefore as NSString).length, length: 0)
+    }
+
+    /// The field's new value with `text` in `insertionRange`, and the caret
+    /// after it (UTF-16 offset).
+    static func composedValue(
+        current: String,
+        capturedSelection: NSRange?,
+        textBefore: String,
+        textAfter: String,
+        inserting text: String
+    ) -> (value: String, caret: Int)? {
+        guard let range = insertionRange(
+            current: current, capturedSelection: capturedSelection,
+            textBefore: textBefore, textAfter: textAfter
+        ) else { return nil }
+        let value = (current as NSString).replacingCharacters(in: range, with: text)
+        return (value, range.location + (text as NSString).length)
+    }
+
+    private static func contextHolds(in field: NSString, at selection: NSRange, before: String, after: String) -> Bool {
+        let beforeLength = (before as NSString).length
+        let afterLength = (after as NSString).length
+        guard selection.location >= beforeLength, NSMaxRange(selection) + afterLength <= field.length else { return false }
+        let actualBefore = field.substring(with: NSRange(location: selection.location - beforeLength, length: beforeLength))
+        let actualAfter = field.substring(with: NSRange(location: NSMaxRange(selection), length: afterLength))
+        return actualBefore == before && actualAfter == after
+    }
+
+    /// Reads a write: `insertionApplied` decides landed; otherwise an
+    /// accepted write into a window off screen is unconfirmed.
+    static func insertion(
+        before: String,
+        after: String,
+        text: String,
+        writeAccepted: Bool,
+        windowIsOnScreen: Bool
+    ) -> AnchoredInsertion {
+        if insertionApplied(before: before, after: after, text: text) { return .landed }
+        guard writeAccepted, !windowIsOnScreen else { return .notTaken }
+        return .unconfirmed(valueBefore: before)
+    }
+
+    /// Whether a write put `text` into the field: it appears once more than
+    /// before. Apps may trim or normalize the rest of the value.
+    static func insertionApplied(before: String, after: String, text: String) -> Bool {
+        let needle = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return false }
+        return occurrences(of: needle, in: after) > occurrences(of: needle, in: before)
+    }
+
+    private static func occurrences(of needle: String, in haystack: String) -> Int {
+        haystack.components(separatedBy: needle).count - 1
+    }
+
+    /// A button next to the field that sends what's in it, by its
+    /// accessibility label: T3's "Submit message", a chat's "Send".
+    static func isSubmitButtonLabel(_ label: String) -> Bool {
+        let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let exact: Set<String> = ["send", "submit", "send message", "submit message", "отправить", "отправить сообщение"]
+        return exact.contains(normalized)
+    }
+
+    /// `text` split for keystrokes: runs of at most `keystrokeChunkLength`
+    /// UTF-16 units, with each line break as its own Return.
+    static func keystrokeChunks(_ text: String) -> [AnchoredKeystrokeChunk] {
+        var chunks: [AnchoredKeystrokeChunk] = []
+        var run: [UInt16] = []
+        func flush() {
+            if !run.isEmpty { chunks.append(.text(String(utf16CodeUnits: run, count: run.count))); run = [] }
+        }
+        for character in text {
+            if character == "\n" || character == "\r\n" || character == "\r" {
+                flush()
+                chunks.append(.returnKey)
+                continue
+            }
+            let units = Array(String(character).utf16)
+            if run.count + units.count > keystrokeChunkLength { flush() }
+            run += units
+        }
+        flush()
+        return chunks
+    }
+}
+
+enum AnchoredKeystrokeChunk: Equatable {
+    case text(String)
+    case returnKey
+}
