@@ -6,8 +6,9 @@ import SwiftUI
 /// land at, and a small black flag (the notch island's look: black, accent
 /// glyph) hangs from its foot with the take's phase. The flag hangs below the
 /// caret line, where a composer or the end of the text leaves empty space, so
-/// it doesn't cover the text after the caret or the line above; it flips
-/// above or to the left only when the window edge leaves no room.
+/// it doesn't cover the text after the caret or the line above; at the
+/// window's bottom edge it sits beside the caret instead, and it flips above
+/// or to the left only in the window's corners (`AnchorMarkerLayout.flagSpot`).
 ///
 /// The panel sits one step above the window in the stacking order (re-pinned
 /// every tick, as cua-driver keeps its agent cursor on the window it drives),
@@ -109,19 +110,14 @@ final class AnchorMarkerController {
         let window = state.frame
         let caretX = window.minX + caretOffset.x
         let caretTop = window.minY + caretOffset.y
-        let flagBelow = caretTop + caretHeight + layout.barOverhang + layout.flagHeight <= window.maxY - layout.edgeMargin
-        let flagTrailing = caretX + layout.barWidth / 2 + layout.maxFlagWidth <= window.maxX - layout.edgeMargin
-        setIfChanged(\.flagBelow, flagBelow)
-        setIfChanged(\.flagTrailing, flagTrailing)
+        let spot = layout.flagSpot(caretX: caretX, caretTop: caretTop, caretHeight: caretHeight, window: window)
+        setIfChanged(\.flagPlacement, spot.placement)
+        setIfChanged(\.flagTrailing, spot.trailing)
         setIfChanged(\.animates, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
 
         let size = layout.panelSize(barHeight: model.barHeight)
-        let x = flagTrailing
-            ? caretX - layout.barWidth / 2 - layout.inset
-            : caretX + layout.barWidth / 2 + layout.inset - size.width
-        let barTop = caretTop - layout.barOverhang
-        let top = flagBelow ? barTop - layout.inset : barTop - layout.flagHeight - layout.inset
-        let frame = NSRect(x: x, y: primary.frame.maxY - top - size.height, width: size.width, height: size.height)
+        let origin = layout.panelOrigin(caretX: caretX, caretTop: caretTop, barHeight: model.barHeight, spot: spot)
+        let frame = NSRect(x: origin.x, y: primary.frame.maxY - origin.y - size.height, width: size.width, height: size.height)
         if panel.frame != frame { panel.setFrame(frame, display: false) }
         panel.order(.above, relativeTo: Int(windowID))
     }
@@ -159,8 +155,21 @@ final class AnchorMarkerController {
 // MARK: - Marker view
 // Self-contained (SwiftUI only), so a design change can be reviewed
 // offscreen: copy from here to the end of the file, drop `private` from the
-// three types, stub `AnchorMarkerController.Phase`, and render
-// `AnchorMarkerView` with `ImageRenderer`.
+// types, stub `AnchorMarkerController.Phase`, and render `AnchorMarkerView`
+// with `ImageRenderer`.
+
+/// Where the flag hangs from the ghost caret.
+private enum AnchorFlagPlacement: Equatable {
+    /// Under the caret line, where a composer or the end of the text leaves
+    /// empty space.
+    case below
+    /// Right of the caret, on its line: the window's bottom edge leaves no
+    /// room below. A terminal's prompt sits on its last line with the output
+    /// right above, and nothing follows its caret.
+    case beside
+    /// Over the line above: only in the window's bottom-right corner.
+    case above
+}
 
 /// Marker geometry in points. The panel is fixed per show; the flag changes
 /// width inside it.
@@ -174,6 +183,8 @@ private enum AnchorMarkerLayout {
     static let inset: CGFloat = 5
     /// How close to the window edge the flag may come before it flips.
     static let edgeMargin: CGFloat = 2
+    /// Between the ghost caret and a flag beside it.
+    static let besideGap: CGFloat = 2
     static let maxFlagWidth: CGFloat = flagWidth(.listening)
 
     static func flagWidth(_ phase: AnchorMarkerController.Phase) -> CGFloat {
@@ -184,8 +195,35 @@ private enum AnchorMarkerLayout {
         }
     }
 
+    /// Fits every placement: the flag under or over the bar, or beside it.
     static func panelSize(barHeight: CGFloat) -> CGSize {
-        CGSize(width: maxFlagWidth + 2 * inset, height: barHeight + flagHeight + 2 * inset)
+        CGSize(width: barWidth + besideGap + maxFlagWidth + 2 * inset, height: barHeight + flagHeight + 2 * inset)
+    }
+
+    /// The flag's spot for a caret in its window (Accessibility coordinates,
+    /// top-left origin), and whether it reaches right of the caret.
+    static func flagSpot(caretX: CGFloat, caretTop: CGFloat, caretHeight: CGFloat, window: CGRect) -> (placement: AnchorFlagPlacement, trailing: Bool) {
+        let roomBelow = caretTop + caretHeight + barOverhang + flagHeight <= window.maxY - edgeMargin
+        let roomRight = caretX + barWidth / 2 + maxFlagWidth <= window.maxX - edgeMargin
+        if roomBelow { return (.below, roomRight) }
+        let roomBeside = caretX + barWidth / 2 + besideGap + maxFlagWidth <= window.maxX - edgeMargin
+        return roomBeside ? (.beside, true) : (.above, roomRight)
+    }
+
+    /// The panel's top-left corner, same coordinates. The view pins its
+    /// drawing to the panel's top-leading corner, or top-trailing for a flag
+    /// reaching left.
+    static func panelOrigin(caretX: CGFloat, caretTop: CGFloat, barHeight: CGFloat, spot: (placement: AnchorFlagPlacement, trailing: Bool)) -> CGPoint {
+        let width = panelSize(barHeight: barHeight).width
+        let x = spot.trailing ? caretX - barWidth / 2 - inset : caretX + barWidth / 2 + inset - width
+        let barTop = caretTop - barOverhang
+        switch spot.placement {
+        case .below: return CGPoint(x: x, y: barTop - inset)
+        case .above: return CGPoint(x: x, y: barTop - flagHeight - inset)
+        // Centered on the bar: a flag taller than a small caret overhangs it
+        // evenly.
+        case .beside: return CGPoint(x: x, y: barTop - max(0, flagHeight - barHeight) / 2 - inset)
+        }
     }
 }
 
@@ -193,7 +231,7 @@ private enum AnchorMarkerLayout {
 private final class AnchorMarkerModel: ObservableObject {
     @Published var phase: AnchorMarkerController.Phase = .listening
     @Published var barHeight: CGFloat = 20
-    @Published var flagBelow = true
+    @Published var flagPlacement = AnchorFlagPlacement.below
     /// The flag reaches right of the caret; false next to the window's
     /// right edge.
     @Published var flagTrailing = true
@@ -211,13 +249,21 @@ private struct AnchorMarkerView: View {
         let still = !model.animates || model.phase == .done
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still)) { context in
             let time = still ? nil : context.date.timeIntervalSinceReferenceDate
-            VStack(alignment: model.flagTrailing ? .leading : .trailing, spacing: 0) {
-                if model.flagBelow {
+            switch model.flagPlacement {
+            case .below:
+                VStack(alignment: model.flagTrailing ? .leading : .trailing, spacing: 0) {
                     ghostCaret(time: time)
                     flag(time: time)
-                } else {
+                }
+            case .above:
+                VStack(alignment: model.flagTrailing ? .leading : .trailing, spacing: 0) {
                     flag(time: time)
                     ghostCaret(time: time)
+                }
+            case .beside:
+                HStack(spacing: AnchorMarkerLayout.besideGap) {
+                    ghostCaret(time: time)
+                    flag(time: time)
                 }
             }
         }
@@ -260,11 +306,13 @@ private struct AnchorMarkerView: View {
         let far = AnchorMarkerLayout.flagHeight / 2
         let near = far * 0.7
         let joint: CGFloat = 1.5
-        switch (model.flagBelow, model.flagTrailing) {
-        case (true, true): return RectangleCornerRadii(topLeading: joint, bottomLeading: near, bottomTrailing: far, topTrailing: far)
-        case (true, false): return RectangleCornerRadii(topLeading: far, bottomLeading: far, bottomTrailing: near, topTrailing: joint)
-        case (false, true): return RectangleCornerRadii(topLeading: near, bottomLeading: joint, bottomTrailing: far, topTrailing: far)
-        case (false, false): return RectangleCornerRadii(topLeading: far, bottomLeading: far, bottomTrailing: joint, topTrailing: near)
+        switch (model.flagPlacement, model.flagTrailing) {
+        case (.below, true): return RectangleCornerRadii(topLeading: joint, bottomLeading: near, bottomTrailing: far, topTrailing: far)
+        case (.below, false): return RectangleCornerRadii(topLeading: far, bottomLeading: far, bottomTrailing: near, topTrailing: joint)
+        case (.above, true): return RectangleCornerRadii(topLeading: near, bottomLeading: joint, bottomTrailing: far, topTrailing: far)
+        case (.above, false): return RectangleCornerRadii(topLeading: far, bottomLeading: far, bottomTrailing: joint, topTrailing: near)
+        // Always trailing: a caret with no room right goes `.above`.
+        case (.beside, _): return RectangleCornerRadii(topLeading: near, bottomLeading: near, bottomTrailing: far, topTrailing: far)
         }
     }
 
