@@ -20,7 +20,9 @@ extension DictationSessionController {
         let spool = DictationRecordingSpool(sessionID: sessionID)
         appState.sttRouter.setDictationRecordingSpoolSink(feed)
         recordingSpool = spool
-        recordingSpoolTask = Task.detached(priority: .utility) { [weak self] in
+        // A main-actor class, so the detached loop can hold it (not `self`).
+        let logger = appState.logger
+        recordingSpoolTask = Task.detached(priority: .utility) {
             await DictationRecordingSpoolPump.run(
                 spool,
                 takeSamples: { feed.take() },
@@ -29,7 +31,7 @@ extension DictationSessionController {
                     // copy stops. No paths or text in the log.
                     let code = (error as NSError).code
                     Task { @MainActor in
-                        self?.appState?.logger.log("DICTATION | recording spool stopped after a write failure (code \(code)); the take continues in memory")
+                        logger.log("DICTATION | recording spool stopped after a write failure (code \(code)); the take continues in memory")
                     }
                 }
             )
