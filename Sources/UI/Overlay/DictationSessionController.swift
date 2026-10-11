@@ -208,7 +208,11 @@ class DictationSessionController: ObservableObject {
         get { if let take = DictationTakeScope.handedOff { return take.anchoredSend }; return storedAnchoredSend }
         set { if let take = DictationTakeScope.handedOff { take.anchoredSend = newValue } else { storedAnchoredSend = newValue } }
     }
-    lazy var anchorMarker = AnchorMarkerController()
+    lazy var anchorMarker: AnchorMarkerController = {
+        let marker = AnchorMarkerController()
+        marker.onStop = { [weak self] in self?.stopFromAnchorMarker() }
+        return marker
+    }()
     var deferredAnchoredPastes: [DeferredAnchoredPaste] = []
     var deferredAnchoredPasteTimer: Timer?
     /// A returning user's window is being given time to show an unconfirmed

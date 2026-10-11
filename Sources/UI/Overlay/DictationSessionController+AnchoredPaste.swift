@@ -52,9 +52,16 @@ extension DictationSessionController {
                 self.appState?.logger.log(
                     "DICTATION | anchored to \(anchor.appName): field \(anchor.field != nil), window \(anchor.windowID != nil), terminal \(anchor.isTerminal)"
                 )
-                self.anchorMarker.show(for: anchor, phase: .listening)
+                self.anchorMarker.show(for: anchor, phase: .listening, levels: self.appState?.sttRouter.audioLevels.readings)
             }
         }
+    }
+
+    /// The marker's stop button does what the island's does: stops the take
+    /// being spoken, and only while it listens.
+    func stopFromAnchorMarker() {
+        guard isDictating, overlayController?.state == .listening else { return }
+        stopDictationAndPaste(trigger: .overlayButton)
     }
 
     func markPasteAnchorWorking() {
