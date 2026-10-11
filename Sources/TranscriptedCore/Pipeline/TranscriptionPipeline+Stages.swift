@@ -108,6 +108,27 @@ extension Transcription {
         return texts
     }
 
+    /// Whether a system-audio diarization error should degrade the meeting to
+    /// an unlabelled call side instead of failing it. Only cancellation must
+    /// still propagate; the explicit no-speech result has its own branch.
+    nonisolated static func shouldTranscribeWithoutDiarization(after error: Error) -> Bool {
+        if error is CancellationError { return false }
+        return !isExplicitNoSpeechError(error)
+    }
+
+    /// Whether the last-chance pass should re-read the call side: the meeting
+    /// came out empty, or the call side has no words because its diarizer
+    /// failed (so the mic having words says nothing about it).
+    nonisolated static func lastChanceSweepsSystem(
+        systemUtteranceCount: Int,
+        micUtteranceCount: Int,
+        hasUsableSystemAudio: Bool,
+        systemDiarizationFailed: Bool
+    ) -> Bool {
+        guard hasUsableSystemAudio, systemUtteranceCount == 0 else { return false }
+        return micUtteranceCount == 0 || systemDiarizationFailed
+    }
+
     nonisolated static func isExplicitNoSpeechError(_ error: Error) -> Bool {
         if let diarizationError = error as? DiarizationResultError,
            case .noSpeechDetected = diarizationError {

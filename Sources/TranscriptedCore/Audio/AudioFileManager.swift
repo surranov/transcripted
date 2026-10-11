@@ -303,19 +303,23 @@ extension Audio {
                         let retainedBytes = PCMBufferBackpressureGate.retainedByteCount(
                             for: bufferForAsyncUse
                         )
-                        switch self.systemAudioWriteBackpressure.admit(
+                        switch self.systemAudioWriteBackpressure.admitDroppingOnOverflow(
                             bytes: retainedBytes,
+                            frames: Int(bufferForAsyncUse.frameLength),
                             generation: sessionGeneration
                         ) {
                         case .accepted:
                             break
-                        case .firstOverflow:
-                            AppLogger.audioSystem.error("System audio write backlog exceeded memory limit", [
-                                "limitBytes": "\(self.systemAudioWriteBackpressure.byteLimit)"
-                            ])
-                            self.surfaceSystemWriteBackpressureAndStop(
-                                generation: sessionGeneration
-                            )
+                        case .dropped(let startsBurst):
+                            // The disk stalled for longer than the queue holds.
+                            // Drop this buffer, keep recording, and let the writer
+                            // pad the gap with silence so the track stays aligned
+                            // with the mic. Stopping would cost the rest of the meeting.
+                            if startsBurst {
+                                AppLogger.audioSystem.error("System audio write backlog exceeded memory limit; dropping audio until the disk catches up", [
+                                    "limitBytes": "\(self.systemAudioWriteBackpressure.byteLimit)"
+                                ])
+                            }
                             return
                         case .closed:
                             captureAttempt.enqueueFinishingBuffer(bufferForAsyncUse, writer: file, queue: self.systemAudioFileQueue) { error in
@@ -331,6 +335,9 @@ extension Audio {
                         // The reservation is made before dispatch, so a slow
                         // writer can retain at most the gate's byte limit.
                         let backpressure = self.systemAudioWriteBackpressure
+                        // Audio dropped just before this buffer is padded just
+                        // before its write, in arrival order.
+                        let gapBefore = backpressure.takePendingDroppedGap(generation: sessionGeneration)
                         self.systemAudioFileQueue.async { [weak self] in
                             defer { backpressure.release(bytes: retainedBytes) }
                             guard let self = self,
@@ -338,6 +345,7 @@ extension Audio {
                                     generation: sessionGeneration
                                   ),
                                   writeErrorCount < self.maxConsecutiveWriteErrors else { return }
+                            self.padDroppedAudio(gapBefore, generation: sessionGeneration, to: file, source: .system)
                             do {
                                 // Producer shutdown fences this enqueue before
                                 // close. A successor can replace ownership while

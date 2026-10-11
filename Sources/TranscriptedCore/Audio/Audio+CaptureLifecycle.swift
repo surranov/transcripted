@@ -39,7 +39,6 @@ extension Audio {
         micAudioWriteBackpressure.begin(generation: sessionGeneration)
         systemAudioWriteBackpressure.begin(generation: sessionGeneration)
         micHostPCMBufferFanout.begin(generation: sessionGeneration)
-        writeBackpressureStopAdmission.begin(generation: sessionGeneration)
         beginWriteErrorTracking(generation: sessionGeneration)
         resetMeetingRouteState(forNewRecording: true)
         recordingLanguageLock.lock()
@@ -303,7 +302,6 @@ extension Audio {
         pendingStartIntentId = nil
         let stopGeneration = beginRecordingSessionGeneration()
         systemAudioWriteBackpressure.close(generation: captureGeneration)
-        writeBackpressureStopAdmission.close(generation: captureGeneration)
         let cleanupGroup = DispatchGroup()
         cleanupGroup.enter()
         micHostPCMBufferFanout.close(generation: captureGeneration) {

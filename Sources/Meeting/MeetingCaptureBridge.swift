@@ -76,6 +76,13 @@ final class MeetingCaptureBridge: ObservableObject {
     private var timedOutStopCompletions = TimedOutStopCompletionRegistry()
     private var timedOutStopCompletionExpiryTasks: [UInt64: Task<Void, Never>] = [:]
     private var expectedStopGeneration: UInt64?
+    /// Capture generation when the current recording started, and the newest
+    /// stop whose outcome has an owner (its completion was handled, or its wait
+    /// timed out and `timedOutStopCompletions` owns the late completion).
+    /// Together they tell a Stop that the capture already stopped itself and is
+    /// still finalizing (`MeetingStopAdoptionPolicy`).
+    private var recordingGeneration: UInt64?
+    private var settledStopGeneration: UInt64?
     /// Runs only while a Boost looked past an open call app that was not on
     /// the mic. See `watchCallAppsWhileBoosted`.
     private var boostMicrophoneSharingWatch: Task<Void, Never>?
@@ -175,6 +182,7 @@ final class MeetingCaptureBridge: ObservableObject {
             continuation.resume(returning: staleStopResult)
         }
         if audio.isRecording { return true }
+        recordingGeneration = nil
         audio.recordingLanguageSelection = languageSelection
         audio.capturesSystemAudio = capturesSystemAudio
         pendingStartRequiresSystemAudio = capturesSystemAudio
@@ -282,6 +290,7 @@ final class MeetingCaptureBridge: ObservableObject {
                 }
             })
         }
+        if started { recordingGeneration = audio.currentRecordingSessionGeneration }
         if started, boostLookedPastCallApp, !audio.voiceProcessingSuppressedForMicrophoneSharing {
             watchCallAppsWhileBoosted(generation: audio.currentRecordingSessionGeneration)
         }
@@ -344,7 +353,18 @@ final class MeetingCaptureBridge: ObservableObject {
                 return
             }
 
-            guard audio.isRecording else {
+            // Core can stop on its own (disk guard, device give-up) and flips
+            // `isRecording` at the start of that stop, long before its files
+            // are finalized. Adopt that stop and wait for its completion
+            // instead of handing out URLs that are still being written or
+            // merged; its completion would otherwise be dropped as stale.
+            let adoptedStopGeneration = MeetingStopAdoptionPolicy.stopGenerationToAdopt(
+                audioIsRecording: audio.isRecording,
+                currentGeneration: audio.currentRecordingSessionGeneration,
+                recordingGeneration: recordingGeneration,
+                settledStopGeneration: settledStopGeneration
+            )
+            guard audio.isRecording || adoptedStopGeneration != nil else {
                 continuation.resume(returning: currentStopResult())
                 return
             }
@@ -355,10 +375,12 @@ final class MeetingCaptureBridge: ObservableObject {
             // Ask the epoch for the next session's generation instead of
             // hand-predicting with `current &+ 1`, which the SupersessionEpoch
             // docs call out as racy against a concurrent begin().
-            let stopGeneration = audio.predictedNextRecordingSessionGeneration()
+            let stopGeneration = adoptedStopGeneration ?? audio.predictedNextRecordingSessionGeneration()
             expectedStopGeneration = stopGeneration
             let attemptID = completionAttempt.begin(continuation)
-            audio.stop()
+            if adoptedStopGeneration == nil {
+                audio.stop()
+            }
 
             completionAttempt.setTimeoutTask(Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: stopTimeout)
@@ -381,6 +403,7 @@ final class MeetingCaptureBridge: ObservableObject {
                     )
                 )
                 self.expectedStopGeneration = nil
+                self.settledStopGeneration = max(self.settledStopGeneration ?? stopGeneration, stopGeneration)
                 self.timedOutStopCompletions.register(
                     generation: stopGeneration,
                     owner: timedOutOwner,
@@ -585,6 +608,7 @@ final class MeetingCaptureBridge: ObservableObject {
             // Hop to main and resume the continuation exactly once.
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.settledStopGeneration = max(self.settledStopGeneration ?? generation, generation)
                 let result = CaptureStopResult(
                     micURL: micURL,
                     systemURL: systemURL,

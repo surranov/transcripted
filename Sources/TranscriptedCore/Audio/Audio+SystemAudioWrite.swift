@@ -129,19 +129,6 @@ extension Audio {
         }
     }
 
-    func surfaceSystemWriteBackpressureAndStop(generation: UInt64) {
-        guard writeBackpressureStopAdmission.claim(generation: generation) else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self,
-                  self.recordingSessionGeneration == generation,
-                  self.isRecording else { return }
-            self.systemAudioFailed = true
-            self.systemAudioStatus = .failed
-            self.error = "Recording stopped \u{2014} Transcripted couldn't keep up while saving system audio. Your partial recording is preserved. Check the save location, then start a new recording."
-            self.stop()
-        }
-    }
-
     // MARK: - System Audio Status
 
     /// Records a system-audio start failure while the meeting is still in the

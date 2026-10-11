@@ -14,7 +14,10 @@ extension TranscriptionTaskManager {
                 micURL: URL?,
                 systemURL: URL?,
                 originalMicURL: URL?,
-                startedAt: Date
+                startedAt: Date,
+                /// The merge failed and recovery segments with audio are still
+                /// on disk; the journal that lists them must stay.
+                keepJournalForUnmergedSegments: Bool
             )
         }
         let journalURL: URL
@@ -102,11 +105,18 @@ extension TranscriptionTaskManager {
         var totalRecovered = 0
         while !Task.isCancelled {
             let passRequestGeneration = orphanedRecordingRecoveryRequestGeneration
+            // Read on the main actor before the scan: merging a journal's
+            // segments again must never delete audio a transcription is using.
+            let ownedAtScan = Set(
+                lifecycleOwnedAudioPaths()
+                + (reservedAudioURLsProvider?().map { $0.standardizedFileURL.path } ?? [])
+            )
             let candidates = await Task.detached(priority: .utility) {
                 Self.collectOrphanedRecordingCandidates(
                     in: canonicalScratchDirectory,
                     now: clock.date(),
-                    livenessWindow: livenessWindow
+                    livenessWindow: livenessWindow,
+                    ownedAudioPaths: ownedAtScan
                 )
             }.value
             orphanedRecordingRecoveryPassObserver?()
@@ -145,7 +155,7 @@ extension TranscriptionTaskManager {
                         "file": candidate.journalURL.lastPathComponent,
                         "reason": reason
                     ])
-                case .recover(let micURL, let systemURL, let originalMicURL, let startedAt):
+                case .recover(let micURL, let systemURL, let originalMicURL, let startedAt, let keepJournalForUnmergedSegments):
                     // Never archive-and-unlink audio that a running or queued
                     // transcription owns. For an in-flight pipeline the open
                     // file handles survive the unlink, so the meeting saves
@@ -207,10 +217,15 @@ extension TranscriptionTaskManager {
                         )
                     }
                     if didPersist {
-                        _ = MeetingRecordingJournalStore.removeJournalArtifact(
-                            at: candidate.journalURL,
-                            allowedRoots: [canonicalScratchDirectory]
-                        )
+                        // The row covers `micURL` only. When the merge left
+                        // segments behind, keep their inventory: the next scan
+                        // recovers what is still on disk, one pass at a time.
+                        if !keepJournalForUnmergedSegments {
+                            _ = MeetingRecordingJournalStore.removeJournalArtifact(
+                                at: candidate.journalURL,
+                                allowedRoots: [canonicalScratchDirectory]
+                            )
+                        }
                         passRecovered += 1
                         AppLogger.pipeline.info("Recovered orphaned recording into failed queue", [
                             "journal": candidate.journalURL.lastPathComponent,
@@ -262,7 +277,8 @@ extension TranscriptionTaskManager {
     nonisolated private static func collectOrphanedRecordingCandidates(
         in directory: URL,
         now: Date,
-        livenessWindow: TimeInterval
+        livenessWindow: TimeInterval,
+        ownedAudioPaths: Set<String>
     ) -> [OrphanedRecordingCandidate] {
         let canonicalDirectory = canonicalDirectoryURL(directory)
         return MeetingRecordingJournalStore.journalURLs(in: canonicalDirectory).compactMap {
@@ -272,7 +288,8 @@ extension TranscriptionTaskManager {
                 at: $0,
                 directory: canonicalDirectory,
                 now: now,
-                livenessWindow: livenessWindow
+                livenessWindow: livenessWindow,
+                ownedAudioPaths: ownedAudioPaths
             )
         }
     }
@@ -281,7 +298,8 @@ extension TranscriptionTaskManager {
         at journalURL: URL,
         directory: URL,
         now: Date,
-        livenessWindow: TimeInterval
+        livenessWindow: TimeInterval,
+        ownedAudioPaths: Set<String>
     ) -> OrphanedRecordingCandidate? {
         guard !MeetingRecordingJournalStore.isOwnedByLiveFinalizer(at: journalURL) else {
             return OrphanedRecordingCandidate(
@@ -377,15 +395,40 @@ extension TranscriptionTaskManager {
             }
         }
 
-        var micURL = finalURL ?? mergedSibling
+        // A journal that finalized after a failed merge names a final mic file
+        // that is the primary alone, so merge again instead of trusting it.
+        // The merge deletes its sources, so wait while a transcription owns
+        // any of this recording's audio.
+        if journal.micMergeFailed == true,
+           allAudio.contains(where: { ownedAudioPaths.contains($0.standardizedFileURL.path) }) {
+            return OrphanedRecordingCandidate(
+                journalURL: journalURL,
+                disposition: .skip(
+                    reason: "owned by active or queued transcription",
+                    retryAfter: orphanedRecordingLivenessWindow
+                )
+            )
+        }
+        var micURL = journal.micMergeFailed == true ? nil : (finalURL ?? mergedSibling)
+        var mergeFailed = false
         if micURL == nil, segmentRecords.count > 1 {
-            micURL = (try? MicRecordingFileMerger.merge(
-                primaryURL: primaryURL ?? segmentRecords[0].url,
-                segments: segmentRecords
-            ))?.url
+            do {
+                micURL = try MicRecordingFileMerger.merge(
+                    primaryURL: primaryURL ?? segmentRecords[0].url,
+                    segments: segmentRecords
+                ).url
+            } catch {
+                mergeFailed = true
+            }
         }
         if micURL == nil {
             micURL = primaryURL ?? segmentRecords.first?.url
+        }
+        // The row will cover `micURL` only. Segments that hold audio and
+        // never made it into a merged file keep their journal alive, so the
+        // next scan recovers them (each pass consumes the file it hands on).
+        let keepJournalForUnmergedSegments = mergeFailed && segmentRecords.contains {
+            $0.url != micURL && MeetingRecordingJournal.fileHoldsAudio($0.url)
         }
 
         guard micURL != nil || systemURL != nil else {
@@ -397,7 +440,8 @@ extension TranscriptionTaskManager {
                 micURL: micURL,
                 systemURL: systemURL,
                 originalMicURL: originalMicURL,
-                startedAt: journal.startedAt
+                startedAt: journal.startedAt,
+                keepJournalForUnmergedSegments: keepJournalForUnmergedSegments
             )
         )
     }

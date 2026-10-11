@@ -39,6 +39,34 @@ struct MeetingRecordingJournal: Codable, Equatable {
     /// True for a "Record Just My Mic" recording, so crash recovery keeps the
     /// choice on its failed-queue row. Nil (not false) for two-sided ones.
     var micOnlyByChoice: Bool? = nil
+    /// Set at finalization when merging the recovery segments threw, so
+    /// `finalMicFilename` is the primary file alone and every recovery segment
+    /// is still on disk. This keeps the journal (their inventory) alive past a
+    /// saved transcript until they are recovered. Nil (not false) otherwise.
+    /// A merge that ran but skipped unreadable segments is not a failure: its
+    /// output holds every readable frame.
+    var micMergeFailed: Bool? = nil
+
+    /// Whether the journal still owns mic audio that the final mic file
+    /// doesn't hold: the merge failed and a recovery segment other than the
+    /// final file is on disk with audio in it.
+    func hasUnmergedMicAudio(in directory: URL) -> Bool {
+        guard micMergeFailed == true else { return false }
+        return micSegments.contains { record in
+            guard record.filename != finalMicFilename,
+                  !record.filename.isEmpty,
+                  !record.filename.contains("/"), !record.filename.contains("..") else { return false }
+            let url = directory.appendingPathComponent(record.filename)
+            return FileManager.default.fileExists(atPath: url.path) && Self.fileHoldsAudio(url)
+        }
+    }
+
+    /// Whether a mic segment has any PCM payload. A header-only segment lost
+    /// nothing; one whose header can't be read counts as audio.
+    static func fileHoldsAudio(_ url: URL) -> Bool {
+        guard let info = try? WAVHeaderRepair.probe(at: url) else { return true }
+        return info.dataActualSize > 0
+    }
 }
 
 enum MeetingRecordingJournalStartError: Error, Equatable {
@@ -209,10 +237,15 @@ final class MeetingRecordingJournalStore: @unchecked Sendable {
         mutate(session: session) { $0.state = .stopping }
     }
 
-    func markFinalized(finalMicURL: URL?, session: MeetingRecordingJournalSession?) {
+    func markFinalized(
+        finalMicURL: URL?,
+        micMergeFailed: Bool = false,
+        session: MeetingRecordingJournalSession?
+    ) {
         mutate(session: session, endingSession: true) {
             $0.state = .finalized
             $0.finalMicFilename = finalMicURL?.lastPathComponent
+            $0.micMergeFailed = micMergeFailed ? true : nil
         }
     }
 
@@ -700,6 +733,7 @@ final class MeetingRecordingJournalStore: @unchecked Sendable {
         if let micAudioURL, isContained(micAudioURL, in: canonicalRoots) {
             var removed = false
             for journalURL in journalURLs(forMicAudioURL: micAudioURL) {
+                if retainsUnmergedMicAudio(at: journalURL) { continue }
                 if removeJournalArtifact(at: journalURL, allowedRoots: canonicalRoots) {
                     removed = true
                     AppLogger.audio.debug("Removed recording journal after durable handoff", [
@@ -718,7 +752,8 @@ final class MeetingRecordingJournalStore: @unchecked Sendable {
         )
         guard !lookup.hasUnverifiableCandidate,
               lookup.matchingURLs.count == 1,
-              let journalURL = lookup.matchingURLs.first else {
+              let journalURL = lookup.matchingURLs.first,
+              !retainsUnmergedMicAudio(at: journalURL) else {
             return false
         }
         let removed = removeJournalArtifact(at: journalURL, allowedRoots: canonicalRoots)
@@ -729,6 +764,23 @@ final class MeetingRecordingJournalStore: @unchecked Sendable {
             ])
         }
         return removed
+    }
+
+    /// A transcript or failed row was saved from the final mic file, but the
+    /// merge failed and left recovery segments behind. Those segments
+    /// hold meeting audio that no transcript or row covers, so the journal that
+    /// inventories them must outlive this handoff: launch recovery turns the
+    /// leftovers into a retryable row, and deleting a failed row discards them
+    /// through the same inventory.
+    private static func retainsUnmergedMicAudio(at journalURL: URL) -> Bool {
+        guard let journal = load(at: journalURL),
+              journal.hasUnmergedMicAudio(in: journalURL.deletingLastPathComponent()) else {
+            return false
+        }
+        AppLogger.audio.warning("Kept recording journal: mic segments were not merged into the saved audio", [
+            "file": journalURL.lastPathComponent
+        ])
+        return true
     }
 
     /// Backward-compatible mic-keyed convenience for existing terminal paths.

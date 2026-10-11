@@ -219,6 +219,7 @@ extension Transcription {
             // call so a Nemotron load failure records pyannote. Stays nil when
             // no diarizer runs.
             var diarizationRun: DiarizationRunDescriptor?
+            var systemDiarizationFailed = false
             let rawSegments: [SpeakerSegment]
             if hasUsableSystemAudio {
                 diarizationRun = await Self.diarizationRunDescriptor(of: diarization)
@@ -237,6 +238,20 @@ extension Transcription {
                     // throws the same `noSpeechDetected` when it finds nothing.
                     AppLogger.transcription.info("Diarizer found no speech in system audio; deferring to the last-chance pass")
                     rawSegments = []
+                } catch let error where Self.shouldTranscribeWithoutDiarization(after: error) {
+                    // The diarizer itself broke (a model or inference error),
+                    // which says nothing about whether anyone spoke. Failing
+                    // here discards the whole meeting, mic included, for a
+                    // problem that only costs speaker labels. Transcribe the
+                    // call side without them through the last-chance pass
+                    // (one unnamed "Speaker 1"), which still throws if its own
+                    // STT fails, so the failed queue keeps the audio as before.
+                    AppLogger.transcription.warning("Diarization failed; transcribing the call side without speaker labels", [
+                        "errorType": "\(type(of: error))"
+                    ])
+                    rawSegments = []
+                    systemDiarizationFailed = true
+                    diarizationRun = nil
                 }
             } else {
                 rawSegments = []
@@ -565,6 +580,21 @@ extension Transcription {
                         newlyCreatedMicProfileIds = []
                         micDiarizerFoundNoSpeech = true
                         AppLogger.transcription.info("Mic diarizer found no speech; deferring to the last-chance pass")
+                    } else if splitLocalSpeakers, systemUtterances.isEmpty,
+                              Self.shouldTranscribeWithoutDiarization(after: error) {
+                        // Nothing from the call side to fall back on, and the
+                        // mic diarizer is what broke. Don't fail the meeting
+                        // over speaker labels: leave the mic empty here so the
+                        // last-chance pass below silence-splits it (one
+                        // unnamed "You"). If that STT fails too, it throws
+                        // and the failed queue keeps the audio as before.
+                        micSamples = []
+                        micUtterances = []
+                        micSpeakerContexts = [:]
+                        newlyCreatedMicProfileIds = []
+                        AppLogger.transcription.warning("Mic diarization failed; transcribing the mic without speaker labels", [
+                            "errorType": "\(type(of: error))"
+                        ])
                     } else {
                         guard !systemUtterances.isEmpty else {
                             throw error
@@ -592,12 +622,18 @@ extension Transcription {
             // diarizer's speech detector, which can miss quiet or distant
             // voices:
             // - the call side, only when the whole meeting came out empty
-            //   (otherwise a quiet remote track is not worth a second STT run);
+            //   (otherwise a quiet remote track is not worth a second STT run),
+            //   or when its diarizer failed, so it has no words at all;
             // - the split-mode mic whenever it produced no words, even if the
             //   call side did, so voices in the room are not dropped silently.
             // The default mic path already silence-split the whole mic track,
             // so repeating it would only reproduce the same empty result.
-            let sweepsSystem = systemUtterances.isEmpty && micUtterances.isEmpty && hasUsableSystemAudio
+            let sweepsSystem = Self.lastChanceSweepsSystem(
+                systemUtteranceCount: systemUtterances.count,
+                micUtteranceCount: micUtterances.count,
+                hasUsableSystemAudio: hasUsableSystemAudio,
+                systemDiarizationFailed: systemDiarizationFailed
+            )
             let sweepsMic = splitLocalSpeakers && microphoneAudioOutcome == .usable && micUtterances.isEmpty
             if sweepsSystem || sweepsMic {
                 await MainActor.run {

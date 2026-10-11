@@ -56,8 +56,10 @@ extension TranscriptionTaskManager {
         // Meeting recovery can produce a very short mic stub while system audio is still
         // intact and fully transcribable, so don't throw away the whole recording just
         // because the mic side is below Parakeet's minimum length.
+        // Headers are repaired first: an unfinalized WAV reads as ~0 s however
+        // long it really is (see `ShortRecordingDiscardPolicy`).
         let (micDuration, systemDuration, hasUsableMicAudio, hasUsableSystemAudio, hasUnknownDuration) =
-            audioUsability(micURL: micURL, systemURL: systemURL)
+            audioUsability(micURL: micURL, systemURL: systemURL, repairingUnfinalizedHeaders: true)
 
         guard hasUsableMicAudio || hasUsableSystemAudio || hasUnknownDuration else {
             AppLogger.pipeline.info("Recording too short, skipping transcription", [
@@ -65,9 +67,29 @@ extension TranscriptionTaskManager {
                 "systemDuration": systemDuration.map { String(format: "%.1fs", $0) } ?? "none"
             ])
 
+            // A file this large holds more audio than its header admits, so the
+            // length reading is wrong and this is not an accidental start.
+            // Keep it: the failed queue owns it from here.
+            let captureFiles = [micURL, systemURL].compactMap { $0 }
+            guard ShortRecordingDiscardPolicy.mayDiscard(
+                fileSizes: captureFiles.map(ShortRecordingDiscardPolicy.fileSize(at:))
+            ) else {
+                retainCaptureWithUnreliableLength(
+                    micURL: micURL,
+                    systemURL: systemURL,
+                    meetingTitle: meetingTitle,
+                    recordingDate: recordingDate,
+                    splitLocalSpeakers: splitLocalSpeakers,
+                    languageSelection: languageSelection,
+                    micOnlyByChoice: healthInfo?.systemAudioSkippedByChoice == true
+                )
+                return
+            }
+
             // Deliberate: this gate deletes live-capture scratch outright instead of
             // archiving it into the failed queue the way the transcription failure paths
-            // below do — do not "fix" it to retain the audio.
+            // below do — do not "fix" it to retain the audio. Only files that pass
+            // `ShortRecordingDiscardPolicy` (small enough to be a hotkey bump) get here.
             // `testStartTranscriptionRejectsTooShortLiveAudioWithoutQueueingRetry` pins
             // both halves (scratch removed, failed queue left empty).
             //
@@ -340,6 +362,37 @@ extension TranscriptionTaskManager {
             }
             return AudioSignalRecovery.hasSpeechLikeModulation(samples: samples, sampleRate: 16000)
         }
+    }
+
+    /// A capture file that reads as under 2 s yet is too big to be an
+    /// accidental start. Queues it for retry (retry repairs headers and reads
+    /// the real length) instead of deleting it.
+    private func retainCaptureWithUnreliableLength(
+        micURL: URL?,
+        systemURL: URL?,
+        meetingTitle: String?,
+        recordingDate: Date?,
+        splitLocalSpeakers: Bool,
+        languageSelection: TranscriptionLanguageSelection,
+        micOnlyByChoice: Bool
+    ) {
+        AppLogger.pipeline.warning("Kept a large capture that reads as too short; queued it for retry")
+        addFailedTranscriptionRetainingAvailableAudio(
+            micAudioURL: micURL,
+            systemAudioURL: systemURL,
+            errorMessage: "Recording length could not be verified",
+            meetingTitle: meetingTitle,
+            recordingDate: recordingDate,
+            errorKind: .pipelineFailed,
+            splitLocalSpeakers: splitLocalSpeakers,
+            languageSelection: languageSelection,
+            micOnlyByChoice: micOnlyByChoice
+        )
+        publishFailure(
+            displayMessage: "Recording couldn't be read. Your audio was kept, so try again from Meetings.",
+            diagnosticMessage: "Recording length could not be verified"
+        )
+        scheduleStatusReset(delay: 4)
     }
 
     /// Drops a live recording that was started by accident: deletes its
@@ -722,8 +775,14 @@ extension TranscriptionTaskManager {
     private func audioUsability(
         micURL: URL?,
         systemURL: URL?,
-        minDuration: TimeInterval = 2.0
+        minDuration: TimeInterval = 2.0,
+        repairingUnfinalizedHeaders: Bool = false
     ) -> (micDuration: TimeInterval?, systemDuration: TimeInterval?, usableMic: Bool, usableSystem: Bool, unknownDuration: Bool) {
+        if repairingUnfinalizedHeaders {
+            for url in [micURL, systemURL].compactMap({ $0 }) {
+                ShortRecordingDiscardPolicy.repairUnfinalizedHeader(at: url)
+            }
+        }
         let micDuration = micURL.flatMap { audioDuration(url: $0) }
         let systemDuration = systemURL.flatMap { audioDuration(url: $0) }
         return (

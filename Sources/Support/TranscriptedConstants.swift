@@ -142,13 +142,13 @@ enum TranscriptedConstants {
     /// not give up while the macOS dialog is still up.
     static let meetingTerminationFinishWaitTimeout: TimeInterval = 145.0
 
-    /// Failed meeting audio is recoverable, but old unretried files should not grow forever.
-    /// This is the floor: a shorter user retention window never prunes failed audio sooner.
+    /// Age after which a failed-queue row whose audio is already gone is dropped.
+    /// Age never deletes the audio itself: the failed queue is the only copy of an
+    /// un-transcribed meeting. This is the floor: a shorter user retention window
+    /// never drops rows sooner.
     static let failedMeetingAudioRetentionDays = 30
 
-    /// Cap applied when the user chose "Never delete audio" (the default). The failed
-    /// queue is the only copy of an un-transcribed meeting, so it gets the longest
-    /// window, but never an unbounded one.
+    /// Same window when the user chose "Never delete audio" (the default).
     static let failedMeetingAudioRetentionCapDays = 90
 
     /// Max time wake recovery should wait for background model warmup.

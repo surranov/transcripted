@@ -490,18 +490,18 @@ public class Audio: ObservableObject, @unchecked Sendable {
         attributes: .concurrent
     )
     var micAudioFileOwnership = MicWriterOwnership<AVAudioFile>()
-    let systemAudioFileQueue = DispatchQueue(label: "SystemAudioFileWrite", qos: .utility)
-    let micAudioFileQueue = DispatchQueue(label: "MicAudioFileWrite", qos: .utility)
+    // Above .utility: a starved writer queue backs up past the byte limit below.
+    let systemAudioFileQueue = DispatchQueue(label: "SystemAudioFileWrite", qos: .userInitiated)
+    let micAudioFileQueue = DispatchQueue(label: "MicAudioFileWrite", qos: .userInitiated)
     /// A blocked or slow filesystem must not turn PCM callbacks into an
-    /// unlimited collection of retained buffers. Eight MiB per stream is a
-    /// hard process-memory ceiling for queued writes, not a target backlog.
+    /// unlimited collection of retained buffers. Eight MiB per stream is a hard
+    /// process-memory ceiling; past it a buffer is dropped and padded as silence.
     let systemAudioWriteBackpressure = PCMBufferBackpressureGate(byteLimit: 8 * 1_024 * 1_024)
     let micAudioWriteBackpressure = PCMBufferBackpressureGate(byteLimit: 8 * 1_024 * 1_024)
     let micHostPCMBufferFanout = BoundedPCMBufferFanout(
         label: "com.transcripted.meeting-mic-host-fanout",
         byteLimit: 8 * 1_024 * 1_024
     )
-    let writeBackpressureStopAdmission = PCMBackpressureStopAdmission()
 
     // Audio format conversion (multi-channel to mono)
     // Thread-safe: written during init + device recovery, read during mic buffer handling

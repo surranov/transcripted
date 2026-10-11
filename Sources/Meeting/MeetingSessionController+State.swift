@@ -526,11 +526,9 @@ final class MeetingSessionController: ObservableObject {
         // through `retryFailedMeeting` and `deleteFailedMeeting`.
         self.failedManager = FailedTranscriptionManager(paths: storagePaths)
         // The failed queue holds the only copy of a meeting that never got a
-        // transcript, so the user's audio-retention choice applies here too,
-        // but the queue stays bounded. A 7- or 30-day window never prunes
-        // failed audio sooner than the 30-day floor; "Never delete audio"
-        // (the shipped default) keeps failed rows for the longer cap instead
-        // of forever, so Needs Attention and disk use cannot grow unbounded.
+        // transcript, so age never deletes its audio: this only drops rows
+        // whose audio is already gone, after the same window as before (30-day
+        // floor, 90-day cap for "Never delete audio").
         let failedMeetingRetentionDays = AudioStoragePreferences.deleteAudioAfter().days
             .map { max($0, TranscriptedConstants.failedMeetingAudioRetentionDays) }
             ?? TranscriptedConstants.failedMeetingAudioRetentionCapDays

@@ -781,20 +781,17 @@ public class FailedTranscriptionManager: ObservableObject {
         return failedTranscriptions.count
     }
 
-    /// Cleans up failed transcriptions older than the specified number of days
+    /// Drops failed-queue rows older than `days` whose audio is already gone.
+    /// A failed row means no transcript was saved, so its audio is the only copy
+    /// of that meeting: age alone never deletes it, and rows from an offline
+    /// capture library stay until that library is back. Age cleanup used to
+    /// delete both the row and its audio at the cap.
     public func cleanupOldFailedTranscriptions(olderThanDays days: Int) {
         // Nil-coalesce: date arithmetic rarely returns nil, but force unwrap would crash on edge cases
         let cutoffDate = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
 
-        // Offline-library rows age out too, except those still pending deletion.
-        let previousRelocated = unavailableRelocatedEntries
-        unavailableRelocatedEntries.removeAll { entry in entry.timestamp < cutoffDate && !pendingDeletions.contains { $0.id == entry.id } }
-        if unavailableRelocatedEntries.count != previousRelocated.count, !saveFailedTranscriptions() {
-            unavailableRelocatedEntries = previousRelocated
-        }
-
         let oldFailureIDs = failedTranscriptions
-            .filter { $0.timestamp < cutoffDate }
+            .filter { $0.timestamp < cutoffDate && !$0.audioFilesExist() }
             .map(\.id)
         guard !oldFailureIDs.isEmpty else {
             AppLogger.pipeline.info("Cleaned up old failed transcriptions", ["count": "0", "olderThanDays": "\(days)"])

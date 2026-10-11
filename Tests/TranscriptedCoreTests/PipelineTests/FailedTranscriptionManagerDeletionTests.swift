@@ -284,7 +284,10 @@ extension FailedTranscriptionManagerTests {
         XCTAssertTrue(FileManager.default.fileExists(atPath: pendingDeletionURL.path))
     }
 
-    func testOldFailureCleanupConsumesRetainedJournalInventory() throws {
+    func testAgeCleanupNeverDeletesAudioThatHasNoSavedTranscript() throws {
+        // A failed row means no transcript exists, so its audio (and the journal
+        // that inventories recovery segments) is the only copy of the meeting.
+        // Age used to delete all of it at the retention cap.
         let paths = makePaths(root: testRoot)
         try FileManager.default.createDirectory(at: paths.audioCaptures, withIntermediateDirectories: true)
         let primaryURL = paths.audioCaptures.appendingPathComponent("old-timeout-mic.wav")
@@ -312,7 +315,7 @@ extension FailedTranscriptionManagerTests {
         ))
         manager.failedTranscriptions[0] = FailedTranscription(
             id: failedID,
-            timestamp: Date(timeIntervalSinceNow: -10 * 24 * 60 * 60),
+            timestamp: Date(timeIntervalSinceNow: -400 * 24 * 60 * 60),
             micAudioURL: primaryURL,
             systemAudioURL: nil,
             errorMessage: "Recording stop timed out before audio files were finalized."
@@ -320,10 +323,41 @@ extension FailedTranscriptionManagerTests {
 
         manager.cleanupOldFailedTranscriptions(olderThanDays: 7)
 
-        XCTAssertTrue(manager.failedTranscriptions.isEmpty)
+        XCTAssertEqual(manager.failedTranscriptions.map(\.id), [failedID], "the row is the user's only way back to the audio")
         for url in [primaryURL, recoveryURL, journalURL] {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "age must not delete \(url.lastPathComponent)")
         }
+    }
+
+    func testAgeCleanupDropsOldRowsWhoseAudioIsAlreadyGone() throws {
+        let paths = makePaths(root: testRoot)
+        try FileManager.default.createDirectory(at: paths.audioCaptures, withIntermediateDirectories: true)
+        let goneURL = paths.audioCaptures.appendingPathComponent("gone-mic.wav")
+        let keptURL = paths.audioCaptures.appendingPathComponent("kept-mic.wav")
+        FileManager.default.createFile(atPath: goneURL.path, contents: Data("owned".utf8))
+        FileManager.default.createFile(atPath: keptURL.path, contents: Data("owned".utf8))
+
+        let manager = FailedTranscriptionManager(paths: paths)
+        let goneID = UUID()
+        let keptID = UUID()
+        XCTAssertTrue(manager.addFailedTranscription(id: goneID, micAudioURL: goneURL, systemAudioURL: nil, errorMessage: "Temporary failure"))
+        XCTAssertTrue(manager.addFailedTranscription(id: keptID, micAudioURL: keptURL, systemAudioURL: nil, errorMessage: "Temporary failure"))
+        let old = Date(timeIntervalSinceNow: -400 * 24 * 60 * 60)
+        manager.failedTranscriptions = manager.failedTranscriptions.map {
+            FailedTranscription(
+                id: $0.id,
+                timestamp: old,
+                micAudioURL: $0.micAudioURL,
+                systemAudioURL: $0.systemAudioURL,
+                errorMessage: $0.errorMessage
+            )
+        }
+        try FileManager.default.removeItem(at: goneURL)
+
+        manager.cleanupOldFailedTranscriptions(olderThanDays: 7)
+
+        XCTAssertEqual(manager.failedTranscriptions.map(\.id), [keptID], "a dead row ages out; a row with audio never does")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keptURL.path))
     }
 
     func testDeleteRechecksJournalContainmentForMutatedInMemoryEntry() throws {
@@ -877,8 +911,8 @@ extension FailedTranscriptionManagerTests {
         )
         XCTAssertEqual(
             persistedAfterCleanup.map(\.id),
-            [pendingEntry.id],
-            "age cleanup must keep a pending-deletion row whose old library is offline"
+            [pendingEntry.id, staleEntry.id],
+            "age cleanup must keep every row whose old library is offline, pending deletion or not"
         )
         XCTAssertEqual(persistedAfterCleanup.first?.micAudioURL, pendingEntry.micAudioURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: pendingDeletionURL.path))
@@ -895,7 +929,7 @@ extension FailedTranscriptionManagerTests {
                 [FailedTranscription].self,
                 from: Data(contentsOf: paths.failedQueue)
             ).map(\.id),
-            [pendingEntry.id]
+            [pendingEntry.id, staleEntry.id]
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: pendingDeletionURL.path))
     }

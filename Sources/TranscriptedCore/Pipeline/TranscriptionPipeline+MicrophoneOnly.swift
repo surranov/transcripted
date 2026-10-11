@@ -71,7 +71,7 @@ extension Transcription {
                 var droppedSegments = 0
                 let existingProfiles = speakerDB.allSpeakers()
                 let micResult: MicChannelResult
-                let diarizationRun = await Self.diarizationRunDescriptor(of: diarization)
+                var diarizationRun: DiarizationRunDescriptor? = await Self.diarizationRunDescriptor(of: diarization)
                 do {
                     micResult = try await Self.processMicChannelWithDiarization(
                         samples: diarizationMicSamples,
@@ -87,6 +87,16 @@ extension Transcription {
                     // Empty, not broken: fall through to the last-chance pass.
                     AppLogger.transcription.info("Mic diarizer found no speech; deferring to the last-chance pass")
                     micResult = MicChannelResult(utterances: [], speakerContexts: [:], newlyCreatedProfileIds: [])
+                } catch let error where Self.shouldTranscribeWithoutDiarization(after: error) {
+                    // The diarizer broke (or a split-mode STT call did); that
+                    // costs speaker labels, not the meeting. Fall through to
+                    // the same last-chance pass, which silence-splits the mic
+                    // as one unnamed "You" and throws if STT itself is down.
+                    AppLogger.transcription.warning("Mic diarization failed; transcribing the mic without speaker labels", [
+                        "errorType": "\(type(of: error))"
+                    ])
+                    micResult = MicChannelResult(utterances: [], speakerContexts: [:], newlyCreatedProfileIds: [])
+                    diarizationRun = nil
                 }
                 var splitMicUtterances = micResult.utterances
                 var splitMicSpeakerContexts = micResult.speakerContexts

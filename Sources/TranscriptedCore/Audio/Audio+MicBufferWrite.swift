@@ -82,38 +82,36 @@ extension Audio {
             agcMaxGain: agc?.maxGain
         )
 
+        // Overflow here means the disk stalled for longer than the queue can
+        // hold (tens of seconds). Memory stays bounded by dropping this buffer;
+        // the recording goes on and the writer pads the gap with silence so the
+        // mic stays aligned with the system track. Stopping would cost the rest
+        // of a meeting that happens once.
         let retainedBytes = PCMBufferBackpressureGate.retainedByteCount(for: bufferForAsyncUse)
-        switch micAudioWriteBackpressure.admit(
+        let fileAdmission = micAudioWriteBackpressure.admitDroppingOnOverflow(
             bytes: retainedBytes,
+            frames: Int(bufferForAsyncUse.frameLength),
             generation: sessionGeneration
-        ) {
-        case .accepted:
-            break
-        case .firstOverflow:
-            AppLogger.audioMic.error("Mic audio write backlog exceeded memory limit", [
+        )
+        if fileAdmission == .closed { return }
+        if case .dropped(let startsBurst) = fileAdmission, startsBurst {
+            AppLogger.audioMic.error("Mic audio write backlog exceeded memory limit; dropping audio until the disk catches up", [
                 "limitBytes": "\(micAudioWriteBackpressure.byteLimit)"
             ])
-            surfaceMicWriteBackpressureAndStop(generation: sessionGeneration)
-            return
-        case .closed:
-            return
         }
 
+        // The dictation relay is a secondary consumer with its own bounded
+        // queue: when it falls behind, only its buffers are dropped.
         if let hostHandler = onMicPCMBuffer {
-            switch micHostPCMBufferFanout.enqueue(
+            let relayAdmission = micHostPCMBufferFanout.enqueue(
                 bufferForAsyncUse,
                 generation: sessionGeneration,
                 handler: hostHandler
-            ) {
-            case .accepted:
-                break
-            case .firstOverflow:
-                AppLogger.audioMic.error("Mic host fan-out backlog exceeded memory limit", [
+            )
+            if case .dropped(let startsBurst) = relayAdmission, startsBurst {
+                AppLogger.audioMic.warning("Mic host fan-out backlog exceeded memory limit; dropping relay audio, recording continues", [
                     "limitBytes": "\(micHostPCMBufferFanout.byteLimit)"
                 ])
-                surfaceMicWriteBackpressureAndStop(generation: sessionGeneration)
-            case .closed:
-                break
             }
         }
 
@@ -121,11 +119,16 @@ extension Audio {
             livePCMDelivery.enqueue(bufferForAsyncUse, source: .microphone, captureGeneration: sessionGeneration, handler: liveHandler)
         }
 
-        enqueueMicFileWrite(
-            bufferForAsyncUse,
-            retainedBytes: retainedBytes,
-            writeContext: writeContext
-        )
+        if fileAdmission == .accepted {
+            enqueueMicFileWrite(
+                bufferForAsyncUse,
+                retainedBytes: retainedBytes,
+                writeContext: writeContext,
+                // Audio dropped just before this buffer is padded just before
+                // its write, in arrival order.
+                gapBefore: micAudioWriteBackpressure.takePendingDroppedGap(generation: sessionGeneration)
+            )
+        }
     }
 
     /// `Audio.stop()` advances the recording generation right away, but the
@@ -163,7 +166,8 @@ extension Audio {
     private func enqueueMicFileWrite(
         _ bufferForAsyncUse: AVAudioPCMBuffer,
         retainedBytes: Int,
-        writeContext: MicPCMWriteContext
+        writeContext: MicPCMWriteContext,
+        gapBefore: PCMBufferBackpressureGate.DroppedGap = .none
     ) {
         let sessionGeneration = writeContext.generation
         let backpressure = micAudioWriteBackpressure
@@ -180,6 +184,7 @@ extension Audio {
                     by: sessionGeneration
                   ) else { return }
 
+            self.padDroppedAudio(gapBefore, generation: sessionGeneration, to: audioFile, source: .microphone)
             do {
                 if inputChannelCount > 1 {
                     guard let monoBuffer = self.manualDownmix(buffer: bufferForAsyncUse, to: monoFormat) else {
@@ -242,20 +247,25 @@ extension Audio {
         }
     }
 
-    private func surfaceMicWriteBackpressureAndStop(generation: UInt64) {
-        guard writeBackpressureStopAdmission.claim(generation: generation) else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self,
-                  self.recordingSessionGeneration == generation,
-                  self.isRecording else { return }
-            self.error = "Recording stopped \u{2014} Transcripted couldn't keep up while saving microphone audio. Your partial recording is preserved. Check the save location, then start a new recording."
-            self.stop()
-        }
+    func finalizeMicRecording(primaryURL: URL?, segments: [MicRecordingSegment]) -> URL? {
+        finalizeMicRecordingResult(primaryURL: primaryURL, segments: segments).url
     }
 
-    func finalizeMicRecording(primaryURL: URL?, segments: [MicRecordingSegment]) -> URL? {
-        guard let primaryURL else { return segments.last?.url }
-        guard segments.count > 1 else { return primaryURL }
+    /// The mic file Stop hands on. `mergeFailed` means merging the recovery
+    /// segments threw, so `url` is the primary file alone and the other
+    /// segments are still on disk; the journal records that so they are never
+    /// forgotten. (A merge that ran but skipped unreadable segments is not a
+    /// failure: its output holds every readable frame.)
+    struct MicFinalizationResult {
+        let url: URL?
+        let mergeFailed: Bool
+    }
+
+    func finalizeMicRecordingResult(primaryURL: URL?, segments: [MicRecordingSegment]) -> MicFinalizationResult {
+        guard let primaryURL else {
+            return MicFinalizationResult(url: segments.last?.url, mergeFailed: false)
+        }
+        guard segments.count > 1 else { return MicFinalizationResult(url: primaryURL, mergeFailed: false) }
 
         let mergeStart = Date()
         do {
@@ -282,14 +292,14 @@ extension Audio {
                 // source segments stay on disk for recovery.
                 AppLogger.audioMic.error("Merged mic recovery segments with degraded fidelity", context)
             }
-            return outcome.url
+            return MicFinalizationResult(url: outcome.url, mergeFailed: false)
         } catch {
             AppLogger.audioMic.error("Failed to merge mic recovery segments", [
                 "segments": "\(segments.count)",
                 "durationSeconds": String(format: "%.2f", Date().timeIntervalSince(mergeStart)),
                 "error": error.localizedDescription
             ])
-            return primaryURL
+            return MicFinalizationResult(url: primaryURL, mergeFailed: true)
         }
     }
 }

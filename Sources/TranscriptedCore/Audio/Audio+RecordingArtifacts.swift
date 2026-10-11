@@ -52,13 +52,14 @@ extension Audio {
                 disposition: .journalRecoveryOwned
             )
         }
-        let finalMicURL = finalizeMicRecording(primaryURL: primaryURL, segments: segments)
+        let finalMic = finalizeMicRecordingResult(primaryURL: primaryURL, segments: segments)
         recordingJournal.markFinalized(
-            finalMicURL: finalMicURL,
+            finalMicURL: finalMic.url,
+            micMergeFailed: finalMic.mergeFailed,
             session: finalization.journalSession
         )
         return StoppedMicRecordingFinalization(
-            micURL: finalMicURL,
+            micURL: finalMic.url,
             disposition: .finalized
         )
     }

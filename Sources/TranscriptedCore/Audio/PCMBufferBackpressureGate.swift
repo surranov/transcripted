@@ -6,14 +6,44 @@ import Synchronization
 ///
 /// Audio callbacks must never build an unlimited queue when disk or another
 /// consumer stalls. The gate accounts for retained bytes before a buffer is
-/// enqueued. The first overflow closes that recording generation; callers
-/// surface the failure and stop instead of silently saving incomplete audio.
+/// enqueued, so memory stays bounded either way. What happens on overflow
+/// depends on the admission call:
+/// - `admit` closes that recording generation at the first overflow, for
+///   callers that treat it as fatal;
+/// - `admitDroppingOnOverflow` drops just the buffer that doesn't fit and
+///   keeps admitting, counting the dropped frames so the writer can pad the
+///   gap with silence in its place. The meeting's recording uses this:
+///   a disk stall costs a bounded stretch of audio, never the whole meeting.
 final class PCMBufferBackpressureGate: @unchecked Sendable {
     enum Admission: Equatable {
         case accepted
         case firstOverflow
         case closed
     }
+
+    enum DroppingAdmission: Equatable {
+        case accepted
+        /// The buffer didn't fit and was not retained. `startsBurst` is true
+        /// for the first drop since the pending count was last taken, while
+        /// the recording's first `maxItemizedGaps` bursts are still being
+        /// reported, so a disk that hovers at the limit logs a handful of
+        /// lines, not one per buffer pair.
+        case dropped(startsBurst: Bool)
+        case closed
+    }
+
+    /// Audio dropped just before an admitted buffer, for that buffer's write
+    /// to pad. `isItemized` is false once the recording already reported
+    /// `maxItemizedGaps` gaps: the silence is still written, but the health
+    /// record and the log stop growing.
+    struct DroppedGap: Equatable {
+        let frames: Int
+        let isItemized: Bool
+
+        static let none = DroppedGap(frames: 0, isItemized: false)
+    }
+
+    static let maxItemizedGaps = 20
 
     private enum GenerationState: UInt64 {
         case closed = 0
@@ -33,6 +63,12 @@ final class PCMBufferBackpressureGate: @unchecked Sendable {
     // longer than the process can exist.
     private let generationState = Atomic<UInt64>(0)
     private let pendingBytes = Atomic<Int>(0)
+    // Frames dropped by `admitDroppingOnOverflow` and not yet padded by the
+    // writer, and every frame dropped since `begin`. Lock-free, because the
+    // producers are audio callbacks.
+    private let pendingDroppedFrames = Atomic<Int>(0)
+    private let totalDroppedFrames = Atomic<Int>(0)
+    private let takenGaps = Atomic<Int>(0)
 
     init(byteLimit: Int) {
         precondition(byteLimit > 0)
@@ -44,6 +80,9 @@ final class PCMBufferBackpressureGate: @unchecked Sendable {
             encoded(generation: generation, state: .open),
             ordering: .releasing
         )
+        pendingDroppedFrames.store(0, ordering: .releasing)
+        totalDroppedFrames.store(0, ordering: .releasing)
+        takenGaps.store(0, ordering: .releasing)
     }
 
     /// Keeps `generation` admitting its already-captured tail after Stop.
@@ -115,6 +154,63 @@ final class PCMBufferBackpressureGate: @unchecked Sendable {
         }
     }
 
+    /// Like `admit`, but a buffer that doesn't fit is dropped and counted
+    /// instead of failing the generation: the next buffer is admitted again as
+    /// soon as the writer has made room. `frames` is what the dropped buffer
+    /// held, so the writer can pad the gap.
+    func admitDroppingOnOverflow(bytes: Int, frames: Int, generation: UInt64) -> DroppingAdmission {
+        guard bytes > 0 else { return .closed }
+        guard isAdmitting(generationState.load(ordering: .acquiring), generation: generation) else {
+            return .closed
+        }
+
+        var observedBytes = pendingBytes.load(ordering: .relaxed)
+        while true {
+            guard bytes <= byteLimit, observedBytes <= byteLimit - bytes else {
+                let before = pendingDroppedFrames.wrappingAdd(max(0, frames), ordering: .acquiringAndReleasing).oldValue
+                totalDroppedFrames.wrappingAdd(max(0, frames), ordering: .relaxed)
+                return .dropped(startsBurst: before == 0 && takenGaps.load(ordering: .relaxed) < Self.maxItemizedGaps)
+            }
+            let result = pendingBytes.compareExchange(
+                expected: observedBytes,
+                desired: observedBytes + bytes,
+                ordering: .acquiringAndReleasing
+            )
+            if result.exchanged {
+                // Stop may have won while this reservation was in flight.
+                guard isAdmitting(
+                    generationState.load(ordering: .acquiring),
+                    generation: generation
+                ) else {
+                    release(bytes: bytes)
+                    return .closed
+                }
+                return .accepted
+            }
+            observedBytes = result.original
+        }
+    }
+
+    /// The audio dropped since the last call. The producer takes it when it
+    /// admits the next buffer and hands it to that buffer's write, so the
+    /// writer pads the gap in arrival order, after anything still queued
+    /// ahead of it. `.none` when `generation` is no longer the gate's, so a
+    /// late call from a finished recording can't take (or pad into) its
+    /// successor's gap.
+    func takePendingDroppedGap(generation: UInt64) -> DroppedGap {
+        guard decodedGeneration(of: generationState.load(ordering: .acquiring)) == generation else {
+            return .none
+        }
+        let frames = pendingDroppedFrames.exchange(0, ordering: .acquiringAndReleasing)
+        guard frames > 0 else { return .none }
+        let alreadyTaken = takenGaps.wrappingAdd(1, ordering: .acquiringAndReleasing).oldValue
+        return DroppedGap(frames: frames, isItemized: alreadyTaken < Self.maxItemizedGaps)
+    }
+
+    var totalDroppedFramesForTesting: Int {
+        totalDroppedFrames.load(ordering: .acquiring)
+    }
+
     func release(bytes: Int) {
         guard bytes > 0 else { return }
         var observed = pendingBytes.load(ordering: .relaxed)
@@ -178,68 +274,15 @@ final class PCMBufferBackpressureGate: @unchecked Sendable {
     }
 }
 
-/// Allows at most one overflow-triggered stop request for a recording.
-///
-/// Mic and system callbacks run on different queues, so both streams can hit
-/// their independent byte limits before the main queue processes either stop.
-/// This tiny generation gate keeps that race from running `Audio.stop()` twice.
-final class PCMBackpressureStopAdmission: @unchecked Sendable {
-    private enum GenerationState: UInt64 {
-        case closed = 0
-        case open = 1
-        case claimed = 2
-    }
-
-    private let generationState = Atomic<UInt64>(0)
-
-    func begin(generation: UInt64) {
-        generationState.store(
-            encoded(generation: generation, state: .open),
-            ordering: .releasing
-        )
-    }
-
-    func claim(generation: UInt64) -> Bool {
-        generationState.compareExchange(
-            expected: encoded(generation: generation, state: .open),
-            desired: encoded(generation: generation, state: .claimed),
-            ordering: .acquiringAndReleasing
-        ).exchanged
-    }
-
-    func close(generation: UInt64) {
-        let closed = encoded(generation: generation, state: .closed)
-        var observed = generationState.load(ordering: .acquiring)
-        while decodedGeneration(of: observed) == generation {
-            let result = generationState.compareExchange(
-                expected: observed,
-                desired: closed,
-                ordering: .acquiringAndReleasing
-            )
-            if result.exchanged { return }
-            observed = result.original
-        }
-    }
-
-    private func encoded(
-        generation: UInt64,
-        state: GenerationState
-    ) -> UInt64 {
-        (generation &* 4) | state.rawValue
-    }
-
-    private func decodedGeneration(of encodedState: UInt64) -> UInt64 {
-        encodedState / 4
-    }
-}
-
 /// Dedicated bounded handoff for app-host mic consumers.
 ///
 /// File I/O and borrowed-mic dictation must not share a serial queue: a slow
 /// disk would delay otherwise-available dictation audio. This relay uses the
 /// same lock-free byte admission as file writes, then runs the host callback on
 /// its own queue. Stop can enqueue a tail barrier so every admitted callback is
-/// delivered before the host finalizes or clears its consumer.
+/// delivered before the host finalizes or clears its consumer. The host is a
+/// secondary consumer: when it falls behind, its own buffers are dropped
+/// (`.dropped`) and the recording is never affected.
 final class BoundedPCMBufferFanout: @unchecked Sendable {
     typealias Handler = (AVAudioPCMBuffer) -> Void
 
@@ -257,14 +300,16 @@ final class BoundedPCMBufferFanout: @unchecked Sendable {
         backpressure.begin(generation: generation)
     }
 
+    @discardableResult
     func enqueue(
         _ buffer: AVAudioPCMBuffer,
         generation: UInt64,
         handler: @escaping Handler
-    ) -> PCMBufferBackpressureGate.Admission {
+    ) -> PCMBufferBackpressureGate.DroppingAdmission {
         let retainedBytes = PCMBufferBackpressureGate.retainedByteCount(for: buffer)
-        let admission = backpressure.admit(
+        let admission = backpressure.admitDroppingOnOverflow(
             bytes: retainedBytes,
+            frames: Int(buffer.frameLength),
             generation: generation
         )
         guard admission == .accepted else { return admission }

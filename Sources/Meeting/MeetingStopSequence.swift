@@ -115,3 +115,39 @@ enum MeetingStopSequence {
         return .continueToTranscription
     }
 }
+
+/// A manual Stop that lands after the capture already stopped itself (disk
+/// guard, device give-up) but before that stop finished writing its files.
+///
+/// `audio.isRecording` flips false at the very start of any stop, long before
+/// the WAV headers are patched and the mic recovery segments are merged. A
+/// Stop that trusted it returned the current URLs at once, so transcription
+/// could start on an unfinalized file or the first segment only, while the
+/// finalization that was still running was dropped as "not unexpected any
+/// more". Instead the Stop adopts the stop already in flight and waits for its
+/// real completion.
+enum MeetingStopAdoptionPolicy {
+    /// The stop generation to wait for, or nil when no stop is in flight.
+    /// - `recordingGeneration`: the generation the bridge saw when its
+    ///   recording started (nil when none has).
+    /// - `settledStopGeneration`: the newest stop whose outcome already has an
+    ///   owner: its completion was handled, or its wait timed out and the
+    ///   timed-out registry owns the late completion.
+    /// Every stop moves the capture to a new generation, so a stopped capture
+    /// whose generation is past the recording's, and whose stop is not yet
+    /// settled, is a stop still finalizing.
+    static func stopGenerationToAdopt(
+        audioIsRecording: Bool,
+        currentGeneration: UInt64,
+        recordingGeneration: UInt64?,
+        settledStopGeneration: UInt64?
+    ) -> UInt64? {
+        guard !audioIsRecording,
+              let recordingGeneration,
+              currentGeneration != recordingGeneration else { return nil }
+        if let settledStopGeneration, settledStopGeneration >= currentGeneration {
+            return nil
+        }
+        return currentGeneration
+    }
+}

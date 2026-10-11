@@ -404,6 +404,7 @@ public class TranscriptSaver {
                 try markdown.write(to: fileURL, atomically: true, encoding: .utf8)
                 FileManager.default.restrictToOwnerOnly(atPath: fileURL.path)
                 replacementFileDates?.restore(to: fileURL)
+                makeTranscriptDurable(fileURL)
 
                 AppLogger.pipeline.info("Transcript saved", ["path": fileURL.path])
 
@@ -433,6 +434,23 @@ public class TranscriptSaver {
         }
 
         return savedURL
+    }
+
+    /// Flushes the finished transcript (and the directory entry that names it)
+    /// to the drive before the caller retires the recording journal and scratch
+    /// audio that could rebuild it. Runs on the pipeline's background thread.
+    /// A failed flush is logged, never fatal: the file is already written, and
+    /// failing the save here would strand a replaced transcript.
+    private static func makeTranscriptDurable(_ fileURL: URL) {
+        let durability = SavedFileDurability.current
+        let fileOutcome = durability.syncFile(at: fileURL)
+        let directoryOutcome = durability.syncDirectory(at: fileURL.deletingLastPathComponent())
+        if !fileOutcome.isSafeToRelyOn || !directoryOutcome.isSafeToRelyOn {
+            AppLogger.pipeline.error("Saved transcript could not be flushed to disk", [
+                "fileFlushed": "\(fileOutcome.isSafeToRelyOn)",
+                "directoryFlushed": "\(directoryOutcome.isSafeToRelyOn)"
+            ])
+        }
     }
 
     private struct ExistingFileDates {

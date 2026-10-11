@@ -20,22 +20,6 @@ final class PCMBufferBackpressureGateTests: XCTestCase {
         return buffer
     }
 
-    func testMicAndSystemOverflowCanClaimOnlyOneStopPerGeneration() {
-        let admission = PCMBackpressureStopAdmission()
-        admission.begin(generation: 41)
-
-        XCTAssertTrue(admission.claim(generation: 41))
-        for _ in 0..<100_000 {
-            XCTAssertFalse(admission.claim(generation: 41))
-        }
-
-        admission.begin(generation: 42)
-        XCTAssertFalse(admission.claim(generation: 41))
-        XCTAssertTrue(admission.claim(generation: 42))
-        admission.close(generation: 42)
-        XCTAssertFalse(admission.claim(generation: 42))
-    }
-
     func testBacklogNeverExceedsByteLimitAndOverflowTripsOnce() {
         let mebibyte = 1_024 * 1_024
         let gate = PCMBufferBackpressureGate(byteLimit: 8 * mebibyte)
@@ -163,6 +147,100 @@ final class PCMBufferBackpressureGateTests: XCTestCase {
         XCTAssertEqual(gate.pendingBytesForTesting, 8)
     }
 
+    // MARK: - Dropping admission (a disk stall must not end the recording)
+
+    func testOverflowDropsTheBufferAndKeepsAdmittingOnceThereIsRoom() {
+        let gate = PCMBufferBackpressureGate(byteLimit: 100)
+        gate.begin(generation: 3)
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 60, frames: 6, generation: 3), .accepted)
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 60, frames: 6, generation: 3), .dropped(startsBurst: true))
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 60, frames: 6, generation: 3), .dropped(startsBurst: false))
+        XCTAssertEqual(gate.pendingBytesForTesting, 60, "a dropped buffer reserves nothing")
+
+        gate.release(bytes: 60)
+        XCTAssertEqual(
+            gate.admitDroppingOnOverflow(bytes: 60, frames: 6, generation: 3),
+            .accepted,
+            "the generation is still open after an overflow; the writer catching up is enough"
+        )
+        XCTAssertEqual(gate.pendingBytesForTesting, 60)
+    }
+
+    func testDroppedFramesAreHandedToTheWriterOnceAndOnlyForTheirOwnGeneration() {
+        let gate = PCMBufferBackpressureGate(byteLimit: 10)
+        gate.begin(generation: 8)
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 100, frames: 25, generation: 8), .dropped(startsBurst: true))
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 100, frames: 5, generation: 8), .dropped(startsBurst: false))
+        XCTAssertEqual(gate.totalDroppedFramesForTesting, 30)
+
+        XCTAssertEqual(gate.takePendingDroppedGap(generation: 7), .none, "a stale caller must not take this recording's gap")
+        XCTAssertEqual(gate.takePendingDroppedGap(generation: 8), .init(frames: 30, isItemized: true))
+        XCTAssertEqual(gate.takePendingDroppedGap(generation: 8), .none, "a gap is handed out once")
+        XCTAssertEqual(gate.totalDroppedFramesForTesting, 30)
+
+        XCTAssertEqual(
+            gate.admitDroppingOnOverflow(bytes: 100, frames: 4, generation: 8),
+            .dropped(startsBurst: true),
+            "a new burst after the pad is logged again"
+        )
+
+        gate.begin(generation: 9)
+        XCTAssertEqual(gate.takePendingDroppedGap(generation: 9), .none, "a new recording starts with no gap")
+        XCTAssertEqual(gate.totalDroppedFramesForTesting, 0)
+    }
+
+    func testAGateThatHoversAtItsLimitReportsABoundedNumberOfGapsButPadsEveryFrame() {
+        // The disk is just slow enough that every other buffer is dropped.
+        let gate = PCMBufferBackpressureGate(byteLimit: 10)
+        gate.begin(generation: 2)
+        let limit = PCMBufferBackpressureGate.maxItemizedGaps
+        var itemized = 0
+        var padded = 0
+        var startsLogged = 0
+        for _ in 0..<(limit * 3) {
+            if case .dropped(let startsBurst) = gate.admitDroppingOnOverflow(bytes: 100, frames: 7, generation: 2), startsBurst {
+                startsLogged += 1
+            }
+            let gap = gate.takePendingDroppedGap(generation: 2)
+            padded += gap.frames
+            if gap.isItemized { itemized += 1 }
+        }
+
+        XCTAssertEqual(padded, limit * 3 * 7, "every dropped frame is still padded as silence")
+        XCTAssertEqual(itemized, limit, "health and log entries stop at the cap")
+        XCTAssertEqual(startsLogged, limit, "so do the lines logged from the audio callback")
+    }
+
+    func testDroppingAdmissionHonorsStopAndStaleGenerations() {
+        let gate = PCMBufferBackpressureGate(byteLimit: 100)
+        gate.begin(generation: 4)
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 1, frames: 1, generation: 3), .closed)
+        gate.beginFinishing(generation: 4)
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 10, frames: 1, generation: 4), .accepted, "the stop tail is still wanted")
+        gate.close(generation: 4)
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 10, frames: 1, generation: 4), .closed)
+        XCTAssertEqual(gate.admitDroppingOnOverflow(bytes: 0, frames: 0, generation: 4), .closed)
+        XCTAssertEqual(gate.pendingBytesForTesting, 10)
+    }
+
+    func testConcurrentDroppingAdmissionNeverExceedsTheByteLimitAndCountsEveryDrop() {
+        let gate = PCMBufferBackpressureGate(byteLimit: 128)
+        let accepted = Atomic<Int>(0)
+        gate.begin(generation: 21)
+
+        DispatchQueue.concurrentPerform(iterations: 10_000) { _ in
+            if gate.admitDroppingOnOverflow(bytes: 1, frames: 1, generation: 21) == .accepted {
+                _ = accepted.wrappingAdd(1, ordering: .relaxed)
+            }
+        }
+
+        let acceptedCount = accepted.load(ordering: .acquiring)
+        XCTAssertLessThanOrEqual(acceptedCount, 128)
+        XCTAssertEqual(gate.pendingBytesForTesting, acceptedCount)
+        XCTAssertEqual(gate.totalDroppedFramesForTesting, 10_000 - acceptedCount)
+        XCTAssertEqual(gate.takePendingDroppedGap(generation: 21).frames, 10_000 - acceptedCount)
+    }
+
     func testRetainedByteCountIncludesEveryChannelBuffer() throws {
         let format = try XCTUnwrap(
             AVAudioFormat(
@@ -205,7 +283,11 @@ final class PCMBufferBackpressureGateTests: XCTestCase {
         XCTAssertEqual(fanout.enqueue(buffer, generation: 9, handler: handler), .accepted)
         XCTAssertEqual(handlerStarted.wait(timeout: .now() + 1), .success)
         XCTAssertEqual(fanout.enqueue(buffer, generation: 9, handler: handler), .accepted)
-        XCTAssertEqual(fanout.enqueue(buffer, generation: 9, handler: handler), .firstOverflow)
+        XCTAssertEqual(
+            fanout.enqueue(buffer, generation: 9, handler: handler),
+            .dropped(startsBurst: true),
+            "a slow relay drops its own buffer; it must not fail the generation"
+        )
         XCTAssertEqual(fanout.pendingBytesForTesting, retainedBytes * 2)
 
         fanout.close(generation: 9) {
@@ -224,5 +306,40 @@ final class PCMBufferBackpressureGateTests: XCTestCase {
         XCTAssertEqual(handled.load(ordering: .acquiring), 2)
         XCTAssertEqual(fanout.pendingBytesForTesting, 0)
         XCTAssertEqual(fanout.enqueue(buffer, generation: 9, handler: handler), .closed)
+    }
+
+    func testSlowHostRelayDropsOnlyItsOwnBuffersAndResumesWhenItCatchesUp() throws {
+        let buffer = try makeMonoBuffer()
+        let retainedBytes = PCMBufferBackpressureGate.retainedByteCount(for: buffer)
+        let fanout = BoundedPCMBufferFanout(
+            label: "PCMBufferBackpressureGateTests.slow-relay",
+            byteLimit: retainedBytes
+        )
+        let handlerStarted = DispatchSemaphore(value: 0)
+        let releaseHandler = DispatchSemaphore(value: 0)
+        let handled = Atomic<Int>(0)
+        fanout.begin(generation: 11)
+        let handler: BoundedPCMBufferFanout.Handler = { _ in
+            _ = handled.wrappingAdd(1, ordering: .relaxed)
+            handlerStarted.signal()
+            _ = releaseHandler.wait(timeout: .now() + 2)
+        }
+
+        XCTAssertEqual(fanout.enqueue(buffer, generation: 11, handler: handler), .accepted)
+        XCTAssertEqual(handlerStarted.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(fanout.enqueue(buffer, generation: 11, handler: handler), .dropped(startsBurst: true))
+        XCTAssertEqual(fanout.enqueue(buffer, generation: 11, handler: handler), .dropped(startsBurst: false))
+
+        releaseHandler.signal()
+        let drained = DispatchSemaphore(value: 0)
+        fanout.flush { drained.signal() }
+        XCTAssertEqual(drained.wait(timeout: .now() + 1), .success)
+
+        XCTAssertEqual(fanout.enqueue(buffer, generation: 11, handler: handler), .accepted, "the relay recovers; the generation was never failed")
+        XCTAssertEqual(handlerStarted.wait(timeout: .now() + 1), .success)
+        releaseHandler.signal()
+        fanout.flush { drained.signal() }
+        XCTAssertEqual(drained.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(handled.load(ordering: .acquiring), 2, "dropped buffers are never delivered late")
     }
 }

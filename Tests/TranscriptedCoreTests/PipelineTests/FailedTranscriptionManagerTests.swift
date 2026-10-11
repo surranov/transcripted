@@ -1113,7 +1113,7 @@ final class FailedTranscriptionManagerTests: XCTestCase {
         XCTAssertTrue(persisted.isEmpty, "a deleted old library on a mounted disk is permanent, so the row is dropped")
     }
 
-    func testAgeCleanupPrunesOldRowsFromAnOfflineLibrary() throws {
+    func testAgeCleanupKeepsOldRowsFromAnOfflineLibrary() throws {
         let paths = makePaths(root: testRoot)
         let offlineArchiveDirectory = URL(fileURLWithPath: "/Volumes/Sweep Test Drive/old-library/meetings/audio/Failed_Budget_Sync_audio", isDirectory: true)
         let oldEntry = FailedTranscription(
@@ -1139,7 +1139,11 @@ final class FailedTranscriptionManagerTests: XCTestCase {
             [FailedTranscription].self,
             from: Data(contentsOf: paths.failedQueue)
         )
-        XCTAssertEqual(persisted.map(\.id), [recentEntry.id], "age cleanup prunes old offline-library rows too, keeping recent ones")
+        XCTAssertEqual(
+            persisted.map(\.id),
+            [oldEntry.id, recentEntry.id],
+            "the audio may be on a drive that comes back; age must not drop the only row that names it"
+        )
     }
 
     func testOfflineLibraryRowDoesNotBlockSavingAnotherRowsHeal() throws {

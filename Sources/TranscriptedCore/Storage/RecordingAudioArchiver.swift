@@ -7,12 +7,18 @@ struct RetainedRecordingAudio: Equatable {
 }
 
 enum RecordingAudioArchiver {
+    /// Copies the capture into `<transcript>_audio/` under `archiveRoot`. Each
+    /// copy is flushed to the drive before it counts as archived, and so are
+    /// the new directory entries, because the caller deletes the scratch
+    /// original once the copy is reported. A copy that can't be made durable
+    /// is reported as not archived, so its scratch original is kept.
     static func archive(
         micURL: URL?,
         systemURL: URL?,
         transcriptURL: URL,
         archiveRoot: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        durability: any FileDurability = SavedFileDurability.current
     ) throws -> RetainedRecordingAudio {
         guard micURL != nil || systemURL != nil else {
             throw CocoaError(.fileNoSuchFile)
@@ -36,7 +42,8 @@ enum RecordingAudioArchiver {
                 archivedMicURL = try copyAudioFile(
                     from: micURL,
                     to: directory.appendingPathComponent(micStem).appendingPathExtension(fileExtension(for: micURL)),
-                    fileManager: fileManager
+                    fileManager: fileManager,
+                    durability: durability
                 )
             } catch {
                 firstCopyError = error
@@ -53,7 +60,8 @@ enum RecordingAudioArchiver {
                 archivedSystemURL = try copyAudioFile(
                     from: systemURL,
                     to: directory.appendingPathComponent(systemStem).appendingPathExtension(fileExtension(for: systemURL)),
-                    fileManager: fileManager
+                    fileManager: fileManager,
+                    durability: durability
                 )
             } catch {
                 firstCopyError = firstCopyError ?? error
@@ -77,6 +85,14 @@ enum RecordingAudioArchiver {
             throw firstCopyError ?? CocoaError(.fileNoSuchFile)
         }
 
+        // The copies are durable; make the entries that name them durable too.
+        // A directory that can't be flushed is not fatal for a copy that was:
+        // the data is safe and the entry is journaled by the filesystem.
+        for entry in [directory, archiveRoot]
+        where !durability.syncDirectory(at: entry).isSafeToRelyOn {
+            AppLogger.pipeline.warning("Could not flush the retained audio folder entry to disk")
+        }
+
         return RetainedRecordingAudio(
             directory: directory,
             micURL: archivedMicURL,
@@ -87,11 +103,18 @@ enum RecordingAudioArchiver {
     private static func copyAudioFile(
         from sourceURL: URL,
         to destinationURL: URL,
-        fileManager: FileManager
+        fileManager: FileManager,
+        durability: any FileDurability
     ) throws -> URL {
         let finalURL = uniqueURL(for: destinationURL, fileManager: fileManager)
         try fileManager.copyItem(at: sourceURL, to: finalURL)
         fileManager.restrictToOwnerOnly(atPath: finalURL.path)
+        // `copyItem` only hands the bytes to the OS. The caller deletes the
+        // scratch original once this copy is reported, so the copy must be on
+        // the drive first; otherwise a power cut leaves neither.
+        guard durability.syncFile(at: finalURL).isSafeToRelyOn else {
+            throw CocoaError(.fileWriteUnknown)
+        }
         return finalURL
     }
 
