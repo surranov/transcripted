@@ -20,6 +20,11 @@ enum LabControlCommandName: String, CaseIterable {
     case status
     case startDictation = "start_dictation"
     case stopDictation = "stop_dictation"
+    /// Fork: a press of the hands-free dictation shortcut, routed like the
+    /// physical key (start, stop, or a start queued behind a finishing take).
+    /// A stop this way pastes, as the key does, so the command needs an
+    /// explicit `"paste": true`.
+    case pressDictationShortcut = "press_dictation_shortcut"
     case startMeeting = "start_meeting"
     case stopMeeting = "stop_meeting"
     case importAudio = "import_audio"
@@ -35,6 +40,7 @@ enum LabControlAction: Equatable {
     /// transcribed and saved, but nothing is pasted or auto-sent. Only an
     /// explicit `"paste": true` pastes.
     case stopDictation(paste: Bool)
+    case pressDictationShortcut
     case startMeeting
     case stopMeeting
     /// Absolute path to an existing audio/video file.
@@ -185,7 +191,7 @@ enum LabControlCommandParser {
 
         let allowedKeys: Set<String>
         switch name {
-        case .stopDictation:
+        case .stopDictation, .pressDictationShortcut:
             allowedKeys = ["paste"]
         case .importAudio:
             allowedKeys = ["path"]
@@ -216,6 +222,10 @@ enum LabControlCommandParser {
             return .success(.startMeeting)
         case .stopMeeting:
             return .success(.stopMeeting)
+        case .pressDictationShortcut:
+            // The key's stop pastes into the frontmost app: only when asked.
+            guard let rawPaste = args["paste"], jsonBool(rawPaste) == true else { return reject("paste_required") }
+            return .success(.pressDictationShortcut)
         case .importAudio:
             guard let rawPath = args["path"] else { return reject("missing_arg:path") }
             guard let path = rawPath as? String,

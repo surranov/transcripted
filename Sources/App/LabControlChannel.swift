@@ -394,6 +394,12 @@ final class LabControlChannel {
             appDelegate.sessionController.stopDictationAndPaste(trigger: .menu, autoPaste: paste)
             return .success(nil)
 
+        case .pressDictationShortcut:
+            // Fork: the hands-free shortcut's own routing, so a press while a
+            // take finishes queues (and pastes on stop) as the real key does.
+            appDelegate.appState.contextCapture.routeHandsFreeToggle(sourceApp: NSWorkspace.shared.frontmostApplication)
+            return .success(statusSnapshot(appDelegate))
+
         case .startMeeting:
             if let rejection = LabControlMeetingPolicy.startRejection(meetingSession.state) {
                 return .failure(rejection)

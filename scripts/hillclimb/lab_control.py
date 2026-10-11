@@ -73,6 +73,7 @@ COMMANDS = (
     "status",
     "start_dictation",
     "stop_dictation",
+    "press_dictation_shortcut",
     "start_meeting",
     "stop_meeting",
     "import_audio",
@@ -254,8 +255,10 @@ def send_args(command: str, raw_args: str | None, paste: bool) -> dict[str, Any]
     args = parse_args_json(raw_args)
     check_paste(args, allow_paste=False)
     if paste:
-        if command != "stop_dictation":
-            raise LabControlError("--paste only applies to stop_dictation")
+        # press_dictation_shortcut (fork) stops a take the way the key does,
+        # which pastes, so it needs the same explicit --paste.
+        if command not in ("stop_dictation", "press_dictation_shortcut"):
+            raise LabControlError("--paste only applies to stop_dictation and press_dictation_shortcut")
         args["paste"] = True
     return args
 

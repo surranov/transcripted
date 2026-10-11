@@ -20,7 +20,9 @@ func testLabControlCommand() {
         assertEqual(labParse(#"{"id":"a6","command":"start_meeting"}"#), .success(LabControlRequest(id: "a6", commandName: "start_meeting", action: .startMeeting)))
         assertEqual(labParse(#"{"id":"a7","command":"stop_meeting"}"#), .success(LabControlRequest(id: "a7", commandName: "stop_meeting", action: .stopMeeting)))
         assertEqual(labParse(#"{"id":"a8","command":"import_audio","args":{"path":"/tmp/x.wav"}}"#), .success(LabControlRequest(id: "a8", commandName: "import_audio", action: .importAudio(path: "/tmp/x.wav"))))
-        assertEqual(LabControlCommandName.allCases.count, 7, "adding a command means adding a parse case and a doc row")
+        assertEqual(labParse(#"{"id":"a9","command":"press_dictation_shortcut","args":{"paste":true}}"#), .success(LabControlRequest(id: "a9", commandName: "press_dictation_shortcut", action: .pressDictationShortcut)), "fork: the hands-free key's routing")
+        assertEqual(labParseError(#"{"id":"a10","command":"press_dictation_shortcut"}"#)?.error, "paste_required", "its stop pastes like the key, so only on an explicit paste")
+        assertEqual(LabControlCommandName.allCases.count, 8, "adding a command means adding a parse case and a doc row")
     }
 
     runSuite("LabControl rejects bad files without losing the id") {
