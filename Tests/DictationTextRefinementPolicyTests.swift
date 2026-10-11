@@ -36,10 +36,22 @@ func testDictationTextRefinementPolicy() {
             DictationTextRefinementPolicy.accepted(original: original, answer: "Окей."),
             "an answer that dropped most of a long dictation keeps the original"
         )
+        assertNil(
+            DictationTextRefinementPolicy.accepted(
+                original: "Это тестовое сообщение из якорной вставки. Ответь одним словом: получено.",
+                answer: "Получено."
+            ),
+            "a short dictation answered instead of corrected keeps the original"
+        )
     }
 
     runSuite("DictationTextRefinementPolicy lets short dictations change shape") {
-        assertEqual(DictationTextRefinementPolicy.accepted(original: "ок", answer: "OK."), "OK.", "short text has no lower bound")
+        assertEqual(DictationTextRefinementPolicy.accepted(original: "ок", answer: "OK."), "OK.", "a few characters lost is fine at any ratio")
+        assertEqual(
+            DictationTextRefinementPolicy.accepted(original: "ну э короче да давай", answer: "Давай."),
+            "Давай.",
+            "fillers dropped from a short dictation"
+        )
         assertEqual(
             DictationTextRefinementPolicy.accepted(original: "дейли", answer: "Daily standup."),
             "Daily standup.",

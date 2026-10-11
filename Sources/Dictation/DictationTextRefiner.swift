@@ -44,12 +44,17 @@ enum DictationTextRefinementSkip: String, Equatable, Sendable {
 /// token limit. Pasting that would silently lose what the user said, so an
 /// answer far off the original's length is rejected and the original is pasted.
 /// The bounds are loose on purpose: on the owner's 32 reference dictations the
-/// accepted answers ran 0.89–1.10 of the original's length.
+/// accepted answers ran 0.89–1.10 of the original's length. A short dictation
+/// that asks for a reply ("ответь одним словом: получено") gets the reply back
+/// just as a long one does, so the lower bound holds for short text too, once
+/// more than a few words are gone.
 enum DictationTextRefinementPolicy {
     static let minimumLengthRatio = 0.4
     static let maximumLengthRatio = 2.0
-    /// Short dictations swing more in relative terms ("ок" → "OK.").
-    static let shortTextCharacters = 80
+    /// Short dictations swing more in relative terms ("ок" → "OK.", fillers
+    /// dropped from "ну э короче давай"): losing this many characters is
+    /// fine at any ratio.
+    static let maximumDroppedCharacters = 24
     static let maximumAddedCharacters = 80
 
     static let transcriptOpenTag = "<TRANSCRIPTION-START>"
@@ -68,7 +73,7 @@ enum DictationTextRefinementPolicy {
         if Double(answerCount) > Double(originalCount) * maximumLengthRatio + Double(maximumAddedCharacters) {
             return nil
         }
-        if originalCount >= shortTextCharacters,
+        if originalCount - answerCount > maximumDroppedCharacters,
            Double(answerCount) < Double(originalCount) * minimumLengthRatio {
             return nil
         }
