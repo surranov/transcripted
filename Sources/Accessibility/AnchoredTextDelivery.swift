@@ -74,7 +74,9 @@ enum AnchoredTextDelivery {
             selection: selection,
             textBefore: textBefore,
             textAfter: textAfter,
-            caretRect: field.flatMap { caretRect(of: $0, selection: selection) },
+            caretRect: field.flatMap {
+                caretRect(of: $0, selection: selection, characterBefore: textBefore.last, textIsKnown: value != nil)
+            },
             windowFrame: windowID.flatMap { windowState($0)?.frame },
             isTerminal: isTerminal,
             capturedAt: Date()
@@ -327,21 +329,40 @@ enum AnchoredTextDelivery {
         return nil
     }
 
-    private static func caretRect(of field: AXUIElement, selection: NSRange?) -> CGRect? {
+    /// The caret, in Accessibility coordinates. Cocoa text views (TextEdit)
+    /// report a zero-length range one line too high (the rect is shifted up
+    /// by its own height), so with the text known the caret is the previous
+    /// character's right edge, or after a line break the next character's
+    /// left edge, where the caret starts that line. A zero-length range is
+    /// the last resort (an empty field, the end after a line break), and the
+    /// first try only when the field's text can't be read.
+    private static func caretRect(of field: AXUIElement, selection: NSRange?, characterBefore: Character?, textIsKnown: Bool) -> CGRect? {
         if let selection {
-            for range in [NSRange(location: selection.location, length: 0), NSRange(location: max(0, selection.location - 1), length: 1)] {
-                var cfRange = CFRange(location: range.location, length: range.length)
-                guard let rangeValue = AXValueCreate(.cfRange, &cfRange) else { continue }
-                var boundsValue: AnyObject?
-                if AXUIElementCopyParameterizedAttributeValue(field, kAXBoundsForRangeParameterizedAttribute as CFString, rangeValue, &boundsValue) == .success,
-                   let boundsValue, CFGetTypeID(boundsValue) == AXValueGetTypeID() {
-                    var rect = CGRect.zero
-                    AXValueGetValue(boundsValue as! AXValue, .cgRect, &rect)
-                    if rect.height > 0, rect.origin != .zero {
-                        if range.length == 1 { rect = CGRect(x: rect.maxX, y: rect.minY, width: 1, height: rect.height) }
-                        return rect
+            let location = selection.location
+            let previous = location > 0 ? bounds(of: field, NSRange(location: location - 1, length: 1)) : nil
+            let atCaret = bounds(of: field, NSRange(location: location, length: 0))
+            if textIsKnown {
+                if let before = characterBefore, !before.isNewline, let previous {
+                    // A soft wrap: the caret is drawn where the next line starts.
+                    if before.isWhitespace, let next = bounds(of: field, NSRange(location: location, length: 1)),
+                       next.minY >= previous.maxY - 1 {
+                        return CGRect(x: next.minX, y: next.minY, width: 1, height: next.height)
                     }
+                    return CGRect(x: previous.maxX, y: previous.minY, width: 1, height: previous.height)
                 }
+                if let next = bounds(of: field, NSRange(location: location, length: 1)) {
+                    return CGRect(x: next.minX, y: next.minY, width: 1, height: next.height)
+                }
+                if var atCaret {
+                    // After a line break the caret is on the line below it.
+                    if characterBefore?.isNewline == true, let lineBreak = previous, atCaret.minY < lineBreak.maxY - 1 {
+                        atCaret.origin.y = lineBreak.maxY
+                    }
+                    return atCaret
+                }
+            } else {
+                if let atCaret { return atCaret }
+                if let previous { return CGRect(x: previous.maxX, y: previous.minY, width: 1, height: previous.height) }
             }
         }
         var position: AnyObject?
@@ -355,6 +376,19 @@ enum AnchoredTextDelivery {
         AXValueGetValue(size as! AXValue, .cgSize, &extent)
         // A tall editor without caret bounds: mark its first line.
         return CGRect(x: origin.x + 8, y: origin.y + 6, width: 1, height: min(extent.height, 22))
+    }
+
+    /// A range's bounds; nil when the field has none for it (an error, or the
+    /// empty rect some fields return instead).
+    private static func bounds(of field: AXUIElement, _ range: NSRange) -> CGRect? {
+        var cfRange = CFRange(location: range.location, length: range.length)
+        guard let rangeValue = AXValueCreate(.cfRange, &cfRange) else { return nil }
+        var boundsValue: AnyObject?
+        guard AXUIElementCopyParameterizedAttributeValue(field, kAXBoundsForRangeParameterizedAttribute as CFString, rangeValue, &boundsValue) == .success,
+              let boundsValue, CFGetTypeID(boundsValue) == AXValueGetTypeID() else { return nil }
+        var rect = CGRect.zero
+        AXValueGetValue(boundsValue as! AXValue, .cgRect, &rect)
+        return rect.height > 0 && rect.origin != .zero ? rect : nil
     }
 
     private static func windowID(of window: AXUIElement) -> CGWindowID? {
