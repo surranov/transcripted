@@ -4,28 +4,107 @@
 import AppKit
 
 extension DictationSessionController {
-    /// Launch: delete short dictation audio left from an earlier run. A saved
-    /// recording is only offered while its own take's message is up, so a
-    /// short leftover is private audio nobody will ask for. One of 30 s or
-    /// more stays on disk with no prompt. Runs off the main actor; files
-    /// written after this call (this run's takes) are kept.
+    /// Launch (fork): recover dictation audio an earlier run left behind
+    /// instead of deleting it (upstream deleted the short ones). Takes a
+    /// month old that still couldn't be recovered are deleted first; the rest
+    /// are transcribed again once the voice model is free and saved to
+    /// Dictations, dated when they were spoken (`DictationLeftoverRecovery`).
+    /// File work runs off the main actor. This run's takes are newer than
+    /// the launch time and are never touched.
     /// Skipped for a second copy run with the single-instance guard off: the
     /// first copy may be offering one of these files right now.
-    func purgeLeftoverStoppedAudio() {
-        let logger = appState?.logger
+    func recoverLeftoverStoppedAudio() {
+        guard let appState else { return }
+        let logger = appState.logger
         guard !SingleInstanceGuard.isDisabledByEnvironment else {
-            logger?.log("DICTATION | leftover saved recordings kept: single-instance guard is off")
+            logger.log("DICTATION | leftover saved recordings kept: single-instance guard is off")
             return
         }
-        let cutoff = Date()
-        let purge = Task.detached(priority: .utility) {
-            DictationStoppedAudioRecoveryStore.purgeLeftovers(createdBefore: cutoff)
+        let launchedAt = Date()
+        Task { @MainActor [weak self] in
+            let expired = await Task.detached(priority: .utility) {
+                DictationStoppedAudioRecoveryStore.purgeLeftovers(
+                    createdBefore: launchedAt.addingTimeInterval(-DictationLeftoverRecovery.maximumAge),
+                    onlyShortTakes: false
+                )
+            }.value
+            if expired > 0 {
+                logger.log("DICTATION | removed \(expired) saved recording(s) a month old that couldn't be recovered")
+            }
+            let pending = await Task.detached(priority: .utility) {
+                DictationLeftoverRecovery.earlierRuns(
+                    DictationStoppedAudioRecoveryStore.pendingRecoveries(limit: Int.max),
+                    launchedAt: launchedAt
+                )
+            }.value
+            guard !pending.isEmpty, let self else { return }
+            logger.log("DICTATION | recovering \(pending.count) saved recording(s) left from an earlier run")
+            let summary = await self.runLeftoverRecovery(pending, appState: appState)
+            logger.log(
+                "DICTATION | leftover recovery: \(summary.recovered) saved, \(summary.noWords) without words, "
+                    + "\(summary.failed) not recovered (kept for the next launch)"
+            )
         }
-        Task { @MainActor in
-            let removed = await purge.value
-            guard removed > 0 else { return }
-            logger?.log("DICTATION | removed \(removed) short saved recording(s) left from an earlier run")
+    }
+
+    private func runLeftoverRecovery(
+        _ pending: [DictationStoppedAudioRecovery],
+        appState: TranscriptedAppState
+    ) async -> DictationLeftoverRecovery.Summary {
+        let refiner: any DictationTextRefiner = appState.transcriptLLM
+        let sttRouter = appState.sttRouter
+        return await DictationLeftoverRecovery.run(DictationLeftoverRecovery.Steps(
+            pending: { pending },
+            loadSamples: { url in
+                try await Task.detached(priority: .utility) {
+                    try DictationRetranscription.loadSamples16k(from: url)
+                }.value
+            },
+            transcribe: { samples in
+                // Never compete with the user's own takes.
+                guard await Self.waitUntilVoiceModelIsFree(sttRouter) else { throw CancellationError() }
+                return try await sttRouter.transcribeSavedDictation(samples: samples)
+            },
+            clean: { raw in
+                DictationRetranscription.cleanedText(raw, cleanupEnabled: DictationCleanupPreferences.isEnabled())
+            },
+            refine: { text in
+                await DictationLeftoverRecovery.refineWhenReady(text) { await refiner.refine($0) }
+            },
+            save: { recovery, text in
+                let keepWindow = AudioStoragePreferences.dictationAudioKeepWindow()
+                let result = await Task.detached(priority: .utility) {
+                    DictationStoppedAudioRecoveryStore.saveTranscriptAndRetire(
+                        recovery: recovery,
+                        keepWindow: keepWindow
+                    ) { audioRelativePath in
+                        try DictationTranscriptWriter.save(
+                            text: text,
+                            sourceAppName: DictationLeftoverRecovery.sourceAppName,
+                            sourceBundleID: nil,
+                            delivery: .savedWithoutPaste,
+                            createdAt: recovery.createdAt,
+                            audioRelativePath: audioRelativePath
+                        )
+                    }
+                }.value
+                return result.saved != nil
+            }
+        ))
+    }
+
+    /// Waits (up to ten minutes) until no take records or transcribes. A
+    /// recovery that can't get the model in that time waits for the next
+    /// launch.
+    private static func waitUntilVoiceModelIsFree(_ sttRouter: STTRouter) async -> Bool {
+        for _ in 0..<600 {
+            if Task.isCancelled { return false }
+            if !sttRouter.isRecording, !sttRouter.isTranscribing, !sttRouter.isTranscribingSavedDictation {
+                return true
+            }
+            try? await Task.sleep(for: .seconds(1))
         }
+        return false
     }
 
     /// The button on a message about a long take's saved recording. The
@@ -142,6 +221,9 @@ extension DictationSessionController {
         let interruptedSessionID = currentDictationSessionID
         let interruptedCheckpointSignal = stoppedAudioCheckpointSignal
         cancelActiveTasks(cancelRecording: plan.cancelRecording)
+        // Fork: whatever reached the spool stays for the next launch, even if
+        // the audio in memory is gone.
+        endRecordingSpool(keepingAudio: true)
         isDictating = false
         appState?.runtimeDiagnostics.clearSession(kind: "dictation", outcome: "interrupted")
         appState?.logger.log("DICTATION | interrupted")
@@ -158,52 +240,61 @@ extension DictationSessionController {
                 ]
             )
         )
-        overlayController?.showError(
-            plan.message,
-            actionTitle: plan.actionTitle,
-            action: { [weak self] in
-                guard let self else { return }
-                switch plan.action {
-                case .transcribeCapturedAudio(let autoPaste):
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        // An interrupted stop may still be awaiting a detached
-                        // WAV write/cleanup. Readmit only after its owner exits,
-                        // so an explicit retry cannot share that file mid-write.
-                        _ = await DictationInterruptedAudioReadmission.run(DictationInterruptedAudioReadmission.Steps(
-                            waitForInterruptedCheckpoint: { await interruptedCheckpointSignal?.wait() },
-                            stillOwnsRecording: {
-                                self.currentDictationSessionID == interruptedSessionID && !self.isDictating
-                            },
-                            hasRecoverableRecording: { self.appState?.sttRouter.hasRecoverableRecording == true },
-                            audioGone: {
-                                self.overlayController?.showError(
-                                    "The captured audio is no longer available. Start a new dictation.",
-                                    actionTitle: "Try Again",
-                                    action: { [weak self] in
-                                        guard let self else { return }
-                                        self.retryDictation(
-                                            sourceApp: self.sessionSourceApp,
-                                            anchorRect: self.sessionAnchorRect
-                                        )
-                                    }
-                                )
-                            },
-                            resetStopFence: { self.stopFinalizationGate.reset() },
-                            readmit: {
-                                // Not a microphone start: the App Nap label
-                                // already says "stop finalization".
-                                self.isDictating = true
-                                self.overlayController?.state = .listening
-                                self.overlayController?.markRetainedRecordingForEscape()
-                                self.stopDictationAndPaste(trigger: .unknown, autoPaste: autoPaste)
-                            }
-                        ))
-                    }
-                case .retryDictation:
-                    self.retryDictation(sourceApp: self.sessionSourceApp, anchorRect: self.sessionAnchorRect)
+        let runAction: () -> Void = { [weak self] in
+            guard let self else { return }
+            switch plan.action {
+            case .transcribeCapturedAudio(let autoPaste):
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // An interrupted stop may still be awaiting a detached
+                    // WAV write/cleanup. Readmit only after its owner exits,
+                    // so an explicit retry cannot share that file mid-write.
+                    _ = await DictationInterruptedAudioReadmission.run(DictationInterruptedAudioReadmission.Steps(
+                        waitForInterruptedCheckpoint: { await interruptedCheckpointSignal?.wait() },
+                        stillOwnsRecording: {
+                            self.currentDictationSessionID == interruptedSessionID && !self.isDictating
+                        },
+                        hasRecoverableRecording: { self.appState?.sttRouter.hasRecoverableRecording == true },
+                        audioGone: {
+                            self.overlayController?.showError(
+                                "The captured audio is no longer available. Start a new dictation.",
+                                actionTitle: "Try Again",
+                                action: { [weak self] in
+                                    guard let self else { return }
+                                    self.retryDictation(
+                                        sourceApp: self.sessionSourceApp,
+                                        anchorRect: self.sessionAnchorRect
+                                    )
+                                }
+                            )
+                        },
+                        resetStopFence: { self.stopFinalizationGate.reset() },
+                        readmit: {
+                            // Not a microphone start: the App Nap label
+                            // already says "stop finalization".
+                            self.isDictating = true
+                            self.overlayController?.state = .listening
+                            self.overlayController?.markRetainedRecordingForEscape()
+                            self.stopDictationAndPaste(trigger: .unknown, autoPaste: autoPaste)
+                        }
+                    ))
                 }
+            case .retryDictation:
+                self.retryDictation(sourceApp: self.sessionSourceApp, anchorRect: self.sessionAnchorRect)
             }
-        )
+        }
+        // Fork: captured audio is saved right away instead of waiting on the
+        // button. Upstream left it only in memory until the click; dismissing
+        // the message left memory audio with no WAV, which blocks the next take
+        // and Quit, and a force quit then lost it. This runs the button's own
+        // path: WAV checkpoint, transcription, then a save to Dictations
+        // without pasting (the focused app may have changed) and a Paste It
+        // notice.
+        if case .transcribeCapturedAudio = plan.action {
+            appState?.logger.log("DICTATION | interrupted: saving the captured audio now")
+            runAction()
+            return
+        }
+        overlayController?.showError(plan.message, actionTitle: plan.actionTitle, action: runAction)
     }
 }

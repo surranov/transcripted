@@ -148,7 +148,7 @@ enum DictationTranscriptWriter {
             audioRelativePath: audioRelativePath
         )
 
-        if hasExistingContent(at: url) {
+        if try hasExistingContent(at: url) {
             try appendSection(section, to: url)
         } else {
             let body = dayHeader + "\n\n" + section
@@ -215,10 +215,13 @@ enum DictationTranscriptWriter {
         """
     }
 
-    private static func hasExistingContent(at url: URL) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-              let size = values.fileSize else {
-            return false
+    /// Whether the day file already holds entries. Fail closed: a file that
+    /// exists but whose size can't be read throws, because answering "empty"
+    /// would let the fresh-file branch overwrite the whole day's entries.
+    static func hasExistingContent(at url: URL, fileManager: FileManager = .default) throws -> Bool {
+        guard fileManager.fileExists(atPath: url.path) else { return false }
+        guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+            throw CocoaError(.fileReadUnknown, userInfo: [NSURLErrorKey: url])
         }
         return size > 0
     }

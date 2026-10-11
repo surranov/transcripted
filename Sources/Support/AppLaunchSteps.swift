@@ -5,28 +5,30 @@
 /// The dictation side of launch. `DictationSessionController` conforms.
 @MainActor
 protocol AppLaunchDictationHost: AnyObject {
-    /// Deletes short (under 30 s) dictation audio saved by an earlier run (a
-    /// failed take, or one cut off by Quit or a crash) and keeps longer ones.
-    /// Launch never asks about any of it.
-    func purgeLeftoverStoppedAudio()
+    /// Recovers dictation audio saved by an earlier run (a failed take, or
+    /// one cut off by Quit or a crash): transcribes it and saves it to
+    /// Dictations, and deletes only month-old takes it couldn't recover
+    /// (fork; upstream deleted the short ones). Launch never asks about any
+    /// of it.
+    func recoverLeftoverStoppedAudio()
 }
 
 @MainActor
 enum AppLaunchSteps {
     enum Step: String, CaseIterable {
-        case leftoverStoppedAudioCleanup = "leftover_stopped_audio_cleanup"
+        case leftoverStoppedAudioRecovery = "leftover_stopped_audio_recovery"
     }
 
     /// Steps run after the dictation overlay is set up, in order.
-    static let afterOverlaySetup: [Step] = [.leftoverStoppedAudioCleanup]
+    static let afterOverlaySetup: [Step] = [.leftoverStoppedAudioRecovery]
 
     /// Runs `afterOverlaySetup` and returns the steps it ran.
     @discardableResult
     static func runAfterOverlaySetup(dictation: AppLaunchDictationHost) -> [Step] {
         for step in afterOverlaySetup {
             switch step {
-            case .leftoverStoppedAudioCleanup:
-                dictation.purgeLeftoverStoppedAudio()
+            case .leftoverStoppedAudioRecovery:
+                dictation.recoverLeftoverStoppedAudio()
             }
         }
         return afterOverlaySetup

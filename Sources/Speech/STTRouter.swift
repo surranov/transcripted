@@ -79,6 +79,13 @@ class STTRouter: ObservableObject {
 
     /// Sends a copy of this dictation's mic audio to the island's live
     /// preview, or stops (nil). Every model records through the same engine.
+    /// Fork: attaches the take's on-disk spool feed to both places a take's
+    /// audio arrives: the engine's own capture and a mic borrowed from a meeting.
+    func setDictationRecordingSpoolSink(_ sink: DictationPreviewSampleSink?) {
+        parakeetEngine.pendingSamplesLock.withLock { parakeetEngine.recordingSpoolSink = sink }
+        parakeetEngine.sharedMeetingMicRecorder.setSpoolSink(sink)
+    }
+
     func setDictationPreviewSink(_ sink: DictationPreviewSampleSink?) {
         parakeetEngine.pendingSamplesLock.withLock { parakeetEngine.previewSink = sink }
     }

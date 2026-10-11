@@ -12,19 +12,18 @@ import Foundation
 ///    and keep the audio in case the guess was wrong.
 /// 4. The audio is saved and the take was long (see
 ///    `DictationFailedTakePolicy`): say why and offer to transcribe it.
-/// 5. The audio is saved but the take was short: say why and drop the
-///    audio. Saying it again is quicker than any recovery. If the model never
-///    consumed the take, its audio is still in memory, and memory audio with
-///    no WAV blocks the next take and Quit
-///    (`DictationTerminationAdmissionPolicy`), so then the WAV stays (with no
-///    button) and the next launch's cleanup deletes it.
+/// 5. The audio is saved but the take was short: say why and keep the WAV
+///    (fork). Upstream dropped it ("saying it again is quicker"), but the
+///    words were said and the failure (a model that didn't load, audio that
+///    needed recovery) may not repeat: the next launch transcribes it again
+///    (`DictationLeftoverRecovery`).
 /// 6. Audio that needs recovery but has no saved WAV: offer the no-paste
 ///    checkpoint retry instead of calling it empty speech.
 /// 7. Otherwise: just say why.
 ///
-/// Nothing offers a recording after its message closes. Launch deletes a
-/// short one left from an earlier run and keeps a long one on disk quietly
-/// (`DictationStoppedAudioRecoveryStore.purgeLeftovers`).
+/// Nothing offers a recording after its message closes. The next launch
+/// transcribes what's left and saves it to Dictations
+/// (`DictationLeftoverRecovery`).
 enum DictationEmptyTranscriptPolicy {
     enum Action: Equatable {
         case closeLikeCancel
@@ -64,7 +63,7 @@ enum DictationEmptyTranscriptPolicy {
                 action = .offerSavedRecording
             } else {
                 action = .showMessage
-                discardsSavedRecording = DictationFailedTakePolicy.canDropSavedRecording(audioStillInMemory: audioStillInMemory)
+                discardsSavedRecording = false
             }
         } else if reason == .audioNeedsRecovery {
             action = .offerCheckpointRetry
@@ -79,11 +78,11 @@ enum DictationEmptyTranscriptPolicy {
     }
 }
 
-/// Whether a dictation that failed after its audio was saved keeps that
-/// audio. A short take is cheaper to say again than to recover, so its audio
-/// is dropped with the error. A long one is hard to repeat word for word, so
-/// its message offers Transcribe It (the meeting importer) while it is on
-/// screen.
+/// Which message a dictation that failed after its audio was saved gets. A
+/// long take is hard to repeat word for word, so its message offers
+/// Transcribe It (the meeting importer) while it is on screen. A short one
+/// gets a plain message; its audio stays too (fork) and the next launch
+/// transcribes it (`DictationLeftoverRecovery`).
 enum DictationFailedTakePolicy {
     /// In the field (60 days to 2026-10-04), 42 of 46 takes that came back
     /// empty over real audio were under 30 s.

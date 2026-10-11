@@ -101,6 +101,9 @@ class FloatingOverlayController {
     private var successTitle: String = "Pasted"
     /// Closure for Escape during active dictation overlay states.
     var onEscapeDuringSession: (() -> Void)?
+    /// Fork: set once a take's stop is admitted. Esc then keeps the take
+    /// (saved, not pasted), so it needs no "press again to discard" confirm.
+    var escapeKeepsTake = false
     var onStopListening: (() -> Void)?
     var onActionableMessageDiscarded: (() -> Void)?
     /// Every Esc during an active session, before the discard decision.
@@ -715,11 +718,15 @@ class FloatingOverlayController {
     private func updateEscapeCancelTracking() {
         switch state {
         case .listening:
+            // A retained recording readmitted to listening has no admitted
+            // stop yet: its Esc must ask before discarding again.
+            escapeKeepsTake = false
             if listeningStartedAt == nil {
                 listeningStartedAt = Self.escapeClockNow()
             }
         case .idle, .starting, .success:
             listeningStartedAt = nil
+            escapeKeepsTake = false
             clearEscapeConfirmation()
         case .loading, .drafting:
             // Stopping is an explicit "keep": a prompt from before the stop
@@ -740,7 +747,7 @@ class FloatingOverlayController {
         onEscapeKeyDuringSession?()
         let now = Self.escapeClockNow()
         let decision = DictationEscapeCancelPolicy.decision(
-            capturedSeconds: listeningStartedAt.map { now - $0 },
+            capturedSeconds: escapeKeepsTake ? nil : listeningStartedAt.map { now - $0 },
             secondsSinceFirstPress: escapeFirstPressAt.map { now - $0 }
         )
         switch decision {

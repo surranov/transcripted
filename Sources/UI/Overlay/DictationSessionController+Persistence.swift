@@ -6,12 +6,14 @@ import AppKit
 extension DictationSessionController {
     /// Finalize a dictation by saving it to the daily Markdown file without
     /// pasting into the focused app or auto-sending. Used by the 15-minute
-    /// session cap so a walked-away session is recovered instead of discarded.
+    /// session cap so a walked-away session is recovered instead of discarded,
+    /// and (fork) by Esc after an admitted stop, which declines only the paste.
     func finalizeWithoutPaste(
         text: String,
         appState: TranscriptedAppState,
         overlayController: FloatingOverlayController,
-        sessionID: UUID
+        sessionID: UUID,
+        reason: DictationSaveWithoutPasteReason = .sessionCap
     ) async {
         lastCompletedText = text
         let recovery = stoppedAudioRecovery
@@ -30,7 +32,12 @@ extension DictationSessionController {
         let saveFailureMessage = saveResult.failureMessage
         let wordCount = text.split(whereSeparator: \.isWhitespace).count
         let durationSeconds = CFAbsoluteTimeGetCurrent() - sessionStartTime
-        appState.logger.log("DICTATION | session cap reached, saved \(text.count) chars without pasting")
+        switch reason {
+        case .sessionCap:
+            appState.logger.log("DICTATION | session cap reached, saved \(text.count) chars without pasting")
+        case .escapeAfterStop:
+            appState.logger.log("DICTATION | Esc after stop, saved \(text.count) chars without pasting")
+        }
         DiagnosticsTrail.record(
             logger: appState.logger,
             level: saveFailureMessage == nil ? .info : .warning,

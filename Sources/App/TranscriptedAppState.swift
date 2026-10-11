@@ -19,6 +19,9 @@ class TranscriptedAppState: ObservableObject {
     let runtimeDiagnostics = RuntimeDiagnostics()
     /// Writing's autocomplete runtime. Idle until `initialize()` starts it.
     let writingController = WritingController()
+    /// Fork: the local LLM pass over dictations (`Sources/TranscriptLLM/`).
+    /// Idle until `initialize()` starts it.
+    let transcriptLLM = TranscriptLLMController()
 
     /// Meeting-mode pipeline (Lane B). Lazily instantiated so unit tests that
     /// don't exercise the meeting feature don't pay the construction cost.
@@ -142,6 +145,20 @@ class TranscriptedAppState: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 writingController.startIfEnabled { [weak self] message in self?.logger.log(message) }
+                transcriptLLM.start { [weak self] message in self?.logger.log(message) }
+                let logger = logger
+                let refiner = transcriptLLM
+                Task {
+                    await MeetingTranscriptLLMWorker.shared.configure(
+                        refiner: refiner,
+                        onTranscriptChanged: { url in
+                            Task { @MainActor in
+                                CaptureLibraryChangeBroadcaster.shared.noteArtifactsChanged(transcriptURLs: [url])
+                            }
+                        },
+                        log: { message in Task { @MainActor in logger.log(message) } }
+                    )
+                }
             }
         }
         logger.log("APP LAUNCHED | modes: dictation + meetings")
@@ -195,6 +212,7 @@ class TranscriptedAppState: ObservableObject {
     /// and restored here. ParakeetEngine handles its own wake via NSWorkspace observer.
     func handleSystemWake() async {
         writingController.handleSystemWake()
+        transcriptLLM.handleSystemWake()
         let result = await wakeRecoveryCoordinator.handleSystemWake {
             self.logger.log("WAKE | system wake detected — running recovery checks")
         }
@@ -241,6 +259,7 @@ class TranscriptedAppState: ObservableObject {
         audioStorageMaintenanceTask = nil
         sttRouter.cleanup()
         writingController.stop()
+        transcriptLLM.stop()
         contextCapture.unregisterHotkey()
         if let observer = promptsObserver {
             NotificationCenter.default.removeObserver(observer)

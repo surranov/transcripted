@@ -103,6 +103,7 @@ extension ParakeetEngine {
                 if self.firstAudioSampleAt == nil { self.firstAudioSampleAt = sampleArrivalTime }
                 self.pendingSamples.append(monoSamples, sampleRate: effectiveSampleRate)
                 self.previewSink?.append(monoSamples, sampleRate: effectiveSampleRate)
+                self.recordingSpoolSink?.append(monoSamples, sampleRate: effectiveSampleRate)
                 var droppedSeconds = 0.0
                 let capacitySeconds = Double(TranscriptedConstants.audioBufferCapacitySeconds)
                 if self.pendingSamples.totalDurationSeconds > capacitySeconds + 1 {

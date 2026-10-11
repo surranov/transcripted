@@ -46,9 +46,11 @@ enum LlamaRuntimeSnapshot: Equatable, Sendable {
     }
 }
 
-/// Owns the app's one llama-server child, health state, and restart policy.
+/// Owns one llama-server child, health state, and restart policy. Writing
+/// runs one; the fork's transcript LLM runs another with `.chat` flags.
 final class LlamaServerProcessHost: @unchecked Sendable {
     let port: Int
+    let profile: LlamaLaunchProfile
 
     var baseURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
     /// Rotated on every launch; every request to the helper carries it.
@@ -89,6 +91,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
     /// timer on the lifecycle queue) are seams for tests only.
     init(
         port: Int,
+        profile: LlamaLaunchProfile = .writingAutocomplete,
         modelFileProvider: @escaping @Sendable () -> VerifiedModelFile? = { nil },
         assetResolver: (@Sendable () -> Assets?)? = nil,
         portListeners: (@Sendable (Int) -> [Int32]?)? = nil,
@@ -96,6 +99,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
     ) {
         precondition((1...65_535).contains(port))
         self.port = port
+        self.profile = profile
         self.assetResolver = assetResolver ?? {
             Self.resolveAssets(modelFileProvider: modelFileProvider)
         }
@@ -227,7 +231,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
         guard let assets else {
             blockedBy = nil
             runtimeSnapshot = .failed(.assetsMissing)
-            DiagnosticsLog.shared.record("llama-server-unavailable", metadata: ["reason": "assets-missing"])
+            recordDiagnostics("llama-server-unavailable", metadata: ["reason": "assets-missing"])
             return
         }
         switch result {
@@ -250,7 +254,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
     }
 
     private func recordPortInUseAndRetry() {
-        DiagnosticsLog.shared.record("llama-server-unavailable", metadata: ["reason": "port-in-use"])
+        recordDiagnostics("llama-server-unavailable", metadata: ["reason": "port-in-use"])
         scheduleRestart(reason: .portInUse, wasHealthy: false, uptime: 0)
     }
 
@@ -259,7 +263,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
     private func launchPrepared(_ assets: Assets) {
         guard !stopped, process == nil else { return }
         guard let apiKey = accessKey.rotate() else {
-            DiagnosticsLog.shared.record("llama-server-unavailable", metadata: ["reason": "launch-failed"])
+            recordDiagnostics("llama-server-unavailable", metadata: ["reason": "launch-failed"])
             scheduleRestart(reason: .launchFailed, wasHealthy: false, uptime: 0)
             return
         }
@@ -268,7 +272,8 @@ final class LlamaServerProcessHost: @unchecked Sendable {
             port: port,
             apiKey: apiKey,
             inheritedEnvironment: ProcessInfo.processInfo.environment,
-            physicalMemoryBytes: physicalMemoryBytes
+            physicalMemoryBytes: physicalMemoryBytes,
+            profile: profile
         )
         let child = Process()
         child.executableURL = URL(fileURLWithPath: assets.binary)
@@ -284,14 +289,14 @@ final class LlamaServerProcessHost: @unchecked Sendable {
         do {
             try child.run()
         } catch {
-            DiagnosticsLog.shared.record("llama-server-unavailable", metadata: ["reason": "launch-failed"])
+            recordDiagnostics("llama-server-unavailable", metadata: ["reason": "launch-failed"])
             scheduleRestart(reason: .launchFailed, wasHealthy: false, uptime: 0)
             return
         }
         process = child
         runtimeSnapshot = .starting
         launchedAt = Date()
-        DiagnosticsLog.shared.record("llama-server-start", metadata: [:])
+        recordDiagnostics("llama-server-start", metadata: [:])
         pollHealth(of: child)
     }
 
@@ -327,10 +332,19 @@ final class LlamaServerProcessHost: @unchecked Sendable {
         port: Int,
         apiKey: String,
         inheritedEnvironment: [String: String],
-        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        profile: LlamaLaunchProfile = .writingAutocomplete
     ) -> LaunchConfiguration {
         var environment = inheritedEnvironment
         environment[LlamaServerAccessKey.environmentVariable] = apiKey
+        if case let .chat(contextTokens, slots, _) = profile {
+            return LaunchConfiguration(
+                arguments: LlamaLaunchProfile.chatArguments(
+                    model: model, port: port, contextTokens: contextTokens, slots: slots
+                ),
+                environment: environment
+            )
+        }
         let promptCache = promptCacheMiB(physicalMemoryBytes: physicalMemoryBytes)
             .map { ["--cache-ram", String($0)] } ?? []
         return LaunchConfiguration(
@@ -377,7 +391,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
         healthTask?.cancel()
         healthTask = nil
         let shouldRestart = !stopped
-        DiagnosticsLog.shared.record("llama-server-exit", metadata: ["willRestart": String(shouldRestart)])
+        recordDiagnostics("llama-server-exit", metadata: ["willRestart": String(shouldRestart)])
         if wasHealthy { readinessObserver?(false) }
         if shouldRestart { scheduleRestart(reason: reason, wasHealthy: wasHealthy, uptime: uptime) }
     }
@@ -443,7 +457,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
                         return .some(self.readinessObserver)
                     }
                     if let observer {
-                        DiagnosticsLog.shared.record("llama-server-healthy", metadata: [:])
+                        recordDiagnostics("llama-server-healthy", metadata: [:])
                         observer?(true)
                     }
                     return
@@ -459,10 +473,17 @@ final class LlamaServerProcessHost: @unchecked Sendable {
                 return true
             }
             guard timedOut else { return }
-            DiagnosticsLog.shared.record("llama-server-unavailable", metadata: ["reason": "health-timeout"])
+            recordDiagnostics("llama-server-unavailable", metadata: ["reason": "health-timeout"])
             Self.requestShutdown(child)
         }
         healthTask = task
+    }
+
+    /// Writing's lines stay as they were; the chat helper's carry its label.
+    private func recordDiagnostics(_ event: String, metadata: [String: String]) {
+        var metadata = metadata
+        if let label = profile.diagnosticsLabel { metadata["helper"] = label }
+        DiagnosticsLog.shared.record(event, metadata: metadata)
     }
 
     private func isCurrent(_ child: Process) -> Bool {
@@ -489,7 +510,7 @@ final class LlamaServerProcessHost: @unchecked Sendable {
             // runtime) — which the unit test cannot reach, since it can only
             // inspect itself, and which would otherwise gate every completion
             // to `.unavailable` with no visible cause anywhere.
-            DiagnosticsLog.shared.record("llama-server-unowned-listener", metadata: [:])
+            recordDiagnostics("llama-server-unowned-listener", metadata: [:])
         }
         return owns
     }

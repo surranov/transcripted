@@ -34,14 +34,17 @@ enum DictationRetranscription {
     }
 
     /// Decodes `audioURL`, transcribes it, cleans the text the way a live take
-    /// is cleaned, and rewrites the entry. Returns the rewrite result; the day
-    /// file is untouched when this throws.
+    /// is cleaned, runs it through `refine` (fork: the transcript LLM pass, so
+    /// a re-transcription doesn't replace a refined entry with raw text), and
+    /// rewrites the entry. Returns the rewrite result; the day file is
+    /// untouched when this throws.
     static func run(
         entry: SavedDictationEntry,
         audioURL: URL,
         cleanupEnabled: Bool,
         loadSamples: @escaping @Sendable (URL) throws -> [Float] = loadSamples16k,
-        transcribe: ([Float]) async throws -> String
+        transcribe: ([Float]) async throws -> String,
+        refine: (String) async -> String = { $0 }
     ) async throws -> DictationEntryTextRewrite.Result {
         guard let entryID = entry.entryID, !entryID.isEmpty else { throw Failure.missingEntryID }
         let samples: [Float]
@@ -55,8 +58,9 @@ enum DictationRetranscription {
         guard !samples.isEmpty else { throw Failure.unreadableAudio }
 
         let raw = try await transcribe(samples)
-        let text = cleanedText(raw, cleanupEnabled: cleanupEnabled)
-        guard !text.isEmpty else { throw Failure.noWords }
+        let cleaned = cleanedText(raw, cleanupEnabled: cleanupEnabled)
+        guard !cleaned.isEmpty else { throw Failure.noWords }
+        let text = await refine(cleaned)
 
         let url = entry.url
         let createdAt = entry.createdAt

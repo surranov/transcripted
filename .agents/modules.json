@@ -65,6 +65,12 @@
       "agentsDoc": "Sources/Writing/AGENTS.md"
     },
     {
+      "name": "TranscriptLLM",
+      "paths": ["Sources/TranscriptLLM"],
+      "mayDependOn": ["WritingRuntime", "Dictation", "Meeting", "Support"],
+      "agentsDoc": "Sources/TranscriptLLM/AGENTS.md"
+    },
+    {
       "name": "Capture",
       "paths": ["Sources/Capture"],
       "mayDependOn": ["UIOverlay", "Dictation", "Speech", "Support", "Observability"],
@@ -91,13 +97,13 @@
     {
       "name": "UISettings",
       "paths": ["Sources/UI/Settings"],
-      "mayDependOn": ["UIShared", "UIOverlay", "AppState", "Capture", "WritingBridge", "WritingCore", "WritingRuntime", "Meeting", "Dictation", "Speech", "Support", "Observability", "Core:core-vocab"],
+      "mayDependOn": ["UIShared", "UIOverlay", "AppState", "Capture", "WritingBridge", "TranscriptLLM", "WritingCore", "WritingRuntime", "Meeting", "Dictation", "Speech", "Support", "Observability", "Core:core-vocab"],
       "agentsDoc": "Sources/UI/Settings/AGENTS.md"
     },
     {
       "name": "AppState",
       "paths": ["Sources/App/TranscriptedAppState.swift"],
-      "mayDependOn": ["Capture", "WritingBridge", "Meeting", "Dictation", "Speech", "UIShared", "Support", "Observability", "Core:core-vocab"],
+      "mayDependOn": ["Capture", "WritingBridge", "TranscriptLLM", "Meeting", "Dictation", "Speech", "UIShared", "Support", "Observability", "Core:core-vocab"],
       "agentsDoc": "Sources/AGENTS.md"
     },
     {

@@ -7,10 +7,12 @@ import SwiftUI
 /// Card-based layout (2026-08 settings restyle): every setting is an
 /// always-visible row inside a rounded card — no disclosures to hunt through.
 /// Rows carry at most a few words; the explanation for each setting lives in
-/// its ⓘ info popover. Sections: Dictation, Microphone, Send after
-/// dictation, Meetings, Speakers, Transcription, App, Permissions, Privacy.
+/// its ⓘ info popover. Sections: Dictation, Local LLM (fork),
+/// Microphone, Send after dictation, Meetings, Speakers, Transcription, App,
+/// Permissions, Privacy.
 struct GeneralSettingsPage<
     ShortcutEditor: View,
+    TranscriptLLMEditor: View,
     BluetoothMicEditor: View,
     AutoSendEditor: View,
     SpeakerEditor: View,
@@ -37,6 +39,7 @@ struct GeneralSettingsPage<
     let onImportAudioFile: () -> Void
     let onEditCorrections: () -> Void
     let shortcutEditor: () -> ShortcutEditor
+    let transcriptLLMEditor: () -> TranscriptLLMEditor
     let bluetoothMicEditor: () -> BluetoothMicEditor
     let autoSendEditor: () -> AutoSendEditor
     let speakerEditor: () -> SpeakerEditor
@@ -97,6 +100,14 @@ struct GeneralSettingsPage<
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("transcripted.settings.section.dictation")
+
+            SettingsCardLabel(text: "Local LLM")
+                .padding(.top, 16)
+            SettingsCard {
+                transcriptLLMEditor()
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("transcripted.settings.section.transcript-llm")
 
             SettingsCardLabel(text: "Microphone")
                 .padding(.top, 16)

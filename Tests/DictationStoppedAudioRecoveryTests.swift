@@ -5,7 +5,7 @@ import Foundation
 // and the prepared Stop snapshot and external-engine lease through their compiled seams
 // (PreparedRecordingConsumer, ExternalEngineTranscription) with fakes. Imported restart
 // checkpoints retire through MeetingStoppedAudioCheckpointPolicy. That launch runs the leftover
-// cleanup is tested in AppLaunchStepsTests; what it deletes is tested here.
+// recovery is tested in AppLaunchStepsTests; what the purge deletes is tested here.
 
 func testDictationStoppedAudioRecoveryRetryRegistry() {
     runSuite("stopped dictation recovery survives a failed retry until success") {
@@ -291,6 +291,40 @@ func testDictationStoppedAudioRecovery() async {
             )
         } catch {
             assertTrue(false, "length fixtures should be written: \(error)")
+        }
+    }
+
+    runSuite("The fork's expiry purge deletes month-old leftovers of any length and keeps newer ones") {
+        let directory = makeRecoveryTestDirectory("purge-expired")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sampleRate = Int(DictationStoppedAudioRecoveryStore.sampleRate)
+        let longTake = [Float](repeating: 0.1, count: Int((DictationFailedTakePolicy.minimumLengthToKeep + 5) * Double(sampleRate)))
+        let now = Date(timeIntervalSinceReferenceDate: 10_000_000)
+        let cutoff = now.addingTimeInterval(-DictationLeftoverRecovery.maximumAge)
+        do {
+            let monthOld = try DictationStoppedAudioRecoveryStore.persist(
+                samples16k: longTake, sessionID: UUID(),
+                createdAt: cutoff.addingTimeInterval(-60), directory: directory
+            )!
+            let lastWeek = try DictationStoppedAudioRecoveryStore.persist(
+                samples16k: [0.1, -0.1], sessionID: UUID(),
+                createdAt: now.addingTimeInterval(-7 * 24 * 60 * 60), directory: directory
+            )!
+
+            let removed = DictationStoppedAudioRecoveryStore.purgeLeftovers(
+                createdBefore: cutoff, onlyShortTakes: false, directory: directory
+            )
+
+            assertEqual(removed, 1, "only the take past the month is removed")
+            assertFalse(FileManager.default.fileExists(atPath: monthOld.url.path), "a long take a month old goes too")
+            assertTrue(FileManager.default.fileExists(atPath: lastWeek.url.path), "a short take from last week stays for recovery")
+            assertEqual(
+                DictationStoppedAudioRecoveryStore.pendingRecoveries(directory: directory),
+                [lastWeek],
+                "last week's take is still pending for launch recovery"
+            )
+        } catch {
+            assertTrue(false, "recovery audio should persist: \(error)")
         }
     }
 

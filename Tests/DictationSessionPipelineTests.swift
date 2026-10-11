@@ -312,19 +312,19 @@ func testDictationSessionPipeline() async {
                    "the long-take copy explains the button")
     }
 
-    runSuite("A short take's saved recording is dropped with a plain try-again message") {
+    runSuite("A short take's saved recording is kept for launch recovery, with a plain try-again message (fork)") {
         let needsRecovery = PipelineFakeHost()
         needsRecovery.stoppedAudioRecovery = needsRecovery.recovery()
         needsRecovery.finishEmptyTake(taskSessionID: needsRecovery.currentDictationSessionID, needsRecovery.emptySteps(.audioNeedsRecovery, heldFor: 5))
         assertEqual(needsRecovery.messages.last?.message, "Didn't catch that. Try again.")
-        assertNil(needsRecovery.messages.last?.actionTitle, "no Transcribe It, so nothing to come back to")
-        assertEqual(needsRecovery.events.all.last, "discard explicit=true", "the WAV is deleted as the take ends")
+        assertNil(needsRecovery.messages.last?.actionTitle, "no Transcribe It for a short take")
+        assertFalse(needsRecovery.events.all.contains("discard explicit=true"), "the WAV stays: the next launch transcribes it again")
 
         let modelFailed = PipelineFakeHost()
         modelFailed.stoppedAudioRecovery = modelFailed.recovery()
         modelFailed.finishEmptyTake(taskSessionID: modelFailed.currentDictationSessionID, modelFailed.emptySteps(.modelFailure, heldFor: 5))
         assertNil(modelFailed.messages.last?.actionTitle)
-        assertEqual(modelFailed.events.all.last, "discard explicit=true")
+        assertFalse(modelFailed.events.all.contains("discard explicit=true"), "a model failure keeps the words' audio too")
     }
 
     runSuite("A short take whose audio is still in memory keeps its WAV") {

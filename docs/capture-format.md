@@ -98,6 +98,7 @@ Written at initial save (all flat unless noted):
 | `system_speakers` | `2` | |
 | `total_word_count` | `1204` | |
 | `title` | `"Weekly Sync"` | Optional at save (imported audio, detected meetings); the restyle always writes one. |
+| `transcript_llm` | `"gemma-4-e2b-it-q4_0"` | Fork only, added after save: the local model whose transcript LLM pass rewrote the utterance text (timestamps and labels untouched). Absent when the pass hasn't run or is off. |
 | `imported_at` | `2026-09-24T19:34:04Z` | Imported files only: when the file was transcribed, as a UTC ISO 8601 instant. `date`/`time` stay the original recording time; the app lists an import by this key so it shows up where it was just made. Kept when the same file is re-transcribed. |
 
 The `transcription_engine` value identifies the concrete model used, not a

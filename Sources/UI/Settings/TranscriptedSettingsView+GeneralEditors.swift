@@ -56,6 +56,7 @@ extension TranscriptedSettingsView {
             },
             onEditCorrections: { showCorrectionsSheet = true },
             shortcutEditor: { generalShortcutSettingsEditor },
+            transcriptLLMEditor: { TranscriptLLMSettingsEditor(statusLine: { transcriptLLM.statusLine }) },
             bluetoothMicEditor: { generalBluetoothMicEditor },
             autoSendEditor: { generalAutoSendEditor },
             speakerEditor: { generalSpeakerMatchingEditor },

@@ -264,6 +264,10 @@ extension MeetingSessionController {
             }
             guard !styled.artifactPostProcessingBlocked else { return }
             let transcriptURL = styled.url
+            // Fork: queue the transcript LLM pass over the saved utterances
+            // (MeetingTranscriptLLMPass.swift). It rewrites the file only once
+            // it's done, after backing it up.
+            Task { await MeetingTranscriptLLMWorker.shared.enqueue(transcriptURL: transcriptURL) }
             // The restyle may have renamed the transcript + its audio/<stem>_audio
             // directory. Tell Home so any cached URLs for the old stem re-resolve.
             if styled.url != url {

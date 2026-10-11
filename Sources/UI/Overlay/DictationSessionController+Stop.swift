@@ -177,6 +177,10 @@ extension DictationSessionController {
             // admission, but keep the policy as the final ownership check.
             return
         }
+        // Fork: from here Esc keeps the take (`keepStoppedTakeWithoutPasting`).
+        overlayController.escapeKeepsTake = true
+        // Fork: before the stop writes its checkpoint over the spool's file.
+        endRecordingSpool(keepingAudio: true)
         releaseDictationMuffleForStop()
         sessionTimeoutTask?.cancel()
         sessionTimeoutTask = nil
@@ -309,7 +313,7 @@ extension DictationSessionController {
                 return DictationFillerCleanupResult(text: trimmedText, removedCount: 0, changed: trimmedText != rawText)
             }
             stopTiming.cleanedAt = CFAbsoluteTimeGetCurrent()
-            guard let text = cleanupResult?.text, !text.isEmpty else {
+            guard let transcribedText = cleanupResult?.text, !transcribedText.isEmpty else {
                 let emptyReason = appState.sttRouter.lastEmptyTranscriptionReason ?? .noSpeech
                 // finishEmptyTake (DictationSessionPipeline.swift) runs
                 // DictationEmptyTranscriptPolicy and the matching message.
@@ -390,17 +394,28 @@ extension DictationSessionController {
                 appState.logger.log("DICTATION | filler cleanup removed \(cleanupResult?.removedCount ?? 0) items")
             }
 
-            if !autoPaste {
-                // Session cap reached (the user walked away mid-dictation).
-                // Recover the transcript by saving it to the daily Markdown file,
-                // but do NOT paste it into whatever app now holds focus and do
-                // NOT auto-send — the cap exists to rescue abandoned sessions,
-                // not to inject text into an unattended app.
+            // Fork: the local transcript LLM pass (Sources/TranscriptLLM). It
+            // never costs the take: a skip, a failure or Esc keeps the transcript.
+            let text = await self.refineDictationText(transcribedText, appState: appState, sessionID: taskSessionID)
+            guard DictationSessionCompletionPolicy.canPublish(
+                sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
+                isDictating: self.isDictating, cancelled: Task.isCancelled
+            ) else { return }
+
+            let pasteDeclined = self.pasteDeclinedSessionID == taskSessionID
+            if !autoPaste || pasteDeclined {
+                // Session cap reached (the user walked away mid-dictation), or
+                // Esc after the stop (fork). Recover the transcript by saving it
+                // to the daily Markdown file, but do NOT paste it into whatever
+                // app now holds focus and do NOT auto-send — the cap exists to
+                // rescue abandoned sessions, not to inject text into an
+                // unattended app.
                 await self.finalizeWithoutPaste(
                     text: text,
                     appState: appState,
                     overlayController: overlayController,
-                    sessionID: taskSessionID
+                    sessionID: taskSessionID,
+                    reason: pasteDeclined ? .escapeAfterStop : .sessionCap
                 )
                 return
             }

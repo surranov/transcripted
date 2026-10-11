@@ -19,6 +19,7 @@ struct TranscriptedSettingsView: View {
     let actions: TranscriptedSettingsActions
     private let appLogger: AppLogSink
     let writingController: WritingController
+    let transcriptLLM: TranscriptLLMController
 
     @State var dictationTriggerSystemWarning = PhysicalDictationTriggerPreferences.functionKeyConflictWarning(
         for: PhysicalDictationTriggerPreferences.pushToTalkBinding()
@@ -124,6 +125,7 @@ struct TranscriptedSettingsView: View {
         self.actions = actions
         self.appLogger = appState.logger
         self.writingController = appState.writingController
+        self.transcriptLLM = appState.transcriptLLM
         _sttRouter = ObservedObject(wrappedValue: appState.sttRouter)
         let meetingSession = appState.meetingSession
         self.meetingSession = meetingSession

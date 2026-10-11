@@ -22,6 +22,7 @@ final class DictationTranscribeAgainRunner: ObservableObject {
         audioURL: URL,
         cleanupEnabled: Bool = DictationCleanupPreferences.isEnabled(),
         transcribe: @escaping ([Float]) async throws -> String,
+        refine: @escaping (String) async -> String = { $0 },
         onFailure: @escaping (String) -> Void
     ) -> Bool {
         guard runningEntryID == nil else { return false }
@@ -33,7 +34,8 @@ final class DictationTranscribeAgainRunner: ObservableObject {
                     entry: entry,
                     audioURL: audioURL,
                     cleanupEnabled: cleanupEnabled,
-                    transcribe: transcribe
+                    transcribe: transcribe,
+                    refine: refine
                 )
             } catch let failure as DictationRetranscription.Failure {
                 onFailure(failure.message)

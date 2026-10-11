@@ -100,6 +100,10 @@ class ParakeetEngine: ObservableObject {
     /// The island's live preview copy of this take's audio, guarded by
     /// `pendingSamplesLock`. Nil unless a preview is listening.
     nonisolated(unsafe) var previewSink: DictationPreviewSampleSink?
+    /// Fork: the same kind of copy for the take's on-disk spool
+    /// (`DictationRecordingSpool`), so a crash mid-take keeps its audio.
+    /// Guarded by `pendingSamplesLock`; nil between takes.
+    nonisolated(unsafe) var recordingSpoolSink: DictationPreviewSampleSink?
     var lastAudioSampleAt: CFAbsoluteTime = 0
     /// When the first audio buffer of this dictation arrived. Guarded by
     /// `pendingSamplesLock`; a recovery restart keeps the original value.

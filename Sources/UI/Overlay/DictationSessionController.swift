@@ -141,6 +141,16 @@ class DictationSessionController: ObservableObject {
     var stoppedAudioRecovery: DictationStoppedAudioRecovery?
     var stoppedAudioRecoveryPreservationSessionID: UUID?
     var stoppedAudioCheckpointSignal: DictationStoppedAudioCheckpointSignal?
+    /// Fork: the session whose paste Esc declined after its stop was admitted.
+    /// That take still finishes and is saved to Dictations, just not pasted
+    /// (`keepStoppedTakeWithoutPasting`).
+    var pasteDeclinedSessionID: UUID?
+    /// Fork: the transcript LLM pass in flight, so Esc can stop waiting on it.
+    var transcriptRefinementTask: Task<DictationTextRefinement, Never>?
+    /// Fork: the take's audio on disk while it records, and the loop that
+    /// feeds it (`DictationSessionController+RecordingSpool.swift`).
+    var recordingSpool: DictationRecordingSpool?
+    var recordingSpoolTask: Task<Void, Never>?
     var autoSendRequestDecision = DictationAutoSendRequestDecision.notEvaluated
     /// A start-shortcut press that landed while the last take was still
     /// finishing. It starts as soon as that take is done. See
@@ -247,6 +257,7 @@ class DictationSessionController: ObservableObject {
         stoppedAudioRecovery = nil
         stoppedAudioRecoveryPreservationSessionID = nil
         stoppedAudioCheckpointSignal = nil
+        beginRecordingSpool(sessionID: currentDictationSessionID)
         sessionSourceApp = sourceApp
         sessionPasteTarget = DictationPasteTarget.capture(sourceApp: sourceApp)
         sessionAnchorRect = anchorRect
@@ -398,12 +409,17 @@ class DictationSessionController: ObservableObject {
     /// Cancel dictation without pasting
     func cancelDictation(preserveStoppedAudio: Bool = false) {
         guard let (appState, overlayController) = readyState() else { return }
+        // Fork: once the stop is admitted the take is a WAV on disk with its
+        // transcript on the way. Esc then declines the paste and keeps the
+        // take (saved to Dictations) instead of deleting both.
+        if !preserveStoppedAudio, keepStoppedTakeWithoutPasting() { return }
         // Esc on a finishing take means stop, not "and start the next one".
         dropQueuedDictationStart(showMessage: false)
         if preserveStoppedAudio {
             stoppedAudioRecoveryPreservationSessionID = currentDictationSessionID
         }
         cancelActiveTasks(cancelRecording: true)
+        endRecordingSpool(keepingAudio: preserveStoppedAudio)
         if !preserveStoppedAudio {
             discardStoppedAudioRecovery(explicitDiscard: true)
             // The "discarded" cue only when something was actually thrown away;

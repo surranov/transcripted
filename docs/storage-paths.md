@@ -76,6 +76,7 @@ library moves:
   `Outcome Ledger/` and `Word Diary/` (Tilde's plaintext word diary isn't
   ported; accepted text is saved only by Save my writing), and the encrypted
   `Personal History/`
+- transcript LLM model (fork): `~/Library/Application Support/Transcripted/models/transcript-llm/gemma-4-e2b-it-q4_0/model.gguf` (downloaded at launch, hash-pinned in `Sources/TranscriptLLM/TranscriptLLMModel.swift`)
 - models: `~/Library/Application Support/Transcripted/models/writing/<id>/model.gguf`,
   excluded from backup. The Writing tab's **Delete model** empties this folder
   (never Delete all writing); it refuses the folder if it's a symlink
@@ -115,7 +116,8 @@ App-owned meeting state is stored separately under:
 - failed queue: `~/Library/Application Support/Transcripted/state/failed_transcriptions.json`
 - queued import journals: `~/Library/Application Support/Transcripted/state/imported_transcription_queue/`
 - runtime diagnostics marker: `~/Library/Application Support/Transcripted/state/runtime-diagnostics.json`
-- stopped dictation audio: `~/Library/Application Support/Transcripted/state/dictation-audio-recovery/` (a private WAV plus `.json` written when a dictation stops, deleted once its text is saved; a short failed take's WAV is usually dropped with the error, while a take of 30 s or more keeps it behind a Transcribe It button. At the next launch a leftover under 30 s is deleted; one of 30 s or more, or one whose length can't be read, stays here quietly with nothing asking about it)
+- stopped dictation audio: `~/Library/Application Support/Transcripted/state/dictation-audio-recovery/` (a private WAV plus `.json` written when a dictation stops, deleted once its text is saved. Fork: the same file is filled every 3 s while the take records, so a crash mid-take leaves it here; a take of 30 s or more that fails keeps it behind a Transcribe It button. Fork: a short failed take keeps it too, and the next launch transcribes every leftover from an earlier run and saves it to Dictations (`DictationLeftoverRecovery`); only leftovers over a month old that still couldn't be recovered are deleted)
+- transcript LLM jobs (fork): `~/Library/Application Support/Transcripted/state/meeting-llm/` (`<capture id>.json` per meeting queued for the LLM pass, with its progress, and `originals/` holding each transcript as it was before the pass rewrote it; kept)
 - dictionary-fix backups: `~/Library/Application Support/Transcripted/state/dictionary-fix-backups/` (one folder per "Fix them" from the Corrections list: the original text of each meeting it changed plus a `receipt.json`; kept 3 days so Undo survives a relaunch, pruned at launch, and dropped when the meeting is deleted from Home). Backups follow the meeting's file name, so renaming a fixed meeting drops its Undo at the next launch; the prune is skipped while the meetings folder is missing (for example on an unmounted drive)
 
 Claude Desktop integration installs the bundled read-only MCP helper under:

@@ -449,6 +449,33 @@ func testDictationAudioArchive() async {
         assertFalse(fm.fileExists(atPath: recovery.url.path), "the WAV is deleted")
     }
 
+    runSuite("A saved take whose move into the archive fails keeps its WAV (fork)") {
+        let root = makeRoot("retire-keep-fails")
+        defer { try? fm.removeItem(at: root) }
+        let dictations = root.appendingPathComponent("dictations", isDirectory: true)
+        guard let recovery = makeRecovery(in: root) else { return assertTrue(false, "recovery WAV should persist") }
+        // A plain file where the audio folder should be: the move can't land.
+        let audioFolder = DictationAudioArchive.audioFolder(in: dictations)
+        try? fm.createDirectory(at: audioFolder.deletingLastPathComponent(), withIntermediateDirectories: true)
+        fm.createFile(atPath: audioFolder.path, contents: Data("blocker".utf8))
+
+        let retired = DictationStoppedAudioRecoveryStore.retire(
+            recovery,
+            afterSaving: savedResult(root.appendingPathComponent("day.md")),
+            keptAudioRelativePath: DictationAudioArchive.plannedRelativePath(for: recovery, window: .forever),
+            dictationsFolder: dictations,
+            compressKeptAudio: { _ in assertTrue(false, "nothing was archived, nothing to compress") }
+        )
+
+        assertFalse(retired, "the checkpoint wasn't retired into the archive")
+        assertTrue(fm.fileExists(atPath: recovery.url.path), "the saved entry's only audio copy is not deleted")
+        assertEqual(
+            DictationStoppedAudioRecoveryStore.pendingRecoveries(directory: recovery.url.deletingLastPathComponent()).count,
+            0,
+            "the take isn't pending any more: launch won't save it a second time"
+        )
+    }
+
     // MARK: Setting
 
     runSuite("Dictation audio is kept for 30 days unless the user picks otherwise") {

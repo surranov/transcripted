@@ -25,6 +25,34 @@ struct LlamaHelperLaunchFlagsTests {
         return arguments[index + 1]
     }
 
+    @Test("The transcript LLM's chat helper gets its own flags; Writing's stay as they were (fork)")
+    func chatProfileFlags() {
+        let chat = LlamaServerProcessHost.launchConfiguration(
+            model: "/dev/fd/0",
+            port: 17893,
+            apiKey: "k3y",
+            inheritedEnvironment: [:],
+            physicalMemoryBytes: 32 * Self.gib,
+            profile: .chat(contextTokens: 16384, slots: 2, diagnosticsLabel: "transcript-llm")
+        )
+        let arguments = chat.arguments
+        #expect(Self.value(after: "-c", in: arguments) == "32768")
+        #expect(Self.value(after: "-np", in: arguments) == "2")
+        #expect(Self.value(after: "--port", in: arguments) == "17893")
+        #expect(arguments.contains("--jinja"))
+        #expect(arguments.contains("--swa-full"))
+        #expect(Self.value(after: "--chat-template-kwargs", in: arguments) == #"{"enable_thinking":false}"#)
+        #expect(Self.value(after: "--poll", in: arguments) == "0")
+        #expect(!arguments.contains("--cache-ram"))
+        #expect(!arguments.contains("k3y"))
+        #expect(chat.environment[LlamaServerAccessKey.environmentVariable] == "k3y")
+
+        let writing = Self.launch()
+        #expect(!writing.contains("--jinja"))
+        #expect(Self.value(after: "-c", in: writing) == "4096")
+        #expect(Self.value(after: "-np", in: writing) == "1")
+    }
+
     @Test("The helper's idle CPU threads sleep between tokens instead of spinning")
     func idleThreadsSleep() {
         let arguments = Self.launch()

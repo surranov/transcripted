@@ -70,6 +70,14 @@ enum DictationSessionCapCompletionTelemetryPolicy {
 }
 
 /// How a take the 15-minute cap finalized without pasting is saved and shown.
+/// Why a finished take was saved to Dictations without pasting.
+enum DictationSaveWithoutPasteReason: Equatable, Sendable {
+    /// The 15-minute session cap rescued a walked-away dictation.
+    case sessionCap
+    /// Fork: Esc after the stop was admitted declined the paste but kept the take.
+    case escapeAfterStop
+}
+
 enum DictationSessionCapSavePolicy {
     /// The cap saves to Markdown without pasting; history records it as such.
     static let delivery: DictationDelivery = .savedWithoutPaste

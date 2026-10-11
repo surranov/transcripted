@@ -25,6 +25,8 @@ struct DictationsSettingsPage: View {
     var transcribeAgainUnavailableReason: String? = nil
     /// Local STT over 16 kHz mono samples. nil hides Transcribe again.
     var transcribeSamples: (([Float]) async throws -> String)? = nil
+    /// Fork: the transcript LLM pass over the re-transcribed text.
+    var refineText: (String) async -> String = { $0 }
     /// Shows a Transcribe again failure; the closure retries.
     var onTranscribeAgainFailure: ((String, @escaping () -> Void) -> Void)? = nil
 
@@ -156,6 +158,7 @@ struct DictationsSettingsPage: View {
             entry: entry,
             audioURL: url,
             transcribe: transcribeSamples,
+            refine: refineText,
             onFailure: { message in
                 onTranscribeAgainFailure?(message, { startTranscribeAgain(entry) })
             }

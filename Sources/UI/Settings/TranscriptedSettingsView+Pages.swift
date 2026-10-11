@@ -489,6 +489,7 @@ extension TranscriptedSettingsView {
             transcribeSamples: { [sttRouter] samples in
                 try await sttRouter.transcribeSavedDictation(samples: samples)
             },
+            refineText: { [transcriptLLM] text in await transcriptLLM.refine(text).text(original: text) },
             onTranscribeAgainFailure: { message, retry in
                 presentHomeActionFailure(
                     title: "Could not transcribe dictation again",
