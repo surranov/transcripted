@@ -194,412 +194,451 @@ extension DictationSessionController {
         let taskRecordingModelLease = appState.sttRouter.recordingModelLease
         let checkpointSignal = DictationStoppedAudioCheckpointSignal()
         stoppedAudioCheckpointSignal = checkpointSignal
+        // Fork: the dictation queue. The take may hand the controller to the
+        // next take once it is transcribed (`+HandOff.swift`).
+        let take = DictationFinishingTake(sessionID: taskSessionID, sequence: nextTakeSequence())
+        finishingTake = take
         streamingTask = Task {
-            defer {
-                appState.sttRouter.finishRecordingModelUse(taskRecordingModelLease)
-                Task { await checkpointSignal.complete() }
-            }
-            var stopTiming = DictationStopTiming(requestedAt: stopRequestedAt)
-            stopTiming.micBackend = appState.sttRouter.parakeetEngine.dictationMicBackendName
-            // runStopUntilTranscribed (DictationSessionPipeline.swift) owns the
-            // order: the stale-task fence, then DictationStopCheckpoint (stop
-            // the mic, play the stop click, save the take to a private WAV),
-            // then the model wait, then transcription of that same snapshot.
-            let stop = await self.runStopUntilTranscribed(
-                taskSessionID: taskSessionID,
-                DictationStopTranscriptionSteps<RecordedSpeechSamples>(
-                    markStopRequested: {
-                        appState.runtimeDiagnostics.recordSession(kind: "dictation", stage: "stop_requested")
-                    },
-                    stopMicrophone: { await appState.sttRouter.stopRecording() },
-                    playStopCue: { AppSoundPlayer.shared.play(.dictationStop) },
-                    snapshot: { await appState.sttRouter.snapshotRecordedSamplesForPersistence() },
-                    checkpointWork: { recording in
-                        let samples16k = recording.samples16k
-                        return {
-                            try DictationStoppedAudioRecoveryStore.persist(
-                                samples16k: samples16k,
-                                sessionID: taskSessionID
-                            )
-                        }
-                    },
-                    discardWork: { recovery in
-                        {
-                            _ = DictationStoppedAudioRecoveryStore.cleanup(
-                                recovery,
-                                explicitDiscard: true
-                            )
-                        }
-                    },
-                    hasRecoverableRecording: { appState.sttRouter.hasRecoverableRecording },
-                    checkpointSettled: { await checkpointSignal.complete() },
-                    reportCheckpointFailure: { error in
-                        appState.logger.log("DICTATION | failed to preserve stopped audio: \(error.localizedDescription)")
-                        EventReporter.shared.capture(
-                            level: .error,
-                            engine: "dictation",
-                            event: "dictation_stopped_audio_persistence_failed",
-                            message: error.localizedDescription
-                        )
-                    },
-                    clearSession: { outcome in
-                        appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: outcome)
-                    },
-                    waitForModel: { isCurrent in
-                        await DictationPostStopModelWait.run(
-                            DictationPostStopModelWait.Steps(
-                                isCurrent: isCurrent,
-                                isModelLoaded: { appState.sttRouter.isRecordingModelLoaded },
-                                modelState: { appState.sttRouter.recordingModelDownloadState },
-                                requestModelInitialization: { appState.sttRouter.requestRecordingModelInitialization() },
-                                waitForProgress: { deadline in
-                                    await appState.sttRouter.waitForRecordingModelLoadProgress(until: deadline)
-                                },
-                                waitStarted: {
-                                    appState.logger.log("DICTATION | waiting for voice model before transcribe…")
-                                    self.updateLoadingOverlay(sourceApp: self.sessionSourceApp, phase: .afterRecording)
-                                },
-                                stillWaiting: {
-                                    self.updateLoadingOverlay(sourceApp: self.sessionSourceApp, phase: .afterRecording)
-                                },
-                                uptime: { ProcessInfo.processInfo.systemUptime },
-                                now: { CFAbsoluteTimeGetCurrent() },
-                                budget: TranscriptedConstants.modelLoadWaitBudget
-                            )
-                        )
-                    },
-                    reportModelUnavailable: {
-                        appState.logger.log("DICTATION | voice model failed to load for transcription")
-                        ProductFrictionTelemetry.track(
-                            surface: .dictation,
-                            stage: "dictation_transcribe",
-                            result: .blocked,
-                            failureKind: "model_not_ready",
-                            elapsedBucket: AnalyticsReporter.durationBucket(seconds: CFAbsoluteTimeGetCurrent() - self.sessionStartTime),
-                            routeShape: self.dictationAnalyticsProperties()["route_shape"],
-                            modelState: "not_ready"
-                        )
-                    },
-                    showMessage: { message, actionTitle, action in
-                        overlayController.showError(message, actionTitle: actionTitle, action: action)
-                    },
-                    startTranscribing: {
-                        overlayController.state = .drafting
-                        overlayController.resizePanelToCompact()
-                        appState.runtimeDiagnostics.recordSession(kind: "dictation", stage: "transcribing")
-                    },
-                    transcribe: { preparedRecording in
-                        await appState.sttRouter.transcribe(preparedRecording: preparedRecording)
-                    },
-                    now: { CFAbsoluteTimeGetCurrent() }
-                )
-            )
-            stopTiming.micStoppedAt = stop.marks.checkpoint.micStoppedAt
-            stopTiming.snapshotStartedAt = stop.marks.checkpoint.snapshotStartedAt
-            stopTiming.snapshotFinishedAt = stop.marks.checkpoint.snapshotFinishedAt
-            stopTiming.recoveryCheckpointStartedAt = stop.marks.checkpoint.checkpointStartedAt
-            stopTiming.recoveryCheckpointFinishedAt = stop.marks.checkpoint.checkpointFinishedAt
-            stopTiming.modelWaitStartedAt = stop.marks.modelWaitStartedAt
-            stopTiming.modelReadyAt = stop.marks.modelReadyAt
-            stopTiming.transcriptionStartedAt = stop.marks.transcriptionStartedAt
-            stopTiming.transcribedAt = stop.marks.transcribedAt
-            guard case .transcribed(let voiceText) = stop.outcome else { return }
-
-            let cleanupEnabled = DictationCleanupPreferences.isEnabled()
-            let cleanupResult = voiceText.map { rawText in
-                if cleanupEnabled {
-                    return DictationFillerCleanupPolicy.clean(rawText)
+            await DictationTakeScope.$take.withValue(take) {
+                defer { self.takeTaskEnded(take) }
+                defer {
+                    appState.sttRouter.finishRecordingModelUse(taskRecordingModelLease)
+                    Task { await checkpointSignal.complete() }
                 }
-                let trimmedText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-                return DictationFillerCleanupResult(text: trimmedText, removedCount: 0, changed: trimmedText != rawText)
-            }
-            stopTiming.cleanedAt = CFAbsoluteTimeGetCurrent()
-            guard let transcribedText = cleanupResult?.text, !transcribedText.isEmpty else {
-                let emptyReason = appState.sttRouter.lastEmptyTranscriptionReason ?? .noSpeech
-                // finishEmptyTake (DictationSessionPipeline.swift) runs
-                // DictationEmptyTranscriptPolicy and the matching message.
-                self.finishEmptyTake(
+                var stopTiming = DictationStopTiming(requestedAt: stopRequestedAt)
+                stopTiming.micBackend = appState.sttRouter.parakeetEngine.dictationMicBackendName
+                // runStopUntilTranscribed (DictationSessionPipeline.swift) owns the
+                // order: the stale-task fence, then DictationStopCheckpoint (stop
+                // the mic, play the stop click, save the take to a private WAV),
+                // then the model wait, then transcription of that same snapshot.
+                let stop = await self.runStopUntilTranscribed(
                     taskSessionID: taskSessionID,
-                    DictationEmptyTakeSteps(
-                        reason: emptyReason,
-                        stopRequestedAt: stopTiming.requestedAt,
-                        sessionStartedAt: sessionStartTime,
-                        heldBackText: { appState.sttRouter.heldBackDictationText },
-                        report: { emptyDecision in
-                            appState.logger.log("DICTATION | no transcription (\(emptyReason.rawValue)), cancelling")
+                    DictationStopTranscriptionSteps<RecordedSpeechSamples>(
+                        markStopRequested: {
+                            appState.runtimeDiagnostics.recordSession(kind: "dictation", stage: "stop_requested")
+                        },
+                        stopMicrophone: { await appState.sttRouter.stopRecording() },
+                        playStopCue: { AppSoundPlayer.shared.play(.dictationStop) },
+                        snapshot: { await appState.sttRouter.snapshotRecordedSamplesForPersistence() },
+                        checkpointWork: { recording in
+                            let samples16k = recording.samples16k
+                            return {
+                                try DictationStoppedAudioRecoveryStore.persist(
+                                    samples16k: samples16k,
+                                    sessionID: taskSessionID
+                                )
+                            }
+                        },
+                        discardWork: { recovery in
+                            {
+                                _ = DictationStoppedAudioRecoveryStore.cleanup(
+                                    recovery,
+                                    explicitDiscard: true
+                                )
+                            }
+                        },
+                        hasRecoverableRecording: { appState.sttRouter.hasRecoverableRecording },
+                        checkpointSettled: { await checkpointSignal.complete() },
+                        reportCheckpointFailure: { error in
+                            appState.logger.log("DICTATION | failed to preserve stopped audio: \(error.localizedDescription)")
                             EventReporter.shared.capture(
-                                level: .warning,
-                                engine: "overlay",
-                                event: emptyReason.localEventName,
-                                message: emptyReason.localEventMessage,
-                                context: self.dictationContext(
-                                    extra: [
-                                        "duration_ms": "\(Int((CFAbsoluteTimeGetCurrent() - self.sessionStartTime) * 1000))",
-                                        "trigger": self.currentDictationTrigger.rawValue,
-                                        "reason": emptyReason.rawValue
-                                    ]
+                                level: .error,
+                                engine: "dictation",
+                                event: "dictation_stopped_audio_persistence_failed",
+                                message: error.localizedDescription
+                            )
+                        },
+                        clearSession: { outcome in
+                            appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: outcome)
+                        },
+                        waitForModel: { isCurrent in
+                            await DictationPostStopModelWait.run(
+                                DictationPostStopModelWait.Steps(
+                                    isCurrent: isCurrent,
+                                    isModelLoaded: { appState.sttRouter.isRecordingModelLoaded },
+                                    modelState: { appState.sttRouter.recordingModelDownloadState },
+                                    requestModelInitialization: { appState.sttRouter.requestRecordingModelInitialization() },
+                                    waitForProgress: { deadline in
+                                        await appState.sttRouter.waitForRecordingModelLoadProgress(until: deadline)
+                                    },
+                                    waitStarted: {
+                                        appState.logger.log("DICTATION | waiting for voice model before transcribe…")
+                                        self.updateLoadingOverlay(sourceApp: self.sessionSourceApp, phase: .afterRecording)
+                                    },
+                                    stillWaiting: {
+                                        self.updateLoadingOverlay(sourceApp: self.sessionSourceApp, phase: .afterRecording)
+                                    },
+                                    uptime: { ProcessInfo.processInfo.systemUptime },
+                                    now: { CFAbsoluteTimeGetCurrent() },
+                                    budget: TranscriptedConstants.modelLoadWaitBudget
                                 )
                             )
-                            AnalyticsReporter.track(
-                                emptyReason.analyticsEventName,
-                                properties: self.dictationAnalyticsProperties(
-                                    extra: [
-                                        "duration_bucket": AnalyticsReporter.durationBucket(
-                                            seconds: CFAbsoluteTimeGetCurrent() - self.sessionStartTime
-                                        ),
-                                        "trigger": self.currentDictationTrigger.rawValue,
-                                    ]
-                                )
-                            )
+                        },
+                        reportModelUnavailable: {
+                            appState.logger.log("DICTATION | voice model failed to load for transcription")
                             ProductFrictionTelemetry.track(
                                 surface: .dictation,
                                 stage: "dictation_transcribe",
-                                result: emptyDecision.countsAsCancelled ? .cancelled : .giveUp,
-                                failureKind: emptyReason.frictionFailureKind,
+                                result: .blocked,
+                                failureKind: "model_not_ready",
                                 elapsedBucket: AnalyticsReporter.durationBucket(seconds: CFAbsoluteTimeGetCurrent() - self.sessionStartTime),
                                 routeShape: self.dictationAnalyticsProperties()["route_shape"],
-                                modelState: ProductFrictionTelemetry.modelState(isReady: appState.sttRouter.isModelLoaded)
-                            )
-                        },
-                        closeLikeCancel: {
-                            NotificationCenter.default.post(name: .dictationNoSpeechDetected, object: nil)
-                            AppSoundPlayer.shared.play(.dictationCancelled)
-                            overlayController.hideWithCancelAnimation()
-                        },
-                        showNoSpeechAndDismiss: {
-                            NotificationCenter.default.post(name: .dictationNoSpeechDetected, object: nil)
-                            AppSoundPlayer.shared.play(.noSpeech)
-                            overlayController.showNoSpeechAndDismiss(
-                                trigger: self.currentDictationTrigger.rawValue,
-                                reason: emptyReason,
-                                shortcutMode: self.currentDictationShortcutMode,
-                                silentMicName: appState.sttRouter.lastRecordingWasDigitalSilence
-                                    ? appState.sttRouter.inputDeviceName
-                                    : nil
+                                modelState: "not_ready"
                             )
                         },
                         showMessage: { message, actionTitle, action in
                             overlayController.showError(message, actionTitle: actionTitle, action: action)
                         },
-                        showPasted: { overlayController.showSuccessAndDismiss(title: "Pasted") },
-                        clearSession: { outcome in
-                            appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: outcome)
-                        }
+                        startTranscribing: {
+                            overlayController.state = .drafting
+                            overlayController.resizePanelToCompact()
+                            appState.runtimeDiagnostics.recordSession(kind: "dictation", stage: "transcribing")
+                        },
+                        transcribe: { preparedRecording in
+                            await appState.sttRouter.transcribe(preparedRecording: preparedRecording)
+                        },
+                        now: { CFAbsoluteTimeGetCurrent() }
                     )
                 )
-                return
-            }
+                stopTiming.micStoppedAt = stop.marks.checkpoint.micStoppedAt
+                stopTiming.snapshotStartedAt = stop.marks.checkpoint.snapshotStartedAt
+                stopTiming.snapshotFinishedAt = stop.marks.checkpoint.snapshotFinishedAt
+                stopTiming.recoveryCheckpointStartedAt = stop.marks.checkpoint.checkpointStartedAt
+                stopTiming.recoveryCheckpointFinishedAt = stop.marks.checkpoint.checkpointFinishedAt
+                stopTiming.modelWaitStartedAt = stop.marks.modelWaitStartedAt
+                stopTiming.modelReadyAt = stop.marks.modelReadyAt
+                stopTiming.transcriptionStartedAt = stop.marks.transcriptionStartedAt
+                stopTiming.transcribedAt = stop.marks.transcribedAt
+                guard case .transcribed(let voiceText) = stop.outcome else { return }
 
-            guard !Task.isCancelled else { return }
-            if (cleanupResult?.removedCount ?? 0) > 0 {
-                appState.logger.log("DICTATION | filler cleanup removed \(cleanupResult?.removedCount ?? 0) items")
-            }
+                let cleanupEnabled = DictationCleanupPreferences.isEnabled()
+                let cleanupResult = voiceText.map { rawText in
+                    if cleanupEnabled {
+                        return DictationFillerCleanupPolicy.clean(rawText)
+                    }
+                    let trimmedText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return DictationFillerCleanupResult(text: trimmedText, removedCount: 0, changed: trimmedText != rawText)
+                }
+                stopTiming.cleanedAt = CFAbsoluteTimeGetCurrent()
+                guard let transcribedText = cleanupResult?.text, !transcribedText.isEmpty else {
+                    let emptyReason = appState.sttRouter.lastEmptyTranscriptionReason ?? .noSpeech
+                    // finishEmptyTake (DictationSessionPipeline.swift) runs
+                    // DictationEmptyTranscriptPolicy and the matching message.
+                    self.finishEmptyTake(
+                        taskSessionID: taskSessionID,
+                        DictationEmptyTakeSteps(
+                            reason: emptyReason,
+                            stopRequestedAt: stopTiming.requestedAt,
+                            sessionStartedAt: sessionStartTime,
+                            heldBackText: { appState.sttRouter.heldBackDictationText },
+                            report: { emptyDecision in
+                                appState.logger.log("DICTATION | no transcription (\(emptyReason.rawValue)), cancelling")
+                                EventReporter.shared.capture(
+                                    level: .warning,
+                                    engine: "overlay",
+                                    event: emptyReason.localEventName,
+                                    message: emptyReason.localEventMessage,
+                                    context: self.dictationContext(
+                                        extra: [
+                                            "duration_ms": "\(Int((CFAbsoluteTimeGetCurrent() - self.sessionStartTime) * 1000))",
+                                            "trigger": self.currentDictationTrigger.rawValue,
+                                            "reason": emptyReason.rawValue
+                                        ]
+                                    )
+                                )
+                                AnalyticsReporter.track(
+                                    emptyReason.analyticsEventName,
+                                    properties: self.dictationAnalyticsProperties(
+                                        extra: [
+                                            "duration_bucket": AnalyticsReporter.durationBucket(
+                                                seconds: CFAbsoluteTimeGetCurrent() - self.sessionStartTime
+                                            ),
+                                            "trigger": self.currentDictationTrigger.rawValue,
+                                        ]
+                                    )
+                                )
+                                ProductFrictionTelemetry.track(
+                                    surface: .dictation,
+                                    stage: "dictation_transcribe",
+                                    result: emptyDecision.countsAsCancelled ? .cancelled : .giveUp,
+                                    failureKind: emptyReason.frictionFailureKind,
+                                    elapsedBucket: AnalyticsReporter.durationBucket(seconds: CFAbsoluteTimeGetCurrent() - self.sessionStartTime),
+                                    routeShape: self.dictationAnalyticsProperties()["route_shape"],
+                                    modelState: ProductFrictionTelemetry.modelState(isReady: appState.sttRouter.isModelLoaded)
+                                )
+                            },
+                            closeLikeCancel: {
+                                NotificationCenter.default.post(name: .dictationNoSpeechDetected, object: nil)
+                                AppSoundPlayer.shared.play(.dictationCancelled)
+                                overlayController.hideWithCancelAnimation()
+                            },
+                            showNoSpeechAndDismiss: {
+                                NotificationCenter.default.post(name: .dictationNoSpeechDetected, object: nil)
+                                AppSoundPlayer.shared.play(.noSpeech)
+                                overlayController.showNoSpeechAndDismiss(
+                                    trigger: self.currentDictationTrigger.rawValue,
+                                    reason: emptyReason,
+                                    shortcutMode: self.currentDictationShortcutMode,
+                                    silentMicName: appState.sttRouter.lastRecordingWasDigitalSilence
+                                        ? appState.sttRouter.inputDeviceName
+                                        : nil
+                                )
+                            },
+                            showMessage: { message, actionTitle, action in
+                                overlayController.showError(message, actionTitle: actionTitle, action: action)
+                            },
+                            showPasted: { overlayController.showSuccessAndDismiss(title: "Pasted") },
+                            clearSession: { outcome in
+                                appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: outcome)
+                            }
+                        )
+                    )
+                    return
+                }
 
-            // Fork: the local transcript LLM pass (Sources/TranscriptLLM). It
-            // never costs the take: a skip, a failure or Esc keeps the transcript.
-            let text = await self.refineDictationText(transcribedText, appState: appState, sessionID: taskSessionID)
-            guard DictationSessionCompletionPolicy.canPublish(
-                sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
-                isDictating: self.isDictating, cancelled: Task.isCancelled
-            ) else { return }
+                guard !Task.isCancelled else { return }
+                if (cleanupResult?.removedCount ?? 0) > 0 {
+                    appState.logger.log("DICTATION | filler cleanup removed \(cleanupResult?.removedCount ?? 0) items")
+                }
 
-            let pasteDeclined = self.pasteDeclinedSessionID == taskSessionID
-            if !autoPaste || pasteDeclined {
-                // Session cap reached (the user walked away mid-dictation), or
-                // Esc after the stop (fork). Recover the transcript by saving it
-                // to the daily Markdown file, but do NOT paste it into whatever
-                // app now holds focus and do NOT auto-send — the cap exists to
-                // rescue abandoned sessions, not to inject text into an
-                // unattended app.
-                await self.finalizeWithoutPaste(
-                    text: text,
-                    appState: appState,
-                    overlayController: overlayController,
-                    sessionID: taskSessionID,
-                    reason: pasteDeclined ? .escapeAfterStop : .sessionCap
-                )
-                return
-            }
-
-            appState.logger.log("DICTATION | pasting \(text.count) chars")
-            lastCompletedText = text
-            stopTiming.pasteStartedAt = CFAbsoluteTimeGetCurrent()
-            let modelWaitSeconds = (stopTiming.modelReadyAt ?? 0) - (stopTiming.modelWaitStartedAt ?? 0)
-            // Fork: Anchored paste delivers to the field focused at the start
-            // when the user has moved on, or waits for them to come back.
-            let pasteOutcome: DictationPasteOutcome
-            switch await self.deliverToPasteAnchor(text) {
-            case .delivered(let outcome):
-                pasteOutcome = outcome
-            case .deferred(let appName):
+                // Fork: transcribed, so a start press may hand this take off
+                // while it is refined (`+HandOff.swift`).
+                self.setActiveTakeCanHandOff(true)
+                // Fork: the local transcript LLM pass (Sources/TranscriptLLM). It
+                // never costs the take: a skip, a failure or Esc keeps the transcript.
+                let text = await self.refineDictationText(transcribedText, appState: appState, sessionID: taskSessionID)
                 guard DictationSessionCompletionPolicy.canPublish(
                     sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
-                    isDictating: self.isDictating, cancelled: Task.isCancelled
+                    isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
                 ) else { return }
-                await self.finalizeWithoutPaste(
-                    text: text,
-                    appState: appState,
-                    overlayController: overlayController,
-                    sessionID: taskSessionID,
-                    reason: .anchoredDeferred(appName: appName)
-                )
-                return
-            case .notAnchored:
-                pasteOutcome = self.pasteWithClipboardRestore(
-                    text,
-                    followCurrentFocus: DictationPostStopModelWaitPolicy.pasteFollowsCurrentFocus(
-                        modelWaitSeconds: modelWaitSeconds
-                    )
-                )
-                self.finishPasteAnchorAfterRegularPaste(pasteOutcome)
-            }
-            stopTiming.pastedAt = CFAbsoluteTimeGetCurrent()
-            // Paste confirmation pumps the run loop, so cancellation/restart can occur here too.
-            guard DictationSessionCompletionPolicy.canPublish(
-                sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
-                isDictating: self.isDictating, cancelled: Task.isCancelled
-            ) else { return }
-            stopTiming.pasteBreakdown = self.textPaster.lastPasteTiming
-            // Capture ownership before suspending. The writer may outlive cancellation.
-            let recovery = self.stoppedAudioRecovery
-            let saveContext = self.dictationSaveContext(text: text)
-            stopTiming.finalizationStartedAt = CFAbsoluteTimeGetCurrent()
-            let finalization = await DictationStopFinalizer.finalize(
-                order: DictationStopFinalizationPolicy.order,
-                startSaving: {
-                    return self.startPersistingDictationTranscript(
+
+                let pasteDeclined = self.pasteDeclinedSessionID == taskSessionID
+                if !autoPaste || pasteDeclined {
+                    // Session cap reached (the user walked away mid-dictation), or
+                    // Esc after the stop (fork). Recover the transcript by saving it
+                    // to the daily Markdown file, but do NOT paste it into whatever
+                    // app now holds focus and do NOT auto-send — the cap exists to
+                    // rescue abandoned sessions, not to inject text into an
+                    // unattended app.
+                    await self.finalizeWithoutPaste(
                         text: text,
-                        delivery: pasteOutcome.delivery,
-                        recovery: recovery
+                        appState: appState,
+                        overlayController: overlayController,
+                        sessionID: taskSessionID,
+                        reason: pasteDeclined ? .escapeAfterStop : .sessionCap
                     )
-                },
-                finishSaving: { saveTask in
-                    let result = await saveTask.value
-                    self.publishDictationTranscriptPersistence(result, delivery: pasteOutcome.delivery, context: saveContext)
-                    return result
-                },
-                saveSynchronously: {
-                    self.persistDictationTranscript(
-                        text: text, delivery: pasteOutcome.delivery, recovery: recovery, context: saveContext
-                    )
-                },
-                performAutoEnter: {
-                    stopTiming.autoEnterStartedAt = CFAbsoluteTimeGetCurrent()
-                    let outcome = await self.performAutoEnterIfNeeded(
-                        pasteOutcome: pasteOutcome,
-                        sessionID: taskSessionID
-                    )
-                    stopTiming.autoEnterFinishedAt = CFAbsoluteTimeGetCurrent()
-                    return outcome
+                    return
                 }
-            )
-            let autoSendOutcome = finalization.autoEnterOutcome
-            let saveResult = finalization.saveResult
-            guard DictationSessionCompletionPolicy.canPublish(
-                sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
-                isDictating: self.isDictating, cancelled: Task.isCancelled
-            ) else { return }
-            if saveResult.saved != nil, self.stoppedAudioRecovery == recovery {
-                self.stoppedAudioRecovery = nil
-            }
-            stopTiming.saveStartedAt = saveResult.startedAt
-            stopTiming.savedAt = saveResult.finishedAt
-            stopTiming.savePublishedAt = CFAbsoluteTimeGetCurrent()
-            let saveFailureMessage = saveResult.failureMessage
-            let wordCount = text.split(whereSeparator: \.isWhitespace).count
-            stopTiming.completedAt = CFAbsoluteTimeGetCurrent()
-            var deliveryContext: [String: String] = [
-                "dictation_session_id": taskSessionID.uuidString,
-                "trigger": self.currentDictationTrigger.rawValue,
-                "auto_send": autoSendOutcome.diagnosticName,
-                "chars": "\(text.count)",
-                "words": "\(wordCount)",
-                "duration_ms": "\(Int((CFAbsoluteTimeGetCurrent() - self.sessionStartTime) * 1000))",
-            ]
-            deliveryContext.merge(pasteOutcome.deliveryProperties) { _, delivery in delivery }
-            DiagnosticsTrail.record(
-                logger: appState.logger,
-                level: pasteOutcome.diagnosticLevel,
-                engine: "dictation",
-                event: "dictation_delivery_completed",
-                message: pasteOutcome.diagnosticMessage,
-                context: self.dictationContext(extra: deliveryContext)
-            )
-            self.recordDictationStopLatency(
-                appState: appState,
-                timing: stopTiming,
-                sessionID: taskSessionID,
-                stopTrigger: trigger,
-                startTrigger: self.currentDictationTrigger,
-                pasteOutcome: pasteOutcome,
-                autoSendOutcome: autoSendOutcome,
-                wordCount: wordCount,
-                charCount: text.count,
-                cleanupEnabled: cleanupEnabled,
-                cleanupChanged: cleanupResult?.changed ?? false,
-                saveSucceeded: saveFailureMessage == nil
-            )
-            trackDictationDeliveryFriction(
-                pasteOutcome: pasteOutcome,
-                saveSucceeded: saveFailureMessage == nil,
-                elapsedSeconds: CFAbsoluteTimeGetCurrent() - sessionStartTime
-            )
-            switch DictationDeliveryPresentation.resolve(
-                outcome: pasteOutcome,
-                saveFailureMessage: saveFailureMessage,
-                autoSend: autoSendOutcome,
-                autoSendExpected: self.autoSendRequestDecision.expected
-            ) {
-            case .success(let title):
-                overlayController.showSuccessAndDismiss(title: title)
-            case .clipboardNotice(let message):
-                overlayController.showClipboardNotice(message)
-                // The text landed; a press for the next take can replace this.
-                overlayController.messageCanGiveWayToNextStart = DictationQueuedStartPolicy.messageCanGiveWayToNextStart(.landedClipboardNotice)
-            case .notPasted(let message, let unconfirmed):
-                // The island also shows the words and a Paste button.
-                self.showNotPasted(
-                    text,
-                    message: message,
-                    unconfirmed: unconfirmed,
-                    overlayController: overlayController
+
+                // Fork: not while the clipboard is borrowed, and after every
+                // earlier take has pasted.
+                self.setActiveTakeCanHandOff(false)
+                await self.awaitDeliveryTurn(take.sequence)
+                take.isDelivering = true
+                appState.logger.log("DICTATION | pasting \(text.count) chars")
+                lastCompletedText = text
+                stopTiming.pasteStartedAt = CFAbsoluteTimeGetCurrent()
+                let modelWaitSeconds = (stopTiming.modelReadyAt ?? 0) - (stopTiming.modelWaitStartedAt ?? 0)
+                // Fork: Anchored paste delivers to the field focused at the start
+                // when the user has moved on, or waits for them to come back.
+                let pasteOutcome: DictationPasteOutcome
+                switch await self.deliverToPasteAnchor(text) {
+                case .delivered(let outcome):
+                    pasteOutcome = outcome
+                case .deferred(let appName):
+                    take.isDelivering = false
+                    self.markDelivered(take.sequence)
+                    guard DictationSessionCompletionPolicy.canPublish(
+                        sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
+                        isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
+                    ) else { return }
+                    await self.finalizeWithoutPaste(
+                        text: text,
+                        appState: appState,
+                        overlayController: overlayController,
+                        sessionID: taskSessionID,
+                        reason: .anchoredDeferred(appName: appName)
+                    )
+                    return
+                case .notAnchored:
+                    pasteOutcome = self.pasteWithClipboardRestore(
+                        text,
+                        followCurrentFocus: DictationPostStopModelWaitPolicy.pasteFollowsCurrentFocus(
+                            modelWaitSeconds: modelWaitSeconds
+                        )
+                    )
+                    self.finishPasteAnchorAfterRegularPaste(pasteOutcome)
+                }
+                stopTiming.pastedAt = CFAbsoluteTimeGetCurrent()
+                take.isDelivering = false
+                self.markDelivered(take.sequence)
+                self.setActiveTakeCanHandOff(true)
+                // Paste confirmation pumps the run loop, so cancellation/restart can occur here too.
+                guard DictationSessionCompletionPolicy.canPublish(
+                    sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
+                    isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
+                ) else { return }
+                stopTiming.pasteBreakdown = self.textPaster.lastPasteTiming
+                // Capture ownership before suspending. The writer may outlive cancellation.
+                let recovery = self.stoppedAudioRecovery
+                let saveContext = self.dictationSaveContext(text: text)
+                stopTiming.finalizationStartedAt = CFAbsoluteTimeGetCurrent()
+                let finalization = await DictationStopFinalizer.finalize(
+                    order: DictationStopFinalizationPolicy.order,
+                    startSaving: {
+                        return self.startPersistingDictationTranscript(
+                            text: text,
+                            delivery: pasteOutcome.delivery,
+                            recovery: recovery
+                        )
+                    },
+                    finishSaving: { saveTask in
+                        let result = await saveTask.value
+                        self.publishDictationTranscriptPersistence(result, delivery: pasteOutcome.delivery, context: saveContext)
+                        return result
+                    },
+                    saveSynchronously: {
+                        self.persistDictationTranscript(
+                            text: text, delivery: pasteOutcome.delivery, recovery: recovery, context: saveContext
+                        )
+                    },
+                    performAutoEnter: {
+                        stopTiming.autoEnterStartedAt = CFAbsoluteTimeGetCurrent()
+                        let outcome = await self.performAutoEnterIfNeeded(
+                            pasteOutcome: pasteOutcome,
+                            sessionID: taskSessionID
+                        )
+                        stopTiming.autoEnterFinishedAt = CFAbsoluteTimeGetCurrent()
+                        return outcome
+                    }
                 )
-            case .clipboardBusy(let message):
-                // The words never went on the clipboard; offer them back.
-                self.showClipboardBusy(text, message: message, overlayController: overlayController)
-            case .error(let message):
-                overlayController.showError(message)
-            }
-            isDictating = false
-            appState.logger.log("DICTATION | completed with outcome \(pasteOutcome)")
-            if case .failed(let failure) = autoSendOutcome {
-                appState.logger.log("DICTATION | auto enter failed: \(failure.message)")
-            }
-            let autoSendTelemetry = DictationAutoSendTelemetry.snapshot(
-                request: self.autoSendRequestDecision,
-                pasteOutcome: pasteOutcome,
-                sendOutcome: autoSendOutcome
-            )
-            let targetConfirmationMode = DictationTargetConfirmationMode.resolve(
-                outcome: pasteOutcome,
-                diagnostic: self.textPaster.lastConfirmationDiagnostic
-            )
-            var dictationCompletedExtra: [String: String] = [
-                "auto_send": autoSendOutcome.diagnosticName,
-                "duration_bucket": AnalyticsReporter.durationBucket(seconds: CFAbsoluteTimeGetCurrent() - sessionStartTime),
-                "trigger": currentDictationTrigger.rawValue,
-                "word_count_bucket": AnalyticsReporter.wordCountBucket(wordCount),
-                "target_confirmation_mode": targetConfirmationMode.rawValue,
-            ]
-            dictationCompletedExtra.merge(pasteOutcome.deliveryProperties) { _, delivery in delivery }
-            dictationCompletedExtra.merge(autoSendTelemetry.analyticsProperties) { _, new in new }
-            AnalyticsReporter.track(
-                "dictation_completed",
-                properties: self.dictationAnalyticsProperties(
-                    extra: dictationCompletedExtra
+                let autoSendOutcome = finalization.autoEnterOutcome
+                let saveResult = finalization.saveResult
+                guard DictationSessionCompletionPolicy.canPublish(
+                    sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
+                    isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
+                ) else { return }
+                if saveResult.saved != nil, self.stoppedAudioRecovery == recovery {
+                    self.stoppedAudioRecovery = nil
+                }
+                stopTiming.saveStartedAt = saveResult.startedAt
+                stopTiming.savedAt = saveResult.finishedAt
+                stopTiming.savePublishedAt = CFAbsoluteTimeGetCurrent()
+                let saveFailureMessage = saveResult.failureMessage
+                let wordCount = text.split(whereSeparator: \.isWhitespace).count
+                stopTiming.completedAt = CFAbsoluteTimeGetCurrent()
+                var deliveryContext: [String: String] = [
+                    "dictation_session_id": taskSessionID.uuidString,
+                    "trigger": self.currentDictationTrigger.rawValue,
+                    "auto_send": autoSendOutcome.diagnosticName,
+                    "chars": "\(text.count)",
+                    "words": "\(wordCount)",
+                    "duration_ms": "\(Int((CFAbsoluteTimeGetCurrent() - self.sessionStartTime) * 1000))",
+                ]
+                deliveryContext.merge(pasteOutcome.deliveryProperties) { _, delivery in delivery }
+                DiagnosticsTrail.record(
+                    logger: appState.logger,
+                    level: pasteOutcome.diagnosticLevel,
+                    engine: "dictation",
+                    event: "dictation_delivery_completed",
+                    message: pasteOutcome.diagnosticMessage,
+                    context: self.dictationContext(extra: deliveryContext)
                 )
-            )
-            appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: "completed")
+                self.recordDictationStopLatency(
+                    appState: appState,
+                    timing: stopTiming,
+                    sessionID: taskSessionID,
+                    stopTrigger: trigger,
+                    startTrigger: self.currentDictationTrigger,
+                    pasteOutcome: pasteOutcome,
+                    autoSendOutcome: autoSendOutcome,
+                    wordCount: wordCount,
+                    charCount: text.count,
+                    cleanupEnabled: cleanupEnabled,
+                    cleanupChanged: cleanupResult?.changed ?? false,
+                    saveSucceeded: saveFailureMessage == nil
+                )
+                trackDictationDeliveryFriction(
+                    pasteOutcome: pasteOutcome,
+                    saveSucceeded: saveFailureMessage == nil,
+                    elapsedSeconds: CFAbsoluteTimeGetCurrent() - sessionStartTime
+                )
+                let presentation = DictationDeliveryPresentation.resolve(
+                    outcome: pasteOutcome,
+                    saveFailureMessage: saveFailureMessage,
+                    autoSend: autoSendOutcome,
+                    autoSendExpected: self.autoSendRequestDecision.expected
+                )
+                if DictationTakeScope.handedOff != nil {
+                    // Fork: the next take owns the island; a take that didn't
+                    // land shows its notice once the island is free.
+                    switch presentation {
+                    case .success, .clipboardNotice:
+                        break
+                    case .notPasted(let message, let unconfirmed):
+                        self.queueHandedOffNotice(.init(text: text, message: message, kind: .notPasted(unconfirmed: unconfirmed)))
+                    case .clipboardBusy(let message):
+                        self.queueHandedOffNotice(.init(text: text, message: message, kind: .clipboardBusy))
+                    case .error(let message):
+                        self.queueHandedOffNotice(.init(text: text, message: message, kind: .error))
+                    }
+                } else {
+                    switch presentation {
+                    case .success(let title):
+                        overlayController.showSuccessAndDismiss(title: title)
+                    case .clipboardNotice(let message):
+                        overlayController.showClipboardNotice(message)
+                        // The text landed; a press for the next take can replace this.
+                        overlayController.messageCanGiveWayToNextStart = DictationQueuedStartPolicy.messageCanGiveWayToNextStart(.landedClipboardNotice)
+                    case .notPasted(let message, let unconfirmed):
+                        // The island also shows the words and a Paste button.
+                        self.showNotPasted(
+                            text,
+                            message: message,
+                            unconfirmed: unconfirmed,
+                            overlayController: overlayController
+                        )
+                    case .clipboardBusy(let message):
+                        // The words never went on the clipboard; offer them back.
+                        self.showClipboardBusy(text, message: message, overlayController: overlayController)
+                    case .error(let message):
+                        overlayController.showError(message)
+                    }
+                }
+                let handedOff = DictationTakeScope.handedOff != nil
+                self.endActiveTake()
+                appState.logger.log("DICTATION | completed with outcome \(pasteOutcome)\(handedOff ? " (handed off)" : "")")
+                if case .failed(let failure) = autoSendOutcome {
+                    appState.logger.log("DICTATION | auto enter failed: \(failure.message)")
+                }
+                let autoSendTelemetry = DictationAutoSendTelemetry.snapshot(
+                    request: self.autoSendRequestDecision,
+                    pasteOutcome: pasteOutcome,
+                    sendOutcome: autoSendOutcome
+                )
+                let targetConfirmationMode = DictationTargetConfirmationMode.resolve(
+                    outcome: pasteOutcome,
+                    diagnostic: self.textPaster.lastConfirmationDiagnostic
+                )
+                var dictationCompletedExtra: [String: String] = [
+                    "auto_send": autoSendOutcome.diagnosticName,
+                    "duration_bucket": AnalyticsReporter.durationBucket(seconds: CFAbsoluteTimeGetCurrent() - sessionStartTime),
+                    "trigger": currentDictationTrigger.rawValue,
+                    "word_count_bucket": AnalyticsReporter.wordCountBucket(wordCount),
+                    "target_confirmation_mode": targetConfirmationMode.rawValue,
+                ]
+                dictationCompletedExtra.merge(pasteOutcome.deliveryProperties) { _, delivery in delivery }
+                dictationCompletedExtra.merge(autoSendTelemetry.analyticsProperties) { _, new in new }
+                AnalyticsReporter.track(
+                    "dictation_completed",
+                    properties: self.dictationAnalyticsProperties(
+                        extra: dictationCompletedExtra
+                    )
+                )
+                if !handedOff {
+                    appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: "completed")
+                }
+            }
         }
     }
 

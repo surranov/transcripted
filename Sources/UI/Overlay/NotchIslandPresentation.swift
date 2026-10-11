@@ -80,6 +80,12 @@ struct NotchIslandDictationContent: Equatable {
     /// words as they're spoken (set by the island from
     /// `LiveDictationCaptions`).
     var showsLivePreview = false
+    /// Fork: earlier takes still being refined and pasted (the dictation
+    /// queue), shown as a small mark beside this take.
+    var finishingInBackground = 0
+    /// Fork: a start press waits for this take to be transcribed; the
+    /// writing wing shows a mic so the press doesn't look ignored.
+    var nextTakeWaiting = false
 }
 
 struct NotchIslandMeetingContent: Equatable {
@@ -567,6 +573,30 @@ enum NotchIslandPresentation {
     private static func dictationWings(
         _ dictation: NotchIslandDictationContent
     ) -> ([NotchIslandItem], [NotchIslandItem]) {
+        let wings = singleDictationWings(dictation)
+        guard dictation.finishingInBackground > 0 else { return wings }
+        return (wings.0, withFinishingMark(wings.1, phase: dictation.phase, count: dictation.finishingInBackground))
+    }
+
+    /// Fork: the dictation queue's mark for takes finishing behind this one.
+    /// It takes the room of a few bars, so the island barely grows: writing
+    /// dots while this take listens, "+N" while it is written itself.
+    private static func withFinishingMark(
+        _ right: [NotchIslandItem],
+        phase: NotchIslandDictationContent.Phase,
+        count: Int
+    ) -> [NotchIslandItem] {
+        let fewerBars = right.map { item -> NotchIslandItem in
+            if case .dictationBars = item { return .dictationBars(count: 6) }
+            return item
+        }
+        if case .writing = phase { return [.text("+\(count)", .secondary)] + fewerBars }
+        return [.dots] + fewerBars
+    }
+
+    private static func singleDictationWings(
+        _ dictation: NotchIslandDictationContent
+    ) -> ([NotchIslandItem], [NotchIslandItem]) {
         switch dictation.phase {
         case .starting:
             return ([.accentDot], [])
@@ -586,7 +616,7 @@ enum NotchIslandPresentation {
             }
             return ([.symbol(.warning, .warning), .text(notice, .warning)], [.dictationBars(count: 9)])
         case .writing:
-            return ([.dots, .text("Writing", .title)], [.shimmer])
+            return ([.dots, .text("Writing", .title)], [dictation.nextTakeWaiting ? .symbol(.mic, .accent) : .shimmer])
         case .success(let title):
             return ([.symbol(.check, .accent), .text(title, .title)], [])
         case .message(let message):

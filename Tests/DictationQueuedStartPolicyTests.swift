@@ -35,7 +35,9 @@ func testDictationQueuedStartPolicy() async {
             .giveUp,
             "still finishing at the limit: fall back to the old message"
         )
-        assertTrue(DictationQueuedStartPolicy.waitSeconds <= 3, "the wait stays short so a press never feels lost")
+        // Fork: the wait lasts until the last take is transcribed (it is then
+        // handed off); the island shows the waiting press, so it doesn't feel lost.
+        assertTrue(DictationQueuedStartPolicy.waitSeconds <= 20, "a remembered press still gives up eventually")
     }
 
     runSuite("A remembered press never starts over the last take's message") {

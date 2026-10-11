@@ -186,6 +186,24 @@ func testNotchIslandPresentation() {
         assertEqual(layout.right, [.symbol(.mic, .accent), .dictationBars(count: 9)], "dictation takes the right")
     }
 
+    runSuite("NotchIslandPresentation marks takes finishing behind the current one (dictation queue)") {
+        var content = listening()
+        content.finishingInBackground = 1
+        let layout = notchLayout(dictation: content)
+        assertEqual(layout.left, [.symbol(.mic, .accent), .text("Listening", .title)], "the new take keeps its wing")
+        assertEqual(
+            layout.right, [.dots, .dictationBars(count: 6), .live(.dictationTimer, .secondary)],
+            "writing dots take the room of three bars, so the island barely grows"
+        )
+        var writing = NotchIslandDictationContent(phase: .writing)
+        writing.finishingInBackground = 2
+        assertEqual(notchLayout(dictation: writing).right, [.text("+2", .secondary), .shimmer], "while this take is written too: a count")
+        var waiting = NotchIslandDictationContent(phase: .writing)
+        waiting.nextTakeWaiting = true
+        assertEqual(notchLayout(dictation: waiting).right, [.symbol(.mic, .accent)], "a press waiting for this take shows as a mic")
+        assertEqual(notchLayout(dictation: listening()).right, [.dictationBars(count: 9), .live(.dictationTimer, .secondary)], "nothing behind: as before")
+    }
+
     runSuite("NotchIslandPresentation keeps a meeting's hover during a dictation in it") {
         var meeting = recording()
         meeting.showsLiveTranscript = true

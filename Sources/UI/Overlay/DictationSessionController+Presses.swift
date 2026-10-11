@@ -53,12 +53,16 @@ extension DictationSessionController {
 
     /// Whether the last take has stopped recording but is still being
     /// transcribed, pasted, or saved.
+    ///
+    /// Fork (the dictation queue): the stop's admission alone marks the take
+    /// as finishing. The overlay keeps showing Listening through the stop
+    /// checkpoint, and a press there (a quick second hands-free press) used
+    /// to be dropped; now it is the next take. The press that stops the take
+    /// is routed before its admission, so it is never taken for a start.
     private var isPreviousDictationFinishing: Bool {
-        guard let appState, let overlayController else { return false }
+        guard let appState else { return false }
         if isDictating {
             return stopFinalizationGate.admittedSessionID == currentDictationSessionID
-                && overlayController.state != .listening
-                && overlayController.state != .starting
         }
         return appState.sttRouter.isTranscribing
     }
@@ -105,6 +109,9 @@ extension DictationSessionController {
             let decision = await DictationQueuedStartWait.run(DictationQueuedStartWait.Steps(
                 evaluate: { [weak self] waited in
                     guard let self, self.queuedDictationStart != nil else { return nil }
+                    // Fork: the dictation queue. A take that is transcribed
+                    // finishes on its own and frees the controller now.
+                    self.handOffFinishingTakeIfReady()
                     let stillFinishing = self.isDictating || (self.appState?.sttRouter.isTranscribing ?? false)
                     // A take that ended in a problem or a "press ⌘V" notice keeps
                     // its message; starting over it would wipe the only sign the
@@ -128,7 +135,8 @@ extension DictationSessionController {
                     // runs on the next turn, once the new value is in place.
                     // dropFirst: the current value isn't a change.
                     var changes: [AnyPublisher<Void, Never>] = [
-                        self.$isDictating.dropFirst().map { _ in () }.eraseToAnyPublisher()
+                        self.$isDictating.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                        self.handOffReadiness.eraseToAnyPublisher(),
                     ]
                     if let router = self.appState?.sttRouter {
                         changes.append(router.$isTranscribing.dropFirst().map { _ in () }.eraseToAnyPublisher())

@@ -9,7 +9,11 @@ import Foundation
 /// wait. Past the wait it falls back to the old message.
 enum DictationQueuedStartPolicy {
     /// How long a remembered press waits for the last take to finish.
-    static let waitSeconds: Double = 2
+    /// Fork: with the dictation queue a press waits only until the last
+    /// take is transcribed (then it is handed off and finishes on its own),
+    /// which for a long take is the stop checkpoint plus transcription, so
+    /// the wait covers that instead of the old 2 seconds.
+    static let waitSeconds: Double = 15
 
     /// Shown in the transcribing pill while the press waits, so it doesn't
     /// look ignored.

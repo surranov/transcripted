@@ -60,6 +60,10 @@ class FloatingOverlayController {
             pushStateToIsland()
         }
     }
+    /// Fork: takes finishing in the background (the dictation queue).
+    var finishingInBackground = 0 {
+        didSet { if finishingInBackground != oldValue { pushStateToIsland() } }
+    }
 
     // MARK: - State (plain vars with didSet — no @Published, no ObservableObject)
 
@@ -240,7 +244,9 @@ class FloatingOverlayController {
         return NotchIslandDictationContent(
             phase: phase,
             notice: listeningNotice,
-            targetAppName: islandSourceApp?.localizedName
+            targetAppName: islandSourceApp?.localizedName,
+            finishingInBackground: finishingInBackground,
+            nextTakeWaiting: listeningNotice == DictationQueuedStartPolicy.waitingNotice
         )
     }
 

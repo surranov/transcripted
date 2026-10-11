@@ -197,14 +197,14 @@ extension DictationSessionController {
         try? await Task.sleep(nanoseconds: TranscriptedConstants.dictationAutoEnterDelay)
         guard DictationSessionCompletionPolicy.canPublish(
             sessionID: sessionID, currentSessionID: currentDictationSessionID,
-            isDictating: isDictating, cancelled: Task.isCancelled
+            isDictating: activeTakeIsLive, cancelled: Task.isCancelled
         ) else { return .disabled }
         if pasteOutcome.requiresClipboardReadinessBeforeAutoSend {
             await textPaster.waitForClipboardReadyForAutoEnter()
         }
         guard DictationSessionCompletionPolicy.canPublish(
             sessionID: sessionID, currentSessionID: currentDictationSessionID,
-            isDictating: isDictating, cancelled: Task.isCancelled
+            isDictating: activeTakeIsLive, cancelled: Task.isCancelled
         ) else { return .disabled }
         return autoSender.send(autoSendRequestDecision.key, target: sessionPasteTarget)
     }

@@ -89,13 +89,13 @@ extension DictationSessionController {
         case .terminalKeystrokes:
             guard await AnchoredTextDelivery.typeIntoTerminal(text, anchor: anchor) else { return deferOrPasteHere(text, anchor) }
             prepareAnchoredSend(route: route, anchor: anchor, text: text)
-            anchorMarker.update(.done)
+            updateAnchorMarker(.done)
             return .delivered(.pasted)
         case .accessibilityInsert:
             switch await AnchoredTextDelivery.insertViaAccessibility(text, anchor: anchor) {
             case .landed:
                 prepareAnchoredSend(route: route, anchor: anchor, text: text)
-                anchorMarker.update(.done)
+                updateAnchorMarker(.done)
                 return .delivered(.pasted)
             case let .unconfirmed(valueBefore):
                 appState?.logger.log("DICTATION | anchored field took the words off screen, unconfirmed until the user is back")
@@ -128,9 +128,9 @@ extension DictationSessionController {
         guard pasteAnchor != nil || anchorMarker.isShowing else { return }
         switch outcome {
         case .pasted, .likelyPasted:
-            anchorMarker.update(.done)
+            updateAnchorMarker(.done)
         case .copied, .failed:
-            anchorMarker.hide()
+            if DictationTakeScope.handedOff == nil { anchorMarker.hide() }
         }
     }
 
@@ -140,6 +140,13 @@ extension DictationSessionController {
             stopDeferredAnchoredPasteWatch()
             anchorMarker.hide()
         }
+    }
+
+    /// The marker belongs to the take on the island: a handed-off take
+    /// leaves it alone.
+    private func updateAnchorMarker(_ phase: AnchorMarkerController.Phase) {
+        guard DictationTakeScope.handedOff == nil else { return }
+        anchorMarker.update(phase)
     }
 
     // MARK: - Private
@@ -175,7 +182,7 @@ extension DictationSessionController {
             deadline: Date().addingTimeInterval(AnchoredPastePolicy.deferredPasteLifetime),
             unconfirmedValueBefore: unconfirmedValueBefore
         ))
-        anchorMarker.update(.waiting)
+        updateAnchorMarker(.waiting)
         startDeferredAnchoredPasteWatch()
         appState?.logger.log("DICTATION | anchored paste waits for \(anchor.appName)")
         return .deferred(appName: anchor.appName)

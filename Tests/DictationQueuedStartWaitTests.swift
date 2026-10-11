@@ -1,6 +1,6 @@
 // DictationQueuedStartWaitTests.swift
 // A remembered press wakes when the last take's state changes, not on a
-// 50 ms poll, and still gives up at the same 2 s budget.
+// 50 ms poll, and still gives up at the budget (`DictationQueuedStartPolicy.waitSeconds`).
 
 import Combine
 import Foundation
@@ -24,7 +24,7 @@ func testDictationQueuedStartWait() async {
 
     await runSuite("A @Published flip is read after it lands, not in its willSet") {
         // Reading the flag inside the change callback would see the old
-        // value (still finishing) and keep waiting until the 2 s give-up.
+        // value (still finishing) and keep waiting until the give-up.
         let rig = QueuedWaitRig()
         let wait = rig.start()
         await settleMainActor()
@@ -35,27 +35,28 @@ func testDictationQueuedStartWait() async {
         await wait.value
     }
 
-    await runSuite("With no change, the wait gives up at the 2 s budget, re-arming after an early wake") {
+    await runSuite("With no change, the wait gives up at the budget, re-arming after an early wake") {
+        let budget = DictationQueuedStartPolicy.waitSeconds
         let rig = QueuedWaitRig()
         let wait = rig.start()
         await settleMainActor()
-        assertEqual(rig.deadline.requested, [2_000_000_000], "the first deadline is the whole budget")
+        assertEqual(rig.deadline.requested, [UInt64(budget * 1_000_000_000)], "the first deadline is the whole budget")
 
         // The sleep ends early (as a real one can); time is left, so it re-arms.
-        rig.clock = 1.95
+        rig.clock = budget - 0.05
         rig.deadline.fireLatest()
         await settleMainActor()
-        assertNil(rig.result, "not given up before 2 s")
+        assertNil(rig.result, "not given up before the budget")
         assertEqual(rig.deadline.requested.count, 2)
         let rearmed = rig.deadline.requested.last ?? 0
         assertTrue(rearmed >= 49_000_000 && rearmed <= 51_000_000, "re-armed for the ~0.05 s left, got \(rearmed)")
 
-        rig.clock = 1.999
+        rig.clock = budget - 0.001
         rig.deadline.fireLatest()
         await settleMainActor()
-        assertNil(rig.result, "still not given up at 1.999 s")
+        assertNil(rig.result, "still not given up a millisecond before")
 
-        rig.clock = 2.0
+        rig.clock = budget
         rig.deadline.fireLatest()
         await settleMainActor()
         assertEqual(rig.result, .giveUp)
@@ -97,7 +98,7 @@ func testDictationQueuedStartWait() async {
             rig.take.isFinishing = true // a change that isn't the take finishing
             await settleMainActor()
         }
-        rig.clock = 2.0
+        rig.clock = DictationQueuedStartPolicy.waitSeconds
         rig.deadline.fireLatest()
         await settleMainActor()
         assertEqual(rig.result, .giveUp)

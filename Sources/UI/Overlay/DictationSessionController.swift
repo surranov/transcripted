@@ -122,48 +122,110 @@ class DictationSessionController: ObservableObject {
         return (appState, overlayController)
     }
 
-    var sessionSourceApp: NSRunningApplication?
-    var sessionPasteTarget: DictationPasteTarget?
+    // Fork: per-take state below reads and writes a handed-off take's own
+    // copy from inside its stop task (`DictationSessionController+HandOff.swift`).
+    private var storedSessionSourceApp: NSRunningApplication?
+    var sessionSourceApp: NSRunningApplication? {
+        get { if let take = DictationTakeScope.handedOff { return take.sourceApp }; return storedSessionSourceApp }
+        set { if let take = DictationTakeScope.handedOff { take.sourceApp = newValue } else { storedSessionSourceApp = newValue } }
+    }
+    private var storedSessionPasteTarget: DictationPasteTarget?
+    var sessionPasteTarget: DictationPasteTarget? {
+        get { if let take = DictationTakeScope.handedOff { return take.pasteTarget }; return storedSessionPasteTarget }
+        set { if let take = DictationTakeScope.handedOff { take.pasteTarget = newValue } else { storedSessionPasteTarget = newValue } }
+    }
     var sessionAnchorRect: NSRect?
     var startupTask: Task<Void, Never>?
     var streamingTask: Task<Void, Never>?
     var stopFinalizationGate = DictationStopFinalizationGate()
     var recordingStartRetryTask: Task<Void, Never>?
     var sessionTimeoutTask: Task<Void, Never>?
-    var sessionStartTime: CFAbsoluteTime = 0
+    private var storedSessionStartTime: CFAbsoluteTime = 0
+    var sessionStartTime: CFAbsoluteTime {
+        get { DictationTakeScope.handedOff.map { $0.sessionStartTime } ?? storedSessionStartTime }
+        set { if let take = DictationTakeScope.handedOff { take.sessionStartTime = newValue } else { storedSessionStartTime = newValue } }
+    }
     var currentRequestIsFirstSinceLaunch = false
-    var currentDictationTrigger: DictationTrigger = .unknown
-    var currentDictationSessionID = UUID()
+    private var storedDictationTrigger: DictationTrigger = .unknown
+    var currentDictationTrigger: DictationTrigger {
+        get { DictationTakeScope.handedOff.map { $0.trigger } ?? storedDictationTrigger }
+        set { if let take = DictationTakeScope.handedOff { take.trigger = newValue } else { storedDictationTrigger = newValue } }
+    }
+    private var storedDictationSessionID: UUID = UUID()
+    var currentDictationSessionID: UUID {
+        get { DictationTakeScope.handedOff.map { $0.sessionID } ?? storedDictationSessionID }
+        // Only a start mints an id, never a take's stop task.
+        set { storedDictationSessionID = newValue }
+    }
     /// Whether this session's start click has played. It plays once, on key
     /// press or after recording starts (see `DictationStartCuePolicy`).
     var didPlayStartCue = false
     /// The shortcut that started this session, when a shortcut did. Read from
     /// the press itself, never from a stored setting.
-    var currentDictationShortcutMode: DictationShortcutMode?
-    var stoppedAudioRecovery: DictationStoppedAudioRecovery?
-    var stoppedAudioRecoveryPreservationSessionID: UUID?
+    private var storedDictationShortcutMode: DictationShortcutMode?
+    var currentDictationShortcutMode: DictationShortcutMode? {
+        get { if let take = DictationTakeScope.handedOff { return take.shortcutMode }; return storedDictationShortcutMode }
+        set { if let take = DictationTakeScope.handedOff { take.shortcutMode = newValue } else { storedDictationShortcutMode = newValue } }
+    }
+    private var storedStoppedAudioRecovery: DictationStoppedAudioRecovery?
+    var stoppedAudioRecovery: DictationStoppedAudioRecovery? {
+        get { if let take = DictationTakeScope.handedOff { return take.stoppedAudioRecovery }; return storedStoppedAudioRecovery }
+        set { if let take = DictationTakeScope.handedOff { take.stoppedAudioRecovery = newValue } else { storedStoppedAudioRecovery = newValue } }
+    }
+    private var storedStoppedAudioRecoveryPreservationSessionID: UUID?
+    var stoppedAudioRecoveryPreservationSessionID: UUID? {
+        get { if let take = DictationTakeScope.handedOff { return take.stoppedAudioRecoveryPreservationSessionID }; return storedStoppedAudioRecoveryPreservationSessionID }
+        set { if let take = DictationTakeScope.handedOff { take.stoppedAudioRecoveryPreservationSessionID = newValue } else { storedStoppedAudioRecoveryPreservationSessionID = newValue } }
+    }
     var stoppedAudioCheckpointSignal: DictationStoppedAudioCheckpointSignal?
     /// Fork: the session whose paste Esc declined after its stop was admitted.
     /// That take still finishes and is saved to Dictations, just not pasted
     /// (`keepStoppedTakeWithoutPasting`).
     var pasteDeclinedSessionID: UUID?
     /// Fork: the transcript LLM pass in flight, so Esc can stop waiting on it.
-    var transcriptRefinementTask: Task<DictationTextRefinement, Never>?
+    private var storedTranscriptRefinementTask: Task<DictationTextRefinement, Never>?
+    var transcriptRefinementTask: Task<DictationTextRefinement, Never>? {
+        get { if let take = DictationTakeScope.handedOff { return take.transcriptRefinementTask }; return storedTranscriptRefinementTask }
+        set { if let take = DictationTakeScope.handedOff { take.transcriptRefinementTask = newValue } else { storedTranscriptRefinementTask = newValue } }
+    }
     /// Fork: the take's audio on disk while it records, and the loop that
     /// feeds it (`DictationSessionController+RecordingSpool.swift`).
     var recordingSpool: DictationRecordingSpool?
     var recordingSpoolTask: Task<Void, Never>?
     /// Fork: Anchored paste (`DictationSessionController+AnchoredPaste.swift`).
-    var pasteAnchor: DictationPasteAnchor?
-    var pasteAnchorTask: Task<Void, Never>?
-    var anchoredSend: (route: AnchoredPasteRoute, anchor: DictationPasteAnchor)?
+    private var storedPasteAnchor: DictationPasteAnchor?
+    var pasteAnchor: DictationPasteAnchor? {
+        get { if let take = DictationTakeScope.handedOff { return take.pasteAnchor }; return storedPasteAnchor }
+        set { if let take = DictationTakeScope.handedOff { take.pasteAnchor = newValue } else { storedPasteAnchor = newValue } }
+    }
+    private var storedPasteAnchorTask: Task<Void, Never>?
+    var pasteAnchorTask: Task<Void, Never>? {
+        get { if let take = DictationTakeScope.handedOff { return take.pasteAnchorTask }; return storedPasteAnchorTask }
+        set { if let take = DictationTakeScope.handedOff { take.pasteAnchorTask = newValue } else { storedPasteAnchorTask = newValue } }
+    }
+    private var storedAnchoredSend: (route: AnchoredPasteRoute, anchor: DictationPasteAnchor)?
+    var anchoredSend: (route: AnchoredPasteRoute, anchor: DictationPasteAnchor)? {
+        get { if let take = DictationTakeScope.handedOff { return take.anchoredSend }; return storedAnchoredSend }
+        set { if let take = DictationTakeScope.handedOff { take.anchoredSend = newValue } else { storedAnchoredSend = newValue } }
+    }
     lazy var anchorMarker = AnchorMarkerController()
     var deferredAnchoredPastes: [DeferredAnchoredPaste] = []
     var deferredAnchoredPasteTimer: Timer?
     /// A returning user's window is being given time to show an unconfirmed
     /// write; the watch waits for that before the next deferred paste.
     var deferredAnchoredPasteSettling = false
-    var autoSendRequestDecision = DictationAutoSendRequestDecision.notEvaluated
+    private var storedAutoSendRequestDecision: DictationAutoSendRequestDecision = .notEvaluated
+    var autoSendRequestDecision: DictationAutoSendRequestDecision {
+        get { DictationTakeScope.handedOff.map { $0.autoSendRequestDecision } ?? storedAutoSendRequestDecision }
+        set { if let take = DictationTakeScope.handedOff { take.autoSendRequestDecision = newValue } else { storedAutoSendRequestDecision = newValue } }
+    }
+    /// Fork: the dictation queue (`DictationSessionController+HandOff.swift`).
+    var finishingTake: DictationFinishingTake?
+    var handedOffTakes: [DictationFinishingTake] = []
+    let handOffReadiness = PassthroughSubject<Void, Never>()
+    var deliveryOrder = DictationDeliveryOrder()
+    var pendingHandedOffNotices: [HandedOffTakeNotice] = []
+    var handedOffNoticeRetry: Task<Void, Never>?
     /// A start-shortcut press that landed while the last take was still
     /// finishing. It starts as soon as that take is done. See
     /// `DictationQueuedStartPolicy`.
@@ -497,7 +559,11 @@ class DictationSessionController: ObservableObject {
             streamingTask?.cancel()
             streamingTask = nil
         }
-        textPaster.restorePendingClipboardNow()
+        // Fork: a handed-off take pasting right now still needs the words on
+        // the clipboard; its own restore follows its paste.
+        if !handedOffTakeIsDelivering {
+            textPaster.restorePendingClipboardNow()
+        }
         recordingStartRetryTask?.cancel()
         recordingStartRetryTask = nil
         sessionTimeoutTask?.cancel()

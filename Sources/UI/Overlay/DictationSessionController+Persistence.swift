@@ -24,7 +24,7 @@ extension DictationSessionController {
         publishDictationTranscriptPersistence(saveResult, delivery: delivery, context: saveContext)
         guard DictationSessionCompletionPolicy.canPublish(
             sessionID: sessionID, currentSessionID: currentDictationSessionID,
-            isDictating: isDictating, cancelled: Task.isCancelled
+            isDictating: activeTakeIsLive, cancelled: Task.isCancelled
         ) else { return }
         if saveResult.saved != nil, stoppedAudioRecovery == recovery {
             stoppedAudioRecovery = nil
@@ -69,6 +69,12 @@ extension DictationSessionController {
             "dictation_completed",
             properties: dictationAnalyticsProperties(extra: completionProperties)
         )
+        // Fork: a handed-off take leaves the island to the take being spoken;
+        // a deferred paste still runs once the user is back.
+        if DictationTakeScope.handedOff != nil {
+            endActiveTake()
+            return
+        }
         // Hitting the session cap still saved the text: a notice, not an
         // error with a warning triangle and a shake.
         if case .anchoredDeferred(let appName) = reason, saveFailureMessage == nil {
@@ -88,7 +94,7 @@ extension DictationSessionController {
                     }
                 }
             )
-            isDictating = false
+            endActiveTake()
             appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: "anchored_paste_deferred")
             return
         }
@@ -110,7 +116,7 @@ extension DictationSessionController {
                 }
             )
         }
-        isDictating = false
+        endActiveTake()
         appState.runtimeDiagnostics.clearSession(
             kind: "dictation",
             outcome: saveFailureMessage == nil ? "session_cap_saved" : "session_cap_save_failed"
