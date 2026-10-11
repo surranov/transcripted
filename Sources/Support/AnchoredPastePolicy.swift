@@ -129,6 +129,10 @@ enum AnchoredPastePolicy {
         }
     }
 
+    static func hasLineBreaks(_ text: String) -> Bool {
+        text.rangeOfCharacter(from: .newlines) != nil
+    }
+
     static func route(
         anchorAppIsFrontmost: Bool,
         focusIsAnchorField: Bool,
@@ -136,7 +140,8 @@ enum AnchoredPastePolicy {
         fieldAlive: Bool,
         contextMatches: Bool,
         isTerminal: Bool,
-        terminalWindowIsCurrent: Bool
+        terminalWindowIsCurrent: Bool,
+        textHasLineBreaks: Bool
     ) -> AnchoredPasteRoute {
         if anchorAppIsFrontmost {
             // Still in the field, or moved to another document in the same
@@ -148,8 +153,12 @@ enum AnchoredPastePolicy {
             return .accessibilityInsert
         }
         // A terminal's title changes with the running command, so it is
-        // trusted while its window is still the app's focused one.
-        if isTerminal { return terminalWindowIsCurrent ? .terminalKeystrokes : .deferred }
+        // trusted while its window is still the app's focused one. A line
+        // break typed as a key is Return, which sends a chat prompt (Claude
+        // Code) at the first line; the regular paste on return keeps it text.
+        if isTerminal {
+            return terminalWindowIsCurrent && !textHasLineBreaks ? .terminalKeystrokes : .deferred
+        }
         guard hasField, fieldAlive, contextMatches else { return .deferred }
         return .accessibilityInsert
     }

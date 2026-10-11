@@ -83,7 +83,7 @@ enum AnchoredTextDelivery {
 
     // MARK: - Decide
 
-    static func route(for anchor: DictationPasteAnchor) -> AnchoredPasteRoute {
+    static func route(for anchor: DictationPasteAnchor, text: String) -> AnchoredPasteRoute {
         let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == anchor.pid
         let appElement = AXUIElementCreateApplication(anchor.pid)
         AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
@@ -102,7 +102,8 @@ enum AnchoredTextDelivery {
             fieldAlive: fieldAlive,
             contextMatches: anchor.context.stillMatches(currentContext(of: anchor)),
             isTerminal: anchor.isTerminal,
-            terminalWindowIsCurrent: terminalWindowIsCurrent
+            terminalWindowIsCurrent: terminalWindowIsCurrent,
+            textHasLineBreaks: AnchoredPastePolicy.hasLineBreaks(text)
         )
     }
 
@@ -198,6 +199,9 @@ enum AnchoredTextDelivery {
     /// Types `text` into the anchored terminal through keystrokes addressed
     /// to its process (`BackgroundKeystrokes`).
     static func typeIntoTerminal(_ text: String, anchor: DictationPasteAnchor) async -> Bool {
+        // `route` keeps multi-line text off this path; a line break here
+        // would be typed as Return.
+        guard !AnchoredPastePolicy.hasLineBreaks(text) else { return false }
         let pid = anchor.pid
         return await Task.detached(priority: .userInitiated) {
             BackgroundKeystrokes.type(text, pid: pid)

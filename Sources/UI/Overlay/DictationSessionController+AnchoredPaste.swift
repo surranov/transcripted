@@ -81,7 +81,7 @@ extension DictationSessionController {
             await capture.value
         }
         guard let anchor = pasteAnchor else { return .notAnchored }
-        let route = AnchoredTextDelivery.route(for: anchor)
+        let route = AnchoredTextDelivery.route(for: anchor, text: text)
         appState?.logger.log("DICTATION | anchored paste route: \(route.rawValue)")
         switch route {
         case .normalPaste:

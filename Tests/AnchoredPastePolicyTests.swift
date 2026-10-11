@@ -11,7 +11,8 @@ private func route(
     alive: Bool = true,
     context: Bool = true,
     terminal: Bool = false,
-    terminalWindowCurrent: Bool = true
+    terminalWindowCurrent: Bool = true,
+    lineBreaks: Bool = false
 ) -> AnchoredPasteRoute {
     AnchoredPastePolicy.route(
         anchorAppIsFrontmost: frontmost,
@@ -20,7 +21,8 @@ private func route(
         fieldAlive: alive,
         contextMatches: context,
         isTerminal: terminal,
-        terminalWindowIsCurrent: terminalWindowCurrent
+        terminalWindowIsCurrent: terminalWindowCurrent,
+        textHasLineBreaks: lineBreaks
     )
 }
 
@@ -36,6 +38,12 @@ func testAnchoredPastePolicy() {
         assertEqual(route(terminal: true), .terminalKeystrokes, "a terminal is typed into")
         assertEqual(route(terminal: true, terminalWindowCurrent: false), .deferred, "another terminal window is in front of it now")
         assertEqual(route(frontmost: true, terminal: true), .normalPaste, "inside the terminal: the regular paste")
+        assertEqual(
+            route(terminal: true, lineBreaks: true), .deferred,
+            "multi-line text waits for the regular paste: a typed line break is Return and would send a Claude Code prompt early"
+        )
+        assertEqual(route(lineBreaks: true), .accessibilityInsert, "a text field takes line breaks as text")
+        assertTrue(AnchoredPastePolicy.hasLineBreaks("one\ntwo") && AnchoredPastePolicy.hasLineBreaks("a\r\nb") && !AnchoredPastePolicy.hasLineBreaks("one line"), "any newline counts")
     }
 
     runSuite("AnchoredPastePolicy finds where the words go") {
