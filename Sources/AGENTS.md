@@ -36,7 +36,7 @@ The app does: dictation with paste-back, Writing (opt-in autocomplete through it
   - `MicrophoneProcessingPreferences.swift` — mic processing mode for meetings and dictation; default is software AGC, with raw input and Apple voice processing as options. The in-meeting boost prompt and Home's "Boost mic next meeting" arm voice processing for one meeting and never save the mode. A one-time migration moves Boosts saved by 1.1.62 and older back to software AGC.
   - `TranscriptionModelPreferences.swift` — one local model choice shared by dictation and meetings: Parakeet TDT V3 / V2, Whisper Large V3 Turbo / V3, Apple Speech, and the experimental Parakeet Ultra (never downloaded; it exists only once `scripts/models/parakeet-ultra` has installed it).
   - Others (dictionary, Dock, local speaker, onboarding, storage paths, `TranscriptedConstants.swift`): read the file name; `Support/AGENTS.md` lists them.
-- Dictation limits live in `Support/TranscriptedConstants.swift` (take cap `dictationSessionMaxDuration`, 15 minutes). Kept dictation audio is `Dictation/DictationAudioArchive.swift` (30 days by default).
+- Dictation limits live in `Support/TranscriptedConstants.swift` (take cap `dictationSessionMaxDuration`, two hours in the fork). Kept dictation audio is `Dictation/DictationAudioArchive.swift` (30 days by default).
 
 ## Modules
 

@@ -56,6 +56,11 @@ enum DictationTextRefinementPolicy {
     /// fine at any ratio.
     static let maximumDroppedCharacters = 24
     static let maximumAddedCharacters = 80
+    /// A passage this long (half a minute of speech and up) holds a tighter
+    /// lower bound: the reference answers never went below 0.89, and a long
+    /// piece returned at 40% is a summary, not a cleanup.
+    static let longTextCharacters = 400
+    static let longTextMinimumLengthRatio = 0.7
 
     static let transcriptOpenTag = "<TRANSCRIPTION-START>"
     static let transcriptCloseTag = "<TRANSCRIPTION-END>"
@@ -73,8 +78,9 @@ enum DictationTextRefinementPolicy {
         if Double(answerCount) > Double(originalCount) * maximumLengthRatio + Double(maximumAddedCharacters) {
             return nil
         }
+        let lowerBound = originalCount >= longTextCharacters ? longTextMinimumLengthRatio : minimumLengthRatio
         if originalCount - answerCount > maximumDroppedCharacters,
-           Double(answerCount) < Double(originalCount) * minimumLengthRatio {
+           Double(answerCount) < Double(originalCount) * lowerBound {
             return nil
         }
         return cleaned

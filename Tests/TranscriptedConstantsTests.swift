@@ -150,8 +150,8 @@ func testTranscriptedConstants() async {
         )
         assertEqual(
             TranscriptedConstants.dictationSessionMaxDuration,
-            15 * 60,
-            "the dictation session cap should be 15 minutes"
+            2 * 60 * 60,
+            "fork: the dictation session cap is a two-hour backstop, not a length limit"
         )
     }
 

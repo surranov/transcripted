@@ -3,7 +3,7 @@ import Foundation
 /// Writes a dictation to disk while it is still being recorded (fork).
 ///
 /// Upstream kept a take only in memory until Stop, so a crash, a force quit or
-/// a power cut mid-take lost all of it, up to the 15-minute cap. The spool
+/// a power cut mid-take lost all of it, up to the session cap. The spool
 /// appends the take's 16 kHz audio every few seconds to the take's checkpoint
 /// WAV (`DictationStoppedAudioRecoveryStore.checkpointURL`, with its JSON), so
 /// a spool an earlier run left behind is just another leftover checkpoint:

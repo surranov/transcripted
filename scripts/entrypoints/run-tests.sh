@@ -439,6 +439,7 @@ APP_SOURCES=(
     "Sources/Dictation/DictationRecordingSpool.swift"
     "Sources/Support/AnchoredPastePolicy.swift"
     "Sources/Dictation/DictationTextRefiner.swift"
+    "Sources/Dictation/DictationRefinementChunking.swift"
     "Sources/Support/TranscriptLLMPromptPreferences.swift"
     "Sources/TranscriptLLM/TranscriptLLMChat.swift"
     "Sources/Meeting/MeetingTranscriptLLMDocument.swift"

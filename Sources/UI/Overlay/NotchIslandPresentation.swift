@@ -73,7 +73,7 @@ struct NotchIslandDictationContent: Equatable {
     }
 
     var phase: Phase
-    /// The Esc-confirm prompt or the 15-minute cap countdown, while listening.
+    /// The Esc-confirm prompt or the session cap countdown, while listening.
     var notice: String = ""
     var targetAppName: String?
     /// The live preview is streaming this take, so the hover shows the

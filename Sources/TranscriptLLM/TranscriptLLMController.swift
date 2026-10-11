@@ -129,6 +129,10 @@ final class TranscriptLLMController: DictationTextRefiner {
             return .unchanged(.notReady)
         }
         let started = CFAbsoluteTimeGetCurrent()
+        let chunks = DictationRefinementChunking.chunks(of: text)
+        if chunks.count > 1 {
+            return await refineInPieces(text, chunks: chunks, prompt: prompt, host: host, started: started)
+        }
         let outcome = await Self.complete(
             host: host,
             slot: .dictation,
@@ -163,6 +167,55 @@ final class TranscriptLLMController: DictationTextRefiner {
             log("TRANSCRIPT LLM | engine unreachable (\(elapsed)s); restarting it, keeping the recognized text")
             return .unchanged(.failed)
         }
+    }
+
+    /// A long take, one piece at a time (`DictationRefinementChunking`). A
+    /// piece whose answer doesn't pass keeps its recognized text; the rest
+    /// are still refined. A dead helper or Esc keeps the whole take.
+    private func refineInPieces(
+        _ text: String,
+        chunks: [DictationRefinementChunking.Chunk],
+        prompt: String,
+        host: LlamaServerProcessHost,
+        started: CFAbsoluteTime
+    ) async -> DictationTextRefinement {
+        var pieces: [String] = []
+        var kept = 0
+        for chunk in chunks {
+            let outcome = await Self.complete(
+                host: host,
+                slot: .dictation,
+                systemPrompt: prompt,
+                transcript: chunk.text,
+                maxTokens: TranscriptLLMChat.maxTokens(transcript: chunk.text)
+            )
+            switch outcome {
+            case let .answer(.text(answer)):
+                if let accepted = DictationTextRefinementPolicy.accepted(original: chunk.text, answer: answer) {
+                    pieces.append(accepted)
+                } else {
+                    pieces.append(chunk.text)
+                    kept += 1
+                }
+            case .answer(.truncated), .answer(.malformed), .rejectedRequest:
+                pieces.append(chunk.text)
+                kept += 1
+            case .cancelled:
+                return .unchanged(.cancelled)
+            case .transportFailure:
+                host.reportCompletionFailure()
+                log("TRANSCRIPT LLM | engine unreachable mid-take; restarting it, keeping the recognized text")
+                return .unchanged(.failed)
+            }
+        }
+        let elapsed = String(format: "%.2f", CFAbsoluteTimeGetCurrent() - started)
+        guard kept < chunks.count else {
+            log("TRANSCRIPT LLM | all \(chunks.count) pieces rejected (\(elapsed)s); keeping the recognized text")
+            return .unchanged(.rejected)
+        }
+        let refined = DictationRefinementChunking.join(pieces, of: chunks)
+        log("TRANSCRIPT LLM | refined \(text.count) → \(refined.count) chars in \(chunks.count) pieces (\(kept) kept as recognized) in \(elapsed)s")
+        return .refined(refined)
     }
 
     // MARK: - Lifecycle

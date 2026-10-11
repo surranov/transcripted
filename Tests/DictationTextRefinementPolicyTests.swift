@@ -45,6 +45,14 @@ func testDictationTextRefinementPolicy() {
         )
     }
 
+    runSuite("DictationTextRefinementPolicy holds a long passage to most of its length") {
+        let passage = String(repeating: "Длинный кусок диктовки, который модель должна только поправить. ", count: 10)
+        let summary = String(passage.prefix(passage.count / 2))
+        assertNil(DictationTextRefinementPolicy.accepted(original: passage, answer: summary), "half of a long piece is a summary: the original stays")
+        let edited = String(passage.prefix(passage.count * 9 / 10))
+        assertEqual(DictationTextRefinementPolicy.accepted(original: passage, answer: edited), edited.trimmingCharacters(in: .whitespacesAndNewlines), "a tenth shorter is still a cleanup")
+    }
+
     runSuite("DictationTextRefinementPolicy lets short dictations change shape") {
         assertEqual(DictationTextRefinementPolicy.accepted(original: "ок", answer: "OK."), "OK.", "a few characters lost is fine at any ratio")
         assertEqual(
