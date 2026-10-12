@@ -231,12 +231,14 @@ final class MicActivityMonitor: @unchecked Sendable {
         return bundleIDs.filter { !$0.matchesBundleFamily(ownBundleID) }
     }
 
-    /// Bundle IDs of *native conferencing* processes currently playing audio
+    /// Bundle IDs of *native call app* processes currently playing audio
     /// output, minus our own. Deliberately narrower than the mic side: only
     /// bundles that map to a native provider via
     /// `MeetingPromptProvider.audioOutputProvider` count, so browsers and media
-    /// apps never enter the sustain confirmer and cannot churn emissions. This is
-    /// the listen-only / hard-muted call signal.
+    /// apps never enter the sustain confirmer and cannot churn emissions. For
+    /// meeting apps this is the listen-only / hard-muted call signal; for chat
+    /// apps (Slack, Telegram...) it is the other half of a call, which the
+    /// detector only counts with that app also on the mic.
     static func callOutputBundleIDs(
         from processes: [(bundleID: String?, isRunningOutput: Bool)],
         ownBundleID: String

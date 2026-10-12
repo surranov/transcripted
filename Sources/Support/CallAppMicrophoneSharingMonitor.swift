@@ -24,7 +24,6 @@ enum MicrophoneSharingPolicy {
         "Cisco-Systems.Spark",
         "com.apple.FaceTime",
         "kontur.talk",
-        "ru.yandex.desktop.telemost",
     ]
 
     static func requiresSharedMicrophone(runningApplicationBundleIDs: [String]) -> Bool {

@@ -75,7 +75,9 @@ extension MeetingPromptDetector {
     func currentSignalSnapshot() -> MeetingPromptSignalSnapshot {
         MeetingPromptSignalSnapshot(
             micActive: !micInputProviders().isEmpty,
-            speakerActive: !audioOutputProviders().isEmpty || browserListenNamedCall(now: Date()) != nil,
+            speakerActive: !audioOutputProviders().isEmpty
+                || browserListenNamedCall(now: Date()) != nil
+                || micInputProviders().contains(where: \.requiresTwoWayAudio),
             cameraActive: cameraInUse
         )
     }
@@ -328,17 +330,21 @@ extension MeetingPromptDetector {
     /// process attribution); the camera is the last standalone signal, so a
     /// normal mic-and-camera call is a single mic prompt and the camera's
     /// frontmost-based attribution never overrides or duplicates a stronger
+    /// one. A chat app's call (Discord in a voice channel for hours) is listed
+    /// but never hides the tiers below it.
     func callSignals(
         frontmostBundleID: String?
     ) -> [(provider: MeetingPromptProvider, reason: MeetingPromptReason)] {
         let micProviders = micInputProviders()
-        if !micProviders.isEmpty {
-            return micProviders.map { ($0, .micInput) }
+        let chatCalls = micProviders.filter(\.requiresTwoWayAudio).map { ($0, MeetingPromptReason.micInput) }
+        let meetingMic = micProviders.filter { !$0.requiresTwoWayAudio }
+        if !meetingMic.isEmpty {
+            return meetingMic.map { ($0, .micInput) } + chatCalls
         }
 
         let outputProviders = audioOutputProviders()
         if !outputProviders.isEmpty {
-            return outputProviders.map { ($0, .audioOutput) }
+            return outputProviders.map { ($0, .audioOutput) } + chatCalls
         }
 
         // A call joined muted in a browser: its audio is playing and a title
@@ -346,24 +352,41 @@ extension MeetingPromptDetector {
         // can't name (videos, music) is not a signal at all, so it never
         // starts a call session or a suppression event.
         if browserListenNamedCall(now: Date()) != nil {
-            return [(.googleMeet, .audioOutput)]
+            return [(.googleMeet, .audioOutput)] + chatCalls
         }
 
         if cameraInUse,
            let provider = MeetingPromptProvider.cameraCallProvider(forFrontmostBundleID: frontmostBundleID) {
-            return [(provider, .cameraInput)]
+            return [(provider, .cameraInput)] + chatCalls
         }
 
-        return []
+        return chatCalls
     }
 
-    private func micInputProviders() -> [MeetingPromptProvider] {
-        Set(micActiveBundleIDs.compactMap(MeetingPromptProvider.micInputProvider(forBundleID:)))
+    /// Chat apps on the mic that are not playing: a voice note being
+    /// recorded, or a call that has not started talking back yet. For the
+    /// decision trace only.
+    func chatAppsOnMicWithoutPlayback() -> [MeetingPromptProvider] {
+        let calling = Set(micInputProviders())
+        return Set(micActiveBundleIDs.compactMap(MeetingPromptProvider.micInputProvider(forBundleID:)))
+            .filter { $0.requiresTwoWayAudio && !calling.contains($0) }
             .sorted { $0.rawValue < $1.rawValue }
     }
 
+    /// Apps on the mic that make a call. A chat app counts only while it is
+    /// also playing (a call); its mic alone is a voice note being recorded.
+    private func micInputProviders() -> [MeetingPromptProvider] {
+        let playing = Set(audioOutputActiveBundleIDs.compactMap(MeetingPromptProvider.audioOutputProvider(forBundleID:)))
+        return Set(micActiveBundleIDs.compactMap(MeetingPromptProvider.micInputProvider(forBundleID:)))
+            .filter { !$0.requiresTwoWayAudio || playing.contains($0) }
+            .sorted { $0.rawValue < $1.rawValue }
+    }
+
+    /// Native call apps playing with nothing on the mic (a listen-only or
+    /// muted join). Never a chat app: that is a voice note playing.
     private func audioOutputProviders() -> [MeetingPromptProvider] {
         Set(audioOutputActiveBundleIDs.compactMap(MeetingPromptProvider.audioOutputProvider(forBundleID:)))
+            .filter { !$0.requiresTwoWayAudio }
             .sorted { $0.rawValue < $1.rawValue }
     }
 

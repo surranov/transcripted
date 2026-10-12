@@ -114,7 +114,11 @@ func testMicActivityMonitorProbeFilter() {
         for bundle in ["com.google.Chrome.helper", "com.apple.WebKit.GPU", "us.zoom.xos", "com.microsoft.teams2.helper"] {
             assertTrue(MicActivityMonitor.shouldProbe(bundleID: bundle, ownBundleID: own), "\(bundle) can be a call")
         }
-        for bundle in ["com.apple.QuickTimePlayerX", "com.tinyspeck.slackmacgap", "com.spotify.client"] {
+        assertTrue(
+            MicActivityMonitor.shouldProbe(bundleID: "com.tinyspeck.slackmacgap", ownBundleID: own),
+            "Slack can be a huddle (counted only with its mic and playback both on)"
+        )
+        for bundle in ["com.apple.QuickTimePlayerX", "com.spotify.client"] {
             assertFalse(MicActivityMonitor.shouldProbe(bundleID: bundle, ownBundleID: own), "\(bundle) never maps to a provider")
         }
         assertTrue(
@@ -129,16 +133,20 @@ func testMicActivityMonitorProbeFilter() {
         let unfiltered = projections(of: unfilteredRows(probeFilterTable))
         assertEqual(filtered, unfiltered, "mic providers, browser families and both output sets must not change")
         let expectedMicProviders = Set(
-            ["com.google.Chrome.helper", "com.microsoft.teams2.helper"]
+            ["com.google.Chrome.helper", "com.microsoft.teams2.helper", "com.tinyspeck.slackmacgap"]
                 .compactMap(MeetingPromptProvider.micInputProvider(forBundleID:))
                 .map(\.rawValue)
         )
-        assertEqual(expectedMicProviders.count, 2, "Chrome and Teams are two different providers")
-        assertEqual(filtered.micProviders, expectedMicProviders, "the browser and Teams mic users are still seen")
-        assertEqual(filtered.callOutput, ["us.zoom.xos"], "the listen-only Zoom call is still seen")
+        assertEqual(expectedMicProviders.count, 3, "Chrome, Teams and Slack are three different providers")
+        assertEqual(filtered.micProviders, expectedMicProviders, "the browser, Teams and Slack mic users are still seen")
+        assertEqual(
+            filtered.callOutput,
+            ["us.zoom.xos", "com.tinyspeck.slackmacgap"],
+            "the listen-only Zoom call and Slack's playback (half of a huddle) are still seen"
+        )
         assertTrue(filtered.browserOutput.contains("com.google.Chrome.helper.Renderer"), "the browser talking back is still seen")
         assertTrue(log.inputReads.contains(12), "a process whose bundle read failed is still probed")
-        for skipped in [6, 7, 8, 9, 10, 11] {
+        for skipped in [6, 7, 8, 9, 11] {
             assertFalse(log.inputReads.contains(skipped), "process \(skipped) can't be a call, so its flags are never read")
             assertFalse(log.outputReads.contains(skipped), "process \(skipped) can't be a call, so its flags are never read")
         }

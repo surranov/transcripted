@@ -18,6 +18,10 @@ extension MeetingPromptHeuristics {
     ///   the start raises a macOS dialog over the call that nobody asked for.
     /// - The call was not recorded yet: after a Stop mid-call, the next prompt
     ///   for the same call asks.
+    /// - Not a chat app's call in its own app (Slack, Telegram, WhatsApp,
+    ///   Discord, the Telemost app): two-way audio there is also a voice chat
+    ///   left open or a long voice note played while recording another, so
+    ///   those only ask. A Telemost call in a tab is named by its title.
     static func autoRecordDelaySeconds(
         for reason: MeetingPromptReason,
         provider: MeetingPromptProvider,
@@ -31,6 +35,7 @@ extension MeetingPromptHeuristics {
               reason == .micInput || reason == .cameraInput
                 || (reason == .audioOutput && evidence == .tabTitle && provider != .googleMeet),
               evidence == .nativeApp || evidence == .tabTitle,
+              !(provider.requiresTwoWayAudio && evidence == .nativeApp),
               microphoneGranted,
               systemAudioStatus != .notDetermined,
               !callAlreadyRecorded

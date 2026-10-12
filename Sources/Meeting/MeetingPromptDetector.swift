@@ -315,7 +315,10 @@ final class MeetingPromptDetector {
         refreshBrowserListenTitles(now: now)
         let signals = callSignals(frontmostBundleID: frontmostBundleID)
         logCallSignalsIfChanged(signals)
-        updateDetectedCallSession(signals: signals, now: now)
+        // A chat app's call is left out of the call session (funnel and
+        // missed-call nudge): a voice channel open for hours would merge
+        // with, and outlive, every real meeting during it.
+        updateDetectedCallSession(signals: signals.filter { !$0.provider.requiresTwoWayAudio }, now: now)
 
         var candidates: [ScoredCandidate] = []
         if calendarAccessGranted() {

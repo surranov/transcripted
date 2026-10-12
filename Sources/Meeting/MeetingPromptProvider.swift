@@ -15,12 +15,34 @@ enum MeetingPromptProvider: String, CaseIterable, Hashable {
     case ktalk
     /// Yandex Telemost: web calls and the desktop app.
     case telemost
+    /// Chat apps that also call: a Slack huddle, a Telegram, WhatsApp or
+    /// Discord call. They use the mic for voice notes and play voice notes
+    /// too, so only both at once counts (`requiresTwoWayAudio`).
+    case slack
+    case telegram
+    case whatsapp
+    case discord
 
     var browserHosted: Bool {
         switch self {
         case .googleMeet, .teams, .webex, .ktalk, .telemost:
             return true
-        case .zoom, .facetime:
+        case .zoom, .facetime, .slack, .telegram, .whatsapp, .discord:
+            return false
+        }
+    }
+
+    /// A chat app's call shows up as its mic and its playback on at the same
+    /// time. Either alone is a voice note being recorded or played, or the
+    /// camera a video note, so neither is a call signal by itself, and these
+    /// apps stay out of the Boost Mic call-app list (open all day).
+    var requiresTwoWayAudio: Bool {
+        switch self {
+        // The Telemost app is Yandex's messenger now too, with voice notes;
+        // a Telemost call in a browser tab is still named by its title.
+        case .slack, .telegram, .whatsapp, .discord, .telemost:
+            return true
+        case .zoom, .googleMeet, .teams, .webex, .facetime, .ktalk:
             return false
         }
     }
@@ -43,18 +65,31 @@ enum MeetingPromptProvider: String, CaseIterable, Hashable {
             return ["kontur.talk"]
         case .telemost:
             return ["ru.yandex.desktop.telemost"]
+        case .slack:
+            return ["com.tinyspeck.slackmacgap"]
+        case .telegram:
+            // The App Store app, and Telegram Desktop.
+            return ["ru.keepcoder.Telegram", "com.tdesktop.Telegram"]
+        case .whatsapp:
+            return ["net.whatsapp.WhatsApp", "desktop.WhatsApp"]
+        case .discord:
+            // A Discord call holds the mic in `com.hnc.Discord.helper.Renderer`.
+            return ["com.hnc.Discord", "com.hnc.DiscordPTB", "com.hnc.DiscordCanary"]
         }
     }
 
+    /// Whether the app being opened or brought forward is worth a look.
+    /// Chat apps are brought forward all day and never get an app-open
+    /// prompt, so they don't count.
     var supportsNativeRuntimePrompt: Bool {
-        !activeBundleIdentifiers.isEmpty
+        !activeBundleIdentifiers.isEmpty && !requiresTwoWayAudio
     }
 
     var supportsRuntimeOnlyPrompt: Bool {
         switch self {
         // Open all day between calls (Telemost and Talk are also chat apps),
         // so being open says nothing about a call.
-        case .zoom, .teams, .googleMeet, .ktalk, .telemost:
+        case .zoom, .teams, .googleMeet, .ktalk, .telemost, .slack, .telegram, .whatsapp, .discord:
             return false
         case .webex, .facetime:
             return supportsNativeRuntimePrompt
@@ -77,6 +112,14 @@ enum MeetingPromptProvider: String, CaseIterable, Hashable {
             return "Kontur.Talk"
         case .telemost:
             return "Telemost"
+        case .slack:
+            return "Slack"
+        case .telegram:
+            return "Telegram"
+        case .whatsapp:
+            return "WhatsApp"
+        case .discord:
+            return "Discord"
         }
     }
 
@@ -223,7 +266,8 @@ enum MeetingPromptProvider: String, CaseIterable, Hashable {
         if let native = allCases.first(where: { provider in
             provider.activeBundleIdentifiers.contains { frontmostBundleID.matchesBundleFamily($0) }
         }) {
-            return native
+            // A chat app's camera is as often a video note as a call.
+            return native.requiresTwoWayAudio ? nil : native
         }
         if isBrowserBundleID(frontmostBundleID) {
             return .googleMeet

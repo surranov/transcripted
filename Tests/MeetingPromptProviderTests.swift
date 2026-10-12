@@ -64,7 +64,42 @@ func testMeetingPromptProvider() {
         }
     }
 
+    runSuite("MeetingPromptProvider — chat apps that call need their mic and playback together") {
+        let apps: [(String, MeetingPromptProvider)] = [
+            ("com.tinyspeck.slackmacgap", .slack),
+            ("com.tinyspeck.slackmacgap.helper", .slack),
+            ("ru.keepcoder.Telegram", .telegram),
+            ("com.tdesktop.Telegram", .telegram),
+            ("net.whatsapp.WhatsApp", .whatsapp),
+            ("com.hnc.Discord.helper.Renderer", .discord),
+            ("com.hnc.DiscordPTB.helper.Renderer", .discord),
+            ("ru.yandex.desktop.telemost", .telemost),
+        ]
+        for (bundleID, provider) in apps {
+            assertEqual(MeetingPromptProvider.micInputProvider(forBundleID: bundleID), provider, "\(bundleID) on the mic")
+            assertTrue(provider.requiresTwoWayAudio, "\(provider.displayName) also records and plays voice notes")
+            assertFalse(provider.supportsRuntimeOnlyPrompt, "\(provider.displayName) is open all day")
+        }
+        assertNil(
+            MeetingPromptProvider.cameraCallProvider(forFrontmostBundleID: "ru.keepcoder.Telegram"),
+            "Telegram in front with the camera on is as often a video note as a call"
+        )
+        assertEqual(
+            MeetingPromptProvider.cameraCallProvider(forFrontmostBundleID: "us.zoom.xos"),
+            .zoom,
+            "a meeting app in front with the camera on still is a call"
+        )
+        for provider in [MeetingPromptProvider.zoom, .googleMeet, .teams, .webex, .facetime, .ktalk] {
+            assertFalse(provider.requiresTwoWayAudio, "\(provider.displayName) on the mic is a call by itself")
+        }
+        assertFalse(
+            MeetingPromptProvider.slack.supportsNativeRuntimePrompt,
+            "bringing Slack forward all day is not worth a look"
+        )
+    }
+
     runSuite("MeetingPromptProvider — an open Talk or Telemost app is not a call by itself") {
+        // (The Telemost app is also a messenger: see the chat-app suite.)
         for provider in [MeetingPromptProvider.ktalk, .telemost] {
             assertFalse(
                 provider.supportsRuntimeOnlyPrompt,

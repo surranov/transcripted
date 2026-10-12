@@ -127,11 +127,21 @@ func testCallAppMicrophoneSharingMonitor() {
     }
 
     runSuite("Every native call app the meeting prompt knows also keeps the mic shared") {
-        for provider in MeetingPromptProvider.allCases {
+        // Chat apps that call (Slack, Telegram...) stay out on purpose: they
+        // are open all day (see `MicrophoneSharingPolicy.callAppBundleIDs`).
+        for provider in MeetingPromptProvider.allCases where !provider.requiresTwoWayAudio {
             for bundleID in provider.activeBundleIdentifiers {
                 assertTrue(
                     MicrophoneSharingPolicy.callAppBundleIDs.contains(bundleID),
                     "\(bundleID) is a native call app for meeting prompts, so it must also be in the mic sharing list"
+                )
+            }
+        }
+        for provider in MeetingPromptProvider.allCases where provider.requiresTwoWayAudio {
+            for bundleID in provider.activeBundleIdentifiers {
+                assertFalse(
+                    MicrophoneSharingPolicy.callAppBundleIDs.contains(bundleID),
+                    "\(bundleID) is a chat app open all day; it must not take Boost Mic away from browser calls"
                 )
             }
         }

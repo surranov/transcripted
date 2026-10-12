@@ -26,9 +26,13 @@ extension MeetingPromptDetector {
                 let source = MeetingPromptProvider.browserSignalProvider == signal.provider ? "browser" : signal.provider.rawValue
                 return "\(source):\(signal.reason.rawValue)"
             }.sorted().joined(separator: ",")
-        guard summary != lastLoggedCallSignals else { return }
-        lastLoggedCallSignals = summary
-        decisionLog?("Call signals changed", ["signals": summary])
+        // A chat app on the mic without its playback is not a call yet: say
+        // so, or "why didn't Telegram prompt?" has no answer.
+        let waiting = chatAppsOnMicWithoutPlayback().map { "\($0.rawValue):mic_without_playback" }
+        let line = waiting.isEmpty ? summary : summary + "; waiting " + waiting.joined(separator: ",")
+        guard line != lastLoggedCallSignals else { return }
+        lastLoggedCallSignals = line
+        decisionLog?("Call signals changed", ["signals": line])
     }
 
     /// What one read of the browser window titles concluded, by kind only.

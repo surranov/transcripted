@@ -48,6 +48,9 @@ private func makeMeetingPromptCalendarSnapshot(
         url = URL(string: "https://cian.ktalk.ru/xqgcr0ebnj64")!
     case .telemost:
         url = URL(string: "https://telemost.yandex.ru/j/25061270276082")!
+    case .slack, .telegram, .whatsapp, .discord:
+        // No meeting links of their own; such an event has no provider.
+        url = URL(string: "https://example.com/call")!
     }
 
     return MeetingPromptCalendarEventSnapshot(
@@ -1596,6 +1599,107 @@ func testMeetingPromptDetector() async {
 
         assertEqual(log.lines.filter { $0.0 == "Browser titles read" }.count, 1, "hours of video stay one line")
         assertFalse(log.lines.contains { $0.0 == "Call signals changed" }, "a video never changes the call signals")
+    }
+
+    await runSuite("MeetingPromptDetector — a Telegram call is its mic and playback together, not either alone") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateMicInputUsers(["ru.keepcoder.Telegram"])
+        await waitForPromptEvaluation(detector)
+        assertEqual(box.promptCount, 0, "recording a voice note is not a call")
+
+        detector.updateMicInputUsers([])
+        detector.updateAudioOutputUsers(["ru.keepcoder.Telegram"])
+        await waitForPromptEvaluation(detector)
+        assertEqual(box.promptCount, 0, "playing a voice note is not a call")
+
+        detector.updateMicInputUsers(["ru.keepcoder.Telegram"])
+        await waitForPromptEvaluation(detector)
+        assertEqual(box.promptCount, 1, "both at once is a call")
+        assertEqual(box.candidate?.id, "mic:telegram")
+        assertEqual(box.candidate?.title, "Telegram call detected")
+        assertEqual(box.candidate?.callEvidence, .nativeApp)
+    }
+
+    await runSuite("MeetingPromptDetector — a Slack huddle and a Discord call prompt; Zoom still needs only its mic") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            return true
+        }
+
+        detector.updateAudioOutputUsers(["com.hnc.Discord.helper"])
+        detector.updateMicInputUsers(["com.hnc.Discord.helper.Renderer"])
+        await waitForPromptEvaluation(detector)
+        assertEqual(box.candidate?.id, "mic:discord", "Discord's call runs in its renderer helper")
+
+        let zoomOnly = makeIsolatedDetector()
+        zoomOnly.isOwnCaptureActive = { false }
+        let zoomBox = CandidateBox()
+        zoomOnly.onPromptRequest = { candidate in
+            zoomBox.candidate = candidate
+            return true
+        }
+        zoomOnly.updateMicInputUsers(["us.zoom.xos"])
+        await waitForPromptEvaluation(zoomOnly)
+        assertEqual(zoomBox.candidate?.id, "mic:zoom", "a meeting app on the mic is a call by itself")
+    }
+
+    await runSuite("MeetingPromptDetector — Slack's mic first, then its playback: the huddle prompts once both are on") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        let log = DecisionLogRecorder()
+        detector.decisionLog = { message, context in log.lines.append((message, context)) }
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateMicInputUsers(["com.tinyspeck.slackmacgap.helper"])
+        await waitForPromptEvaluation(detector)
+        assertEqual(box.promptCount, 0, "the mic alone may be a clip being recorded")
+        assertTrue(
+            log.lines.contains { $0.1["signals"] == "none; waiting slack:mic_without_playback" },
+            "the trace says Slack is on the mic but not a call yet"
+        )
+
+        detector.updateAudioOutputUsers(["com.tinyspeck.slackmacgap.helper"])
+        await waitForPromptEvaluation(detector)
+        assertEqual(box.promptCount, 1)
+        assertEqual(box.candidate?.id, "mic:slack")
+    }
+
+    await runSuite("MeetingPromptDetector — a voice channel left open hides no meeting and joins no call session") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            return candidate.provider == .zoom
+        }
+
+        detector.updateAudioOutputUsers(["com.hnc.Discord.helper"])
+        detector.updateMicInputUsers(["com.hnc.Discord.helper.Renderer"])
+        await waitForPromptEvaluation(detector)
+        assertNil(detector.detectedCallSession, "a Discord voice channel is not counted as a meeting for the funnel or nudge")
+
+        // A muted Zoom join while Discord stays on: Zoom plays, nothing of
+        // Zoom's is on the mic.
+        detector.updateAudioOutputUsers(["com.hnc.Discord.helper", "us.zoom.xos"])
+        await waitForPromptEvaluation(detector, until: { box.candidate?.provider == .zoom })
+        assertEqual(box.candidate?.id, "mic:zoom", "the Zoom call still prompts")
+        assertEqual(detector.detectedCallSession?.providers, [.zoom], "and the call session is Zoom's alone")
     }
 
     await runSuite("MeetingPromptDetector.liveCallWasRecorded — only the call still going on counts") {

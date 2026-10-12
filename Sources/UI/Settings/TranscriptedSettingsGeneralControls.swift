@@ -216,7 +216,7 @@ struct CallPromptAutoRecordRow: View {
             title: "Record calls automatically",
             info: GeneralInfo(
                 title: "Record calls automatically",
-                message: "When you're in a call in Zoom, Teams, FaceTime, Webex, Kontur.Talk or Telemost, or in a Meet, Zoom, Teams, Talk or Telemost tab (even joined with the mic off), the call prompt counts down on Record and starts recording when it runs out. Skip or Remind me cancels it; Record starts right away. The countdown pauses while the pointer is over the island, and it doesn't record while the prompt waits behind a dictation or the screen is locked. Calendar reminders, other browser tabs, and a call you already recorded and stopped still only ask. Needs Auto-detect calls. Make sure everyone on the call is fine with being recorded."
+                message: "When you're in a call in Zoom, Teams, FaceTime, Webex, Kontur.Talk or Telemost, or in a Meet, Zoom, Teams, Talk or Telemost tab (even joined with the mic off), the call prompt counts down on Record and starts recording when it runs out. Skip or Remind me cancels it; Record starts right away. The countdown pauses while the pointer is over the island, and it doesn't record while the prompt waits behind a dictation or the screen is locked. Calendar reminders, other browser tabs, calls in chat apps (Slack, Telegram, WhatsApp, Discord), and a call you already recorded and stopped still only ask. Needs Auto-detect calls. Make sure everyone on the call is fine with being recorded."
             ),
             automationIdentifier: "transcripted.settings.general.auto-record-calls"
         ) {

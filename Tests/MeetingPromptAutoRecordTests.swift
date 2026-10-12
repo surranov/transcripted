@@ -65,6 +65,22 @@ func testMeetingPromptAutoRecord() {
         assertNil(delay(systemAudio: .notDetermined), "the first start shows macOS's call audio allow box")
     }
 
+    runSuite("Auto-record: a chat app's call only asks") {
+        for provider in [MeetingPromptProvider.slack, .telegram, .whatsapp, .discord, .telemost] {
+            assertNil(delay(provider: provider), "\(provider.displayName) two-way audio can be a voice chat left open")
+        }
+        assertEqual(
+            delay(provider: .telemost, evidence: .tabTitle),
+            10,
+            "a Telemost call in a tab is named by its title, so it still records by itself"
+        )
+        assertEqual(
+            delay(reason: .audioOutput, provider: .telemost, evidence: .tabTitle),
+            10,
+            "also when joined muted"
+        )
+    }
+
     runSuite("Auto-record: a call already recorded once only asks again") {
         assertNil(delay(recorded: true), "after a Stop mid-call, the next prompt for that call asks")
     }

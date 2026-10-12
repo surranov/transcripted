@@ -762,5 +762,27 @@ browser call with a call-only title as proven.
   this Mac). The title is read when the call starts, almost always in front.
 - Unknown or self-hosted call sites stay guesses (generic prompt, no
   auto-record). English Talk/Telemost UIs are not measured yet.
-- Messenger calls (Telegram, WhatsApp, Slack, Discord) are not detected: their
-  mic use includes voice messages, so they need a two-way-audio rule first.
+- A chat-app call joined muted (output only) is not detected; see below.
+
+**Chat apps that call.** `.slack`, `.telegram`, `.whatsapp`, `.discord`
+(`com.tinyspeck.slackmacgap`, `ru.keepcoder.Telegram` / `com.tdesktop.Telegram`,
+`net.whatsapp.WhatsApp` / `desktop.WhatsApp`, `com.hnc.Discord`, helpers by
+family) carry `requiresTwoWayAudio`: they record and play voice notes, so their
+mic alone, their playback alone and their camera are never a signal. Only the
+same app on the mic while it plays (output sustained 10 s) is a call: prompt
+"<App> call detected", `native_app` evidence, its own learned backoff kind.
+The Telemost desktop app follows the same rules (Yandex made it a messenger
+with voice notes); a Telemost call in a browser tab is still named by its
+title. They never auto-record in their own app (a voice chat left open is
+two-way audio too) and stay out of the Boost Mic call-app list (the drift
+guard checks both ways). A chat app's call never hides the other signals (a
+Discord voice channel open for hours must not hide a Zoom join) and is left out
+of the detected-call session, so it neither merges with nor outlives a real
+meeting in the funnel event or the missed-call nudge. Bringing a chat app
+forward does not trigger an evaluation.
+
+**Local trace.** `MeetingPromptDetector.decisionLog` writes to the app log,
+subsystem `call-detection`: call signal changes (`browser:audio_output`,
+`telegram:mic_input`), browser title verdicts by kind and by which signal asked
+(`call:ktalk via playback`), prompts shown and held back with their reason.
+Enums and candidate ids only.
