@@ -271,7 +271,8 @@ class TranscriptedAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
                 }
             )
             meetingPromptRecordAction = promptRecordAction
-            let recordPrompt: (MeetingPromptDetector.Candidate) -> Void = { [weak self] candidate in
+            // `automatic`: an auto-record prompt ran out unanswered; same path.
+            let recordPrompt: (MeetingPromptDetector.Candidate, Bool) -> Void = { [weak self] candidate, automatic in
                 guard let self else { return }
                 // startRecording returns true early, without publishing a state
                 // transition, when a meeting is already recording/starting/stopping.
@@ -302,7 +303,8 @@ class TranscriptedAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
                     .record(
                         candidate,
                         elapsedSeconds: elapsedSeconds,
-                        signals: self.meetingPromptDetector.currentSignalSnapshot()
+                        signals: self.meetingPromptDetector.currentSignalSnapshot(),
+                        automatic: automatic
                     ),
                     readiness: readiness
                 )
@@ -337,7 +339,11 @@ class TranscriptedAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
                 MeetingPromptTelemetry.emit(.remindLater(candidate, elapsedSeconds: elapsedSeconds), readiness: readiness)
                 _ = self.meetingPromptDetector.remindSoon(candidate: candidate)
             }
-            capturePillController.onRecord = recordPrompt
+            capturePillController.onRecord = { recordPrompt($0, false) }
+            capturePillController.onAutoRecord = { [weak self] candidate in
+                guard let self else { return }
+                if self.callPromptAutoRecordStillAllowed() { recordPrompt(candidate, true) } else { expirePrompt(candidate) }
+            }
             capturePillController.onDismiss = dismissPrompt
             capturePillController.onExpired = expirePrompt
             capturePillController.onRemind = remindPrompt
@@ -352,20 +358,23 @@ class TranscriptedAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
             meetingPromptDetector.onPromptRequest = { [weak self] candidate in
                 guard PermissionsOnboardingPreferences.hasCompleted() else { return false }
                 guard let self else { return false }
-                let promptTimeout = MeetingPromptHeuristics.promptTimeoutSeconds(
+                let systemAudioStatus = TranscriptedPermissionAccess.refreshSystemAudioRecordingStatusFromSystem()
+                let autoRecordDelay = self.callPromptAutoRecordDelay(for: candidate, systemAudioStatus: systemAudioStatus)
+                let promptTimeout = autoRecordDelay ?? MeetingPromptHeuristics.promptTimeoutSeconds(
                     for: candidate.reason,
                     calendarDefault: 30
                 )
                 // Say it before Record: after a remembered Don't Allow, the
                 // meeting records only this person's mic without asking.
                 let callAudioOff = MeetingMicOnlyNoticePolicy.detectedCallPromptSaysMicOnly(
-                    status: TranscriptedPermissionAccess.refreshSystemAudioRecordingStatusFromSystem(),
+                    status: systemAudioStatus,
                     micOnlyRemembered: MeetingMicOnlyChoicePreference.isRemembered()
                 )
                 let presented = self.capturePillController.present(
                     candidate: candidate,
                     timeout: TimeInterval(promptTimeout),
-                    detailOverride: callAudioOff ? MeetingMicOnlyNoticeCopy.detectedCallPromptDetail : nil
+                    detailOverride: callAudioOff ? MeetingMicOnlyNoticeCopy.detectedCallPromptDetail : nil,
+                    autoRecords: autoRecordDelay != nil
                 )
                 if presented {
                     self.meetingPromptShownAtByCandidateID[candidate.id] = Date()

@@ -206,6 +206,39 @@ struct NotchIslandLiveTranscriptRow: View {
     }
 }
 
+/// How long a detected live call's prompt counts down before it records by
+/// itself; Off (the default) only asks.
+struct CallPromptAutoRecordRow: View {
+    @State private var delaySeconds = CallPromptAutoRecordPreferences.delaySeconds()
+
+    var body: some View {
+        SettingsControlRow(
+            title: "Record calls automatically",
+            info: GeneralInfo(
+                title: "Record calls automatically",
+                message: "When you're in a call in Zoom, Teams, FaceTime or Webex, or in a Meet, Zoom or Teams tab, and it's using your mic or camera, the call prompt counts down on Record and starts recording when it runs out. Skip or Remind me cancels it; Record starts right away. The countdown pauses while the pointer is over the island, and it doesn't record while the prompt waits behind a dictation or the screen is locked. Calendar reminders, other browser tabs, and a call you already recorded and stopped still only ask. Needs Auto-detect calls. Make sure everyone on the call is fine with being recorded."
+            ),
+            automationIdentifier: "transcripted.settings.general.auto-record-calls"
+        ) {
+            Picker("Record calls automatically", selection: Binding(
+                get: { delaySeconds },
+                set: { seconds in
+                    delaySeconds = seconds
+                    CallPromptAutoRecordPreferences.setDelaySeconds(seconds)
+                }
+            )) {
+                Text("Off").tag(Int?.none)
+                ForEach(CallPromptAutoRecordPreferences.delayChoices, id: \.self) { seconds in
+                    Text("After \(seconds)s").tag(Int?.some(seconds))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+        }
+    }
+}
+
 struct GeneralToggleRow: View {
     let title: String
     @Binding var isOn: Bool

@@ -132,4 +132,67 @@ func testCallPromptTimeoutClock() {
             "after the prompt closes, the next one starts on screen until the island says otherwise"
         )
     }
+
+    runSuite("An auto-record call prompt that runs out on screen records") {
+        var clock = CallPromptTimeoutClock()
+        assertEqual(clock.start(timeout: 15, autoRecords: true, now: t0), .run(seconds: 15))
+        assertEqual(clock.timeoutOutcome, .record, "running out while shown and unhovered starts the recording")
+    }
+
+    runSuite("Hovering an auto-record call prompt holds the countdown, and it still records after") {
+        var clock = CallPromptTimeoutClock()
+        _ = clock.start(timeout: 15, autoRecords: true, now: t0)
+        assertEqual(
+            clock.setHovered(true, now: t0.addingTimeInterval(5)),
+            .hold(expiresIn: nil),
+            "reading the prompt never lets it record out from under the pointer"
+        )
+        assertEqual(clock.setHovered(false, now: t0.addingTimeInterval(300)), .run(seconds: 10))
+        assertEqual(clock.timeoutOutcome, .record, "once the pointer leaves, running out records again")
+    }
+
+    runSuite("An auto-record call prompt nobody could see never records") {
+        var clock = CallPromptTimeoutClock()
+        _ = clock.start(timeout: 15, autoRecords: true, now: t0)
+        assertEqual(clock.setOnScreen(false, now: t0.addingTimeInterval(3)), .hold(expiresIn: limit))
+        assertEqual(
+            clock.timeoutOutcome,
+            .expire,
+            "the off-screen allowance running out closes the prompt unanswered instead of recording"
+        )
+        _ = clock.setHovered(true, now: t0.addingTimeInterval(10))
+        _ = clock.setHovered(false, now: t0.addingTimeInterval(11))
+        assertEqual(clock.timeoutOutcome, .expire, "hover changes while covered don't turn recording back on")
+    }
+
+    runSuite("An auto-record call prompt back on screen records when its time runs out") {
+        var clock = CallPromptTimeoutClock()
+        _ = clock.start(timeout: 15, autoRecords: true, now: t0)
+        _ = clock.setOnScreen(false, now: t0.addingTimeInterval(3))
+        assertEqual(clock.setOnScreen(true, now: t0.addingTimeInterval(60)), .run(seconds: 12))
+        assertEqual(clock.timeoutOutcome, .record)
+    }
+
+    runSuite("A call prompt without auto-record only ever expires") {
+        var clock = CallPromptTimeoutClock()
+        _ = clock.start(timeout: 30, now: t0)
+        assertEqual(clock.timeoutOutcome, .expire, "on screen")
+        _ = clock.setOnScreen(false, now: t0.addingTimeInterval(1))
+        assertEqual(clock.timeoutOutcome, .expire, "off screen")
+        _ = clock.setOnScreen(true, now: t0.addingTimeInterval(2))
+        assertEqual(clock.timeoutOutcome, .expire, "back on screen")
+    }
+
+    runSuite("Auto-record doesn't carry over to the next call prompt") {
+        var clock = CallPromptTimeoutClock()
+        _ = clock.start(timeout: 15, autoRecords: true, now: t0)
+        _ = clock.start(timeout: 30, now: t0.addingTimeInterval(2))
+        assertEqual(clock.timeoutOutcome, .expire, "a replacement prompt that doesn't auto-record only expires")
+
+        _ = clock.start(timeout: 15, autoRecords: true, now: t0.addingTimeInterval(4))
+        clock.stop()
+        assertEqual(clock.timeoutOutcome, .expire, "a closed prompt has nothing to record")
+        _ = clock.start(timeout: 30, now: t0.addingTimeInterval(6))
+        assertEqual(clock.timeoutOutcome, .expire, "and the next plain prompt after it only expires")
+    }
 }

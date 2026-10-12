@@ -146,6 +146,8 @@ struct NotchIslandCallPromptContent: Equatable {
     var title: String
     var detail: String
     var secondsLeft: Int
+    /// The countdown ends in recording, not in closing unanswered.
+    var autoRecords = false
 }
 
 /// A finished meeting asking who was on it. The rows, typing and playback
@@ -283,7 +285,8 @@ enum NotchIslandDrop: Equatable {
     case meetingPrompt(NotchIslandMeetingContent.Prompt)
     case meetingSaved(title: String?)
     case meetingError(title: String, message: String, canOpen: Bool, grantsSystemAudio: Bool = false)
-    case callPrompt(title: String, detail: String)
+    /// `autoRecords`: the countdown runs on Record, since running out records.
+    case callPrompt(title: String, detail: String, autoRecords: Bool = false)
     case speakerReview(NotchIslandSpeakerReviewContent)
     /// Recording already started with only the mic; offer call audio.
     case meetingCallAudioAsk
@@ -295,7 +298,7 @@ enum NotchIslandDrop: Equatable {
         case .dictationMessage(let message): return "dictation-message:\(message.text)\(message.preview.map { "|\($0)" } ?? "")"
         case .meetingPrompt(let prompt): return "meeting-prompt:\(prompt.title)"
         case .meetingError(let title, let message, _, _): return "meeting-error:\(title)|\(message)"
-        case .callPrompt(let title, _): return "call:\(title)"
+        case .callPrompt(let title, _, _): return "call:\(title)"
         case .speakerReview(let review): return "speaker-review:\(review.reviewID.uuidString)"
         case .meetingCallAudioAsk: return "meeting-call-audio-ask"
         case .dictationTarget, .dictationLoading, .justInserted, .meetingPreparing,
@@ -431,11 +434,15 @@ enum NotchIslandPresentation {
             result.right = dictationMini(dictation)
         } else if let dictation {
             (result.left, result.right) = dictationWings(dictation)
-        } else if callPrompt != nil, !(meeting?.isBusy ?? false) {
+        } else if let callPrompt, !(meeting?.isBusy ?? false) {
             result.left = [.symbol(.video, .accent), .text("Call", .title)]
+            // Collapsed, an auto-record prompt still shows its seconds: when
+            // they run out it records.
             result.right = dropIsOpen
                 ? [.live(.callSeconds, .secondary)]
-                : [.chip("Record", .destructive, .callRecord)]
+                : callPrompt.autoRecords
+                    ? [.live(.callSeconds, .secondary), .chip("Record", .destructive, .callRecord)]
+                    : [.chip("Record", .destructive, .callRecord)]
         } else if let speakerReview, !(meeting?.isBusy ?? false) {
             result.left = [.symbol(.check, .accent), .text(speakerReview.meetingTitle ?? "Saved", .title)]
             result.right = []
@@ -505,7 +512,7 @@ enum NotchIslandPresentation {
         // A prompt waits while a dictation runs; it opens once the words land.
         guard dictation == nil else { return nil }
         if let callPrompt {
-            return .callPrompt(title: callPrompt.title, detail: callPrompt.detail)
+            return .callPrompt(title: callPrompt.title, detail: callPrompt.detail, autoRecords: callPrompt.autoRecords)
         }
         // Who was on the call asks once the meeting is saved, never while a
         // new one is starting or recording.

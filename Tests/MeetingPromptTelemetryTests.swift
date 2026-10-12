@@ -371,4 +371,52 @@ func testMeetingPromptTelemetry() async {
         }.map(\.0)
         assertEqual(abandoningActions, ["dismiss"], "only an explicit dismissal counts as abandoning the prompt")
     }
+
+    runSuite("MeetingPromptTelemetry.events — a countdown that records reports auto_record, a click reports record") {
+        let candidate = makeTelemetryPromptCandidate(reason: .micInput, source: .runtimeApp)
+        let readiness = MeetingPromptTelemetryReadiness(
+            microphoneGranted: true,
+            systemAudioRecordingGranted: true,
+            meetingRecordingActive: false,
+            dictationRecordingActive: false
+        )
+        let signals = MeetingPromptSignalSnapshot(micActive: true, speakerActive: false, cameraActive: false)
+
+        func sentEvents(_ action: MeetingPromptTelemetry.PromptAction) -> [(name: String, properties: [String: String])] {
+            var sent: [(name: String, properties: [String: String])] = []
+            MeetingPromptTelemetry.emit(
+                action,
+                readiness: readiness,
+                track: { sent.append(($0, $1)) },
+                trackPromptAbandoned: { sent.append(("workflow_abandoned", ["prior_ready_state": $0])) }
+            )
+            return sent
+        }
+
+        let automatic = sentEvents(.record(candidate, elapsedSeconds: 10, signals: signals, automatic: true))
+        assertEqual(
+            automatic.map(\.name),
+            ["meeting_prompt_choice_made", "meeting_prompt_record_selected"],
+            "an auto-record still counts as one record, once"
+        )
+        let autoChoice = automatic.first { $0.name == "meeting_prompt_choice_made" }
+        assertEqual(autoChoice?.properties["choice_kind"], "auto_record", "the countdown recording is told apart from a click")
+        if let autoChoice, let policy = AnalyticsEventPolicy.policy(forEvent: autoChoice.name) {
+            assertEqual(
+                AnalyticsPayloadSanitizer.sanitizeProperties(autoChoice.properties, allowedKeys: policy.allowedProperties)["choice_kind"],
+                "auto_record",
+                "auto_record survives the analytics allowlist"
+            )
+        } else {
+            assertTrue(false, "meeting_prompt_choice_made must be registered")
+        }
+
+        let clicked = sentEvents(.record(candidate, elapsedSeconds: 4, signals: signals))
+        assertEqual(clicked.map(\.name), ["meeting_prompt_choice_made", "meeting_prompt_record_selected"])
+        assertEqual(
+            clicked.first { $0.name == "meeting_prompt_choice_made" }?.properties["choice_kind"],
+            "record",
+            "a clicked Record stays a record choice"
+        )
+    }
 }

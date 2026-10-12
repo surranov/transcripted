@@ -141,6 +141,11 @@ struct GeneralSettingsPage<
                     automationIdentifier: "transcripted.settings.general.auto-detect-calls"
                 )
 
+                // Only live-call prompts record by themselves, and those come
+                // from Auto-detect calls.
+                CallPromptAutoRecordRow()
+                    .disabled(!autoDetectCallsEnabled)
+
                 NotchIslandLiveTranscriptRow()
 
                 micProcessingEditor()

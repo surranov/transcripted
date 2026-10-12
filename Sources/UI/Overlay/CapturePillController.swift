@@ -6,10 +6,21 @@ import AppKit
 /// (`offScreenHoldLimit` per prompt): a dictation error that waits for a
 /// click, or a model download, must not keep a stale prompt around forever,
 /// so once the cap runs out the prompt expires unanswered as it always did.
+/// A prompt set to auto-record records when its time runs out on screen; one
+/// that runs out of off-screen allowance still only expires, since no one saw
+/// it count down.
 /// Plain values in and out so the fast tests can drive it with their own clock.
 struct CallPromptTimeoutClock: Equatable {
     /// How long, in total, one prompt may wait behind a dictation.
     static let offScreenHoldLimit: TimeInterval = 120
+
+    /// What the prompt does when its scheduled time runs out.
+    enum TimeoutOutcome: Equatable {
+        /// Close unanswered; the detector may offer it again.
+        case expire
+        /// Record, as if Record was clicked.
+        case record
+    }
 
     enum Step: Equatable {
         /// Nothing to change.
@@ -31,16 +42,26 @@ struct CallPromptTimeoutClock: Equatable {
     /// current off-screen stretch began.
     private var offScreenAllowance = CallPromptTimeoutClock.offScreenHoldLimit
     private var offScreenSince: Date?
+    private var autoRecords = false
 
     var isHeld: Bool { heldRemaining != nil }
 
+    /// Read when the scheduled time runs out. A running clock means the
+    /// prompt was on screen and not hovered for the whole countdown; a held
+    /// one only times out through the off-screen allowance.
+    var timeoutOutcome: TimeoutOutcome {
+        autoRecords && !isHeld ? .record : .expire
+    }
+
     /// A new prompt gets the full timeout and a fresh off-screen allowance,
     /// but stays held if it is already waiting off screen (a newer prompt
-    /// replacing one behind a dictation).
-    mutating func start(timeout: TimeInterval, now: Date) -> Step {
+    /// replacing one behind a dictation). With `autoRecords`, the timeout is
+    /// the countdown to recording.
+    mutating func start(timeout: TimeInterval, autoRecords: Bool = false, now: Date) -> Step {
         // Hover is reported only when it changes; a new prompt starts
         // unhovered, as the old pill did.
         hovered = false
+        self.autoRecords = autoRecords
         heldRemaining = nil
         offScreenAllowance = Self.offScreenHoldLimit
         offScreenSince = offScreen ? now : nil
@@ -103,6 +124,8 @@ final class CapturePillController {
     private var timeoutClock = CallPromptTimeoutClock()
 
     var onRecord: ((MeetingPromptDetector.Candidate) -> Void)?
+    /// An auto-record prompt counted down on screen with no answer.
+    var onAutoRecord: ((MeetingPromptDetector.Candidate) -> Void)?
     var onDismiss: ((MeetingPromptDetector.Candidate) -> Void)?
     var onRemind: ((MeetingPromptDetector.Candidate) -> Void)?
     var onExpired: ((MeetingPromptDetector.Candidate) -> Void)?
@@ -161,11 +184,14 @@ final class CapturePillController {
 
     /// `detailOverride` replaces the candidate's detail line, for something
     /// the user needs to know before tapping Record (call audio is off).
+    /// With `autoRecords`, `timeout` counts down to recording instead of to
+    /// closing unanswered.
     @discardableResult
     func present(
         candidate: MeetingPromptDetector.Candidate,
         timeout: TimeInterval = 30,
-        detailOverride: String? = nil
+        detailOverride: String? = nil,
+        autoRecords: Bool = false
     ) -> Bool {
         guard let island else { return false }
 
@@ -173,11 +199,12 @@ final class CapturePillController {
         let timeoutSeconds = max(1, Int(ceil(timeout)))
         // Start the clock first: showing the prompt reports whether it
         // is on screen, which may hold it straight away.
-        apply(timeoutClock.start(timeout: timeout, now: Date()))
+        apply(timeoutClock.start(timeout: timeout, autoRecords: autoRecords, now: Date()))
         island.updateCallPrompt(NotchIslandCallPromptContent(
             title: candidate.suggestedTranscriptTitle ?? candidate.title,
             detail: detailOverride ?? candidate.detail,
-            secondsLeft: timeoutSeconds
+            secondsLeft: timeoutSeconds,
+            autoRecords: autoRecords
         ))
         return true
     }
@@ -217,8 +244,13 @@ final class CapturePillController {
             try? await Task.sleep(nanoseconds: nanoseconds)
             guard !Task.isCancelled else { return }
             guard let self, let candidate = self.representedCandidate else { return }
+            // Read before dismiss resets the clock.
+            let outcome = self.timeoutClock.timeoutOutcome
             self.dismiss(notify: false)
-            self.onExpired?(candidate)
+            switch outcome {
+            case .expire: self.onExpired?(candidate)
+            case .record: self.onAutoRecord?(candidate)
+            }
         }
     }
 

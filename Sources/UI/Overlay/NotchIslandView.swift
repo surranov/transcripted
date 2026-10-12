@@ -675,19 +675,19 @@ final class NotchIslandDropView: NSView {
                 trailing.append(button("Open", .accent, .meetingOpen))
             }
             add(buttonRow(leading: [], trailing: trailing))
-        case .callPrompt(let title, let detail):
+        case .callPrompt(let title, let detail, let autoRecords):
             add(titleBlock(title, detail))
-            // The countdown is a ring around Skip, like the dictation
-            // Dismiss ring; it pauses while the pointer is over the island.
+            // A ring like the dictation Dismiss ring: on Skip, or on Record when running out records. Hover pauses it.
             let notNow = NotchIslandButton(title: "Skip", style: .plain)
             notNow.onPress = { [weak self] in self?.onAction?(.callDismiss) }
             notNow.setContentHuggingPriority(.required, for: .horizontal)
-            notNow.startCountdown(seconds: Double(max(1, live.callSecondsLeft)))
-            countdownButton = notNow
+            let record = button("Record", .destructive, .callRecord, symbol: "record.circle.fill")
+            countdownButton = autoRecords ? record : notNow
+            countdownButton?.startCountdown(seconds: Double(max(1, live.callSecondsLeft)))
             add(buttonRow(leading: [], trailing: [
                 notNow,
                 button("Remind me", .plain, .callRemind),
-                button("Record", .destructive, .callRecord, symbol: "record.circle.fill"),
+                record,
             ]))
         case .meetingCallAudioAsk:
             add(titleBlock(
@@ -803,7 +803,7 @@ final class NotchIslandDropView: NSView {
         return button
     }
 
-    func button(_ title: String, _ style: NotchIslandButton.Style, _ action: NotchIslandAction, symbol: String? = nil, appIcon: NSImage? = nil) -> NSView {
+    func button(_ title: String, _ style: NotchIslandButton.Style, _ action: NotchIslandAction, symbol: String? = nil, appIcon: NSImage? = nil) -> NotchIslandButton {
         let button = NotchIslandButton(title: title, style: style, symbolName: symbol, appIcon: appIcon)
         button.onPress = { [weak self] in self?.onAction?(action) }
         button.setContentHuggingPriority(.required, for: .horizontal)

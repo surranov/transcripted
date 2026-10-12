@@ -128,6 +128,51 @@ func testOverlayScreenSharePrivacy() async {
         assertEqual([recorded, reminded, dismissed, expired], [1, 1, 1, 0], "Not now is an explicit dismissal, not an expiry")
     }
 
+    runSuite("an auto-record call prompt tells the island it counts down to recording") {
+        let candidate = overlayPrivacyCandidate(reason: .micInput)
+        let controller = CapturePillController()
+        let island = OverlayPrivacyFakeIsland()
+        controller.island = island
+
+        assertTrue(controller.present(candidate: candidate, timeout: 15, detailOverride: "Mic only", autoRecords: true))
+        assertEqual(
+            island.prompt,
+            NotchIslandCallPromptContent(title: candidate.title, detail: "Mic only", secondsLeft: 15, autoRecords: true),
+            "the island counts the auto-record delay down on Record"
+        )
+        controller.dismiss(notify: false)
+
+        _ = controller.present(candidate: candidate, timeout: 45)
+        assertEqual(island.prompt?.autoRecords, false, "a plain prompt only asks")
+        controller.dismiss(notify: false)
+    }
+
+    runSuite("clicking a button on an auto-record call prompt is the person's choice, not the countdown's") {
+        let candidate = overlayPrivacyCandidate(reason: .micInput)
+        let controller = CapturePillController()
+        let island = OverlayPrivacyFakeIsland()
+        controller.island = island
+        var recorded = 0, autoRecorded = 0, reminded = 0, dismissed = 0, expired = 0
+        controller.onRecord = { _ in recorded += 1 }
+        controller.onAutoRecord = { _ in autoRecorded += 1 }
+        controller.onRemind = { _ in reminded += 1 }
+        controller.onDismiss = { _ in dismissed += 1 }
+        controller.onExpired = { _ in expired += 1 }
+
+        _ = controller.present(candidate: candidate, timeout: 15, autoRecords: true)
+        island.callActionHandler?(.callRecord)
+        assertEqual([recorded, autoRecorded, reminded, dismissed, expired], [1, 0, 0, 0, 0], "Record is a clicked record")
+        assertTrue(island.prompt == nil, "answering clears the prompt")
+
+        _ = controller.present(candidate: candidate, timeout: 15, autoRecords: true)
+        island.callActionHandler?(.callDismiss)
+        assertEqual([recorded, autoRecorded, reminded, dismissed, expired], [1, 0, 0, 1, 0], "Skip dismisses and cancels the countdown")
+
+        _ = controller.present(candidate: candidate, timeout: 15, autoRecords: true)
+        island.callActionHandler?(.callRemind)
+        assertEqual([recorded, autoRecorded, reminded, dismissed, expired], [1, 0, 1, 1, 0], "Remind me reminds and cancels the countdown")
+    }
+
     runSuite("ad-hoc call prompts get the longer timeout, calendar prompts the default") {
         assertEqual(MeetingPromptHeuristics.promptTimeoutSeconds(for: .micInput, calendarDefault: 30), 60, "mic-led call")
         assertEqual(MeetingPromptHeuristics.promptTimeoutSeconds(for: .audioOutput, calendarDefault: 30), 60, "listen-only call")

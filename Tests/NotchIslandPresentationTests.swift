@@ -230,6 +230,34 @@ func testNotchIslandPresentation() {
         assertEqual(closed.right, [.chip("Record", .destructive, .callRecord)], "closed, the wing offers Record")
     }
 
+    runSuite("NotchIslandPresentation counts an auto-record call prompt down on Record") {
+        let prompt = NotchIslandCallPromptContent(
+            title: "Zoom call", detail: "Record this meeting?", secondsLeft: 10, autoRecords: true
+        )
+        assertEqual(
+            notchLayout(callPrompt: prompt).drop,
+            .callPrompt(title: "Zoom call", detail: "Record this meeting?", autoRecords: true),
+            "the open prompt says it will record by itself"
+        )
+
+        let key = NotchIslandPresentation.stickyKey(dictation: nil, meeting: nil, callPrompt: prompt)
+        let closed = notchLayout(callPrompt: prompt, collapsedStickyKey: key)
+        assertNil(closed.drop)
+        assertEqual(
+            closed.right,
+            [.live(.callSeconds, .secondary), .chip("Record", .destructive, .callRecord)],
+            "closed, the wing still shows the seconds left before Record, so the recording isn't a surprise"
+        )
+
+        let plain = NotchIslandCallPromptContent(title: "Zoom call", detail: "Record this meeting?", secondsLeft: 10)
+        let plainKey = NotchIslandPresentation.stickyKey(dictation: nil, meeting: nil, callPrompt: plain)
+        assertEqual(
+            notchLayout(callPrompt: plain, collapsedStickyKey: plainKey).right,
+            [.chip("Record", .destructive, .callRecord)],
+            "a closed prompt that only asks keeps just Record"
+        )
+    }
+
     runSuite("NotchIslandPresentation holds a prompt while a dictation runs") {
         let prompt = NotchIslandCallPromptContent(title: "Zoom call", detail: "Record this meeting?", secondsLeft: 30)
         let layout = notchLayout(dictation: listening(), callPrompt: prompt)

@@ -11,6 +11,8 @@ struct MeetingPromptTelemetryReadiness: Equatable {
 enum MeetingPromptTelemetry {
     enum ChoiceKind: String {
         case record
+        /// An auto-record prompt counted down with no answer.
+        case autoRecord = "auto_record"
         case dismiss
         case remindLater = "remind_later"
     }
@@ -214,8 +216,14 @@ extension MeetingPromptTelemetry {
     enum PromptAction {
         /// The capture pill actually appeared.
         case shown(MeetingPromptDetector.Candidate, signals: MeetingPromptSignalSnapshot?)
-        /// The user picked Record and the start was accepted.
-        case record(MeetingPromptDetector.Candidate, elapsedSeconds: TimeInterval?, signals: MeetingPromptSignalSnapshot?)
+        /// The user picked Record, or with `automatic` an auto-record prompt
+        /// counted down unanswered, and the start was accepted.
+        case record(
+            MeetingPromptDetector.Candidate,
+            elapsedSeconds: TimeInterval?,
+            signals: MeetingPromptSignalSnapshot?,
+            automatic: Bool = false
+        )
         /// The user picked Not now. `backoffKind`, `signals` and
         /// `dismissStreak` are read after the detector applies the dismissal.
         case dismiss(
@@ -252,14 +260,14 @@ extension MeetingPromptTelemetry {
                     properties: properties(for: candidate, readiness: readiness, signals: signals)
                 ),
             ]
-        case let .record(candidate, elapsedSeconds, signals):
+        case let .record(candidate, elapsedSeconds, signals, automatic):
             return [
                 .analytics(
                     name: "meeting_prompt_choice_made",
                     properties: choiceProperties(
                         for: candidate,
                         readiness: readiness,
-                        choiceKind: .record,
+                        choiceKind: automatic ? .autoRecord : .record,
                         elapsedSeconds: elapsedSeconds
                     )
                 ),

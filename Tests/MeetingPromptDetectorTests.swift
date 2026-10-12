@@ -1276,6 +1276,27 @@ func testMeetingPromptDetector() async {
         detector.markAccepted(candidate: candidate)
         assertEqual(detector.dismissStreak(for: .zoom), 0, "an accepted recording resets the provider's streak")
     }
+
+    await runSuite("MeetingPromptDetector.liveCallWasRecorded — only the call still going on counts") {
+        let detector = makeIsolatedDetector()
+        detector.onPromptRequest = { _ in true }
+        assertFalse(detector.liveCallWasRecorded, "no call, nothing recorded")
+
+        detector.updateMicInputUsers(["us.zoom.xos"])
+        await waitForPromptEvaluation(detector)
+        assertFalse(detector.liveCallWasRecorded, "a live call nobody recorded yet")
+
+        detector.markAccepted(candidate: makeMeetingPromptCandidate(id: "mic:zoom", source: .runtimeApp, reason: .micInput))
+        assertTrue(detector.liveCallWasRecorded, "Record (or auto-record) started on this call")
+
+        detector.updateMicInputUsers([])
+        await waitForPromptEvaluation(detector)
+        assertFalse(detector.liveCallWasRecorded, "the call ended")
+
+        detector.updateMicInputUsers(["us.zoom.xos"])
+        await waitForPromptEvaluation(detector)
+        assertFalse(detector.liveCallWasRecorded, "the next call starts unrecorded")
+    }
 }
 
 /// A detector that reads nothing from the Mac running the suite: no Calendar

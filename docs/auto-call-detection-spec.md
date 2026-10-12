@@ -558,6 +558,35 @@ incidents. Revisit once `meeting_prompt_dismissed` telemetry separates
 `expired_reoffer` (never saw it) from explicit dismissals (said no): if misses
 dominate, the aggressive tier earns its switch.
 
+**Opt-in auto-record (2026-10-12, dev-variant).** The opt-in tier now exists,
+still default OFF: Settings → Meetings → "Record calls automatically" (Off /
+After 5, 10, 15 or 30 s; `CallPromptAutoRecordPreferences`). Which prompts
+count down (`MeetingPromptHeuristics.autoRecordDelaySeconds`, the rest ask as
+before):
+
+- a call app holding the mic or turning the camera on (`mic_input`,
+  `camera_input`); call audio alone is also a call ringing before anyone
+  answers, and calendar or app-running prompts can come before anyone joins;
+- proven calls only: a native app or a tab title that exists only during a
+  call (`native_app`, `tab_title`), never the browser guesses Phase 5 found
+  were turned down more often than recorded;
+- mic access granted and macOS already asked about call audio, so the start
+  can't raise a macOS dialog over the call that nobody clicked for;
+- a call not recorded yet: after a Stop mid-call the next prompt asks
+  (`MeetingPromptDetector.liveCallWasRecorded`).
+
+The prompt's timeout becomes that delay, its ring moves from Skip to Record,
+and the collapsed island shows the seconds next to the Record chip. Running
+out on screen takes the Record path (`CapturePillController.onAutoRecord`,
+same gate, single-flight start and `markAccepted`; `choice_kind=auto_record`,
+while `meeting_prompt_record_selected` counts both). At that moment it checks
+again and only expires if the setting or Auto-detect calls went off, a
+dictation started, or the screen is locked or asleep (`ScreenPresence`).
+Hover pauses it as before. A prompt waiting behind a dictation never records:
+if its off-screen allowance runs out it only expires
+(`CallPromptTimeoutClock.timeoutOutcome`). Skip, Remind me and Record work as
+before.
+
 ## Phase 5 — browser call evidence + learned "Not now" (2026-09-23)
 
 **Problem.** Phase 1's premise that "browsers rarely hold the mic otherwise"
