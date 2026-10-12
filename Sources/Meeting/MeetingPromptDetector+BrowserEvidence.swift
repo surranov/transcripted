@@ -285,7 +285,7 @@ extension MeetingPromptDetector {
 
     /// Providers a browser tab can be named after (see
     /// `BrowserCallEvidence.inCallProvider`).
-    private static let browserNamedProviders: [MeetingPromptProvider] = [.googleMeet, .teams, .zoom]
+    private static let browserNamedProviders: [MeetingPromptProvider] = [.googleMeet, .teams, .zoom, .ktalk, .telemost]
 
     func browserCandidateIDs(besides id: String) -> [String] {
         (Self.browserNamedProviders.map { micCandidateID(for: $0) }

@@ -11,7 +11,8 @@
 //
 // The evidence ladder, strongest first:
 // 1. A window title that only exists during a call (a Meet tab, the Zoom web
-//    client, a Teams meeting window), in any window of that browser
+//    client, a Teams meeting window, a joined Kontur.Talk room, a Telemost
+//    call), in any window of that browser
 //    -> prompt right away, named after the provider. Sticky for the session.
 // 2. The focused window is a call app whose title does not prove a call is
 //    on (Teams chat, a Slack huddle, WhatsApp, Discord) -> prompt after
@@ -268,6 +269,16 @@ enum BrowserCallEvidence {
            teamsInCallPrefixes.contains(where: { title.hasPrefix($0) }) {
             return .teams
         }
+        // Kontur.Talk's room once joined; its pre-join screen is
+        // "Подключение к встрече — Толк", only a call site.
+        if isExactlyOrFollowedBySeparator(title, "встреча - толк") {
+            return .ktalk
+        }
+        // Telemost while a call is on ("Идёт звонок · Яндекс Телемост"),
+        // also when its chats are open beside the call.
+        if telemostInCallPrefixes.contains(where: { title.hasPrefix($0) }), title.contains("телемост") {
+            return .telemost
+        }
         return nil
     }
 
@@ -292,6 +303,14 @@ enum BrowserCallEvidence {
         }
         if title.contains("facetime") {
             return .some(.facetime)
+        }
+        // "Толк" alone is a common Russian word, so only Talk's own title
+        // part counts: its home page, a pre-join screen ("... — Толк").
+        if title == "толк" || title.hasSuffix(" - толк") {
+            return .some(.ktalk)
+        }
+        if title.contains("телемост") || title.contains("telemost") {
+            return .some(.telemost)
         }
         if otherCallSurfaceMarkers.contains(where: { containsWord(title, $0) }) {
             return .some(nil)
@@ -333,6 +352,13 @@ enum BrowserCallEvidence {
         ) != nil
     }
 
+    /// Telemost titles while a call is on (measured 2026-10-12 in the
+    /// Russian UI; "ё" is often typed as "е").
+    static let telemostInCallPrefixes: [String] = [
+        "идёт звонок",
+        "идет звонок",
+    ]
+
     /// Teams web window titles during a meeting or call ("Meeting with Ana |
     /// Microsoft Teams", "Call with Sam | Microsoft Teams"). Chat, calendar
     /// and activity pages do not start this way. English only: in another
@@ -367,6 +393,11 @@ enum BrowserCallEvidence {
         "inbox",
         "google calendar",
         "calendar",
+        "яндекс почта",
+        "яндекс.почта",
+        "яндекс календарь",
+        "почта mail.ru",
+        "mail.ru",
     ]
 
     /// Call apps and sites with no in-call title we can trust. They

@@ -44,6 +44,10 @@ private func makeMeetingPromptCalendarSnapshot(
         url = URL(string: "https://company.webex.com/meet/room")!
     case .facetime:
         url = URL(string: "https://facetime.apple.com/join/example")!
+    case .ktalk:
+        url = URL(string: "https://cian.ktalk.ru/xqgcr0ebnj64")!
+    case .telemost:
+        url = URL(string: "https://telemost.yandex.ru/j/25061270276082")!
     }
 
     return MeetingPromptCalendarEventSnapshot(
@@ -1275,6 +1279,62 @@ func testMeetingPromptDetector() async {
 
         detector.markAccepted(candidate: candidate)
         assertEqual(detector.dismissStreak(for: .zoom), 0, "an accepted recording resets the provider's streak")
+    }
+
+    await runSuite("MeetingPromptDetector — a joined Kontur.Talk room on the mic prompts at once, by name") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        showBrowserTab("Встреча \u{2014} Толк", on: detector)
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateMicInputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector)
+
+        assertEqual(box.promptCount, 1, "a Talk room on the mic is a call right away, no 20-60 s guess")
+        assertEqual(box.candidate?.id, "mic:ktalk")
+        assertEqual(box.candidate?.title, "Kontur.Talk call detected")
+        assertEqual(box.candidate?.callEvidence, .tabTitle)
+    }
+
+    await runSuite("MeetingPromptDetector — Talk's pre-join screen on the mic only waits as a call site") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        showBrowserTab("Подключение к встрече \u{2014} Толк", on: detector)
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.promptCount += 1
+            return true
+        }
+        detector.onPromptSuppressed = { suppression in
+            box.suppression = suppression
+        }
+
+        detector.updateMicInputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector)
+
+        assertEqual(box.promptCount, 0, "the mic check before joining is not the call yet")
+        assertEqual(box.suppression?.reason, .awaitingCallEvidence, "it keeps watching for the room title")
+    }
+
+    await runSuite("MeetingPromptDetector — the Talk desktop app on the mic is a Talk call") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            return true
+        }
+
+        detector.updateMicInputUsers(["kontur.talk.helper"])
+        await waitForPromptEvaluation(detector)
+
+        assertEqual(box.candidate?.id, "mic:ktalk")
+        assertEqual(box.candidate?.callEvidence, .nativeApp)
     }
 
     await runSuite("MeetingPromptDetector.liveCallWasRecorded — only the call still going on counts") {

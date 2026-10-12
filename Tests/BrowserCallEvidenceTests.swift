@@ -53,6 +53,64 @@ func testBrowserCallEvidence() {
         )
     }
 
+    runSuite("BrowserCallEvidence.classify — a joined Kontur.Talk room and a Telemost call name their provider") {
+        // Titles measured in live calls on 2026-10-12.
+        let calls: [(String, MeetingPromptProvider)] = [
+            ("Встреча \u{2014} Толк", .ktalk),
+            ("Встреча \u{2014} Толк - Google Chrome", .ktalk),
+            ("Идёт звонок \u{00B7} Яндекс Телемост", .telemost),
+            ("Идет звонок \u{00B7} Яндекс Телемост", .telemost),
+        ]
+        for (title, provider) in calls {
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]),
+                .call(provider: provider),
+                "\"\(title)\" is a call even from a background window, with or without the mic"
+            )
+        }
+    }
+
+    runSuite("BrowserCallEvidence.classify — Talk and Telemost outside a call are only call sites") {
+        let sites: [(String, MeetingPromptProvider)] = [
+            ("Подключение к встрече \u{2014} Толк", .ktalk),
+            ("Толк", .ktalk),
+            ("Яндекс Телемост", .telemost),
+        ]
+        for (title, provider) in sites {
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: true)]),
+                .callSite(provider: provider),
+                "\"\(title)\" in front is the pre-join screen or home page: it corroborates, it doesn't prove"
+            )
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]),
+                .unknown,
+                "\"\(title)\" left open in the background says nothing"
+            )
+        }
+        for title in ["Нет толку спорить - Хабр", "Встреча выпускников - Толк и смысл", "Телемосты истории"] {
+            assertFalse(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]) == .call(provider: .ktalk)
+                    || BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]) == .call(provider: .telemost),
+                "\"\(title)\" only shares a word with Talk or Telemost"
+            )
+        }
+    }
+
+    runSuite("BrowserCallEvidence.classify — a Talk or Telemost invite in Russian mail is not a call") {
+        for title in [
+            "Встреча \u{2014} Толк \u{2014} Яндекс Почта",
+            "Идёт звонок \u{00B7} Яндекс Телемост \u{2014} Яндекс Почта",
+            "Встреча \u{2014} Толк - Яндекс Календарь",
+        ] {
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: true)]),
+                .unknown,
+                "\"\(title)\" is a mail or calendar page about a call"
+            )
+        }
+    }
+
     runSuite("BrowserCallEvidence.classify — call apps in front only corroborate") {
         assertEqual(
             BrowserCallEvidence.classify([BrowserWindowTitle(title: "Chat | Microsoft Teams", isFocused: true)]),
