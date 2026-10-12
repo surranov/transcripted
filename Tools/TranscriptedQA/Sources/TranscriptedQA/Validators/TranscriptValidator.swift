@@ -9,6 +9,7 @@ struct TranscriptValidator {
         "whisper_large_v3_local",
         "apple_speech_local",
         "parakeet_ultra_local",
+        "breeze_asr_25_local",
     ]
 
     /// `pyannote_offline` is every file saved before 2026-09-29 and a Nemotron

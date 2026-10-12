@@ -37,6 +37,9 @@ else
     unset SIGN_IDENTITY SIGNING_IDENTITY
 fi
 
+# whisper.cpp for the Breeze model; a no-op once built at the pinned revision.
+bash "$REPO_ROOT/scripts/fork/build-whisper-cpp.sh"
+
 TRANSCRIPTED_PLIST_OVERRIDES="$REPO_ROOT/scripts/fork/dev-variant-plist.sh" \
 TRANSCRIPTED_SKIP_LAUNCH_SMOKE=1 \
     bash build.sh --no-open "$@"

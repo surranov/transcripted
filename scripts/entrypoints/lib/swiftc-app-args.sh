@@ -85,6 +85,16 @@ build_app_swiftc_args() {
         module_flags+=("-I$dir")
     done
 
+    # Fork: whisper.cpp for the Breeze model (scripts/fork/build-whisper-cpp.sh).
+    # The module and its archive come together or not at all: without them
+    # WhisperCppTranscriber compiles as a stub and Breeze shows as not built.
+    local whisper_cpp_root="${WHISPER_CPP_DEPS_ROOT:-deps-whisper-cpp}"
+    local whisper_cpp_link=()
+    if [ -f "$whisper_cpp_root/libWhisperCpp.a" ] && [ -f "$whisper_cpp_root/WhisperCpp/module.modulemap" ]; then
+        module_flags+=("-I$whisper_cpp_root/WhisperCpp")
+        whisper_cpp_link=("-L$whisper_cpp_root" -lWhisperCpp)
+    fi
+
     APP_SWIFTC_LINK_ARGS=(
         -framework AVFoundation
         -framework AppKit
@@ -113,6 +123,7 @@ build_app_swiftc_args() {
         -lDraftDeps
         "-L$writing_core_dir"
         -lTranscriptedWritingCore
+        ${whisper_cpp_link[@]+"${whisper_cpp_link[@]}"}
         -framework CoreML
         -framework CoreAudio
         -framework CoreMediaIO

@@ -77,18 +77,6 @@ class STTRouter: ObservableObject {
     /// One take, kept across a device-recovery restart within it.
     var dictationRecordingIdentity: UUID { parakeetEngine.recordingIdentity }
 
-    /// Sends a copy of this dictation's mic audio to the island's live
-    /// preview, or stops (nil). Every model records through the same engine.
-    /// Fork: attaches the take's on-disk spool feed to both places a take's
-    /// audio arrives: the engine's own capture and a mic borrowed from a meeting.
-    func setDictationRecordingSpoolSink(_ sink: DictationPreviewSampleSink?) {
-        parakeetEngine.pendingSamplesLock.withLock { parakeetEngine.recordingSpoolSink = sink }
-        parakeetEngine.sharedMeetingMicRecorder.setSpoolSink(sink)
-    }
-
-    func setDictationPreviewSink(_ sink: DictationPreviewSampleSink?) {
-        parakeetEngine.pendingSamplesLock.withLock { parakeetEngine.previewSink = sink }
-    }
     var dictationAudioRouteAnalyticsContext: [String: String] {
         parakeetEngine.currentAudioRouteAnalyticsContext
     }
@@ -157,7 +145,7 @@ class STTRouter: ObservableObject {
             return parakeetEngine.isModelLoaded(for: .v3)
         case .parakeetUltraExperimental:
             return parakeetEngine.isModelLoaded(for: .ultra)
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             return whisperEngine.isModelLoaded(for: model)
         case .appleSpeech:
             return appleSpeechEngine.isModelLoaded
@@ -186,7 +174,7 @@ class STTRouter: ObservableObject {
         case .parakeetTDTv2, .parakeetTDTv3, .parakeetUltraExperimental:
             parakeetEngine.cancelModelWork()
             parakeetEngine.teardownModel()
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             whisperEngine.cleanup()
         case .appleSpeech:
             appleSpeechEngine.cleanup()
@@ -275,7 +263,7 @@ class STTRouter: ObservableObject {
         }
     }
 
-    private func setActiveRecordingModel(_ model: TranscriptionModelChoice) {
+    private func setActiveRecordingModel(_ model: TranscriptionModelChoice, continuingTake: Bool = false) {
         let resolvedModel = beginForegroundUse(of: model)
         if let variant = resolvedModel.parakeetVariant {
             // Cached-model fast start may beat its async warmup task. Select
@@ -285,6 +273,9 @@ class STTRouter: ObservableObject {
         let replacement = recordingModelOwnership.replace(with: resolvedModel)
         if let replacedModel = replacement.replacedModel {
             endForegroundUse(of: replacedModel)
+        }
+        whisperEngine.beginLiveDictation(model: resolvedModel, continuingTake: continuingTake) { [weak self] in
+            self?.setDictationChunkSink($0)
         }
     }
 
@@ -298,6 +289,7 @@ class STTRouter: ObservableObject {
             model = recordingModelOwnership.takeActiveModel()
         }
         guard let model else { return }
+        whisperEngine.endLiveDictation()
         endForegroundUse(of: model)
     }
 
@@ -326,7 +318,7 @@ class STTRouter: ObservableObject {
             await parakeetEngine.initialize(variant: .v3)
         case .parakeetUltraExperimental:
             await parakeetEngine.initialize(variant: .ultra)
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             await whisperEngine.initialize(model: model)
         case .appleSpeech:
             await appleSpeechEngine.initialize()
@@ -369,7 +361,7 @@ class STTRouter: ObservableObject {
     }
 
     func startRecordingRecoveryAttempt() async -> Bool {
-        setActiveRecordingModel(selectedModel)
+        setActiveRecordingModel(selectedModel, continuingTake: true)
         return await parakeetEngine.startRecording(isRecoveryAttempt: true)
     }
 
@@ -468,16 +460,13 @@ class STTRouter: ObservableObject {
                 lastEmptyTranscriptionReason = text == nil ? parakeetEngine.lastEmptyTranscriptionReason : nil
             }
             return text
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             return await transcribeUsingExternalEngine(
                 model: model,
                 preparedRecording: preparedRecording
             ) { [self] recording in
-                try await whisperEngine.transcribeSamples(
-                    recording.samples16k,
-                    source: .microphone,
-                    model: model
-                )
+                // Fork: Breeze joins the pieces it transcribed while recording.
+                try await whisperEngine.transcribeDictationTake(recording.samples16k, model: model)
             }
         case .appleSpeech:
             // Dictation has no language setting; Apple Speech uses the Mac's language.
@@ -626,7 +615,7 @@ class STTRouter: ObservableObject {
                 ])
             }
             return try await parakeetEngine.transcribeSamples(samples, source: source)
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             return try await whisperEngine.transcribeSamples(
                 samples,
                 source: source,
@@ -653,7 +642,7 @@ class STTRouter: ObservableObject {
             return ASRConstants.maxModelSamples - ASRConstants.samplesPerEncoderFrame
         case .whisperLargeV3Turbo, .whisperLargeV3:
             return Self.whisperWindowSamples * WhisperEngine.meetingBatchWorkerCount
-        case .parakeetUltraExperimental, .appleSpeech:
+        case .parakeetUltraExperimental, .appleSpeech, .breezeASR25:
             return nil
         }
     }
@@ -762,7 +751,7 @@ class STTRouter: ObservableObject {
         warmupOwnership.reset()
         recordingModelOwnership.reset()
         parakeetEngine.cleanup()
-        whisperEngine.cleanup()
+        whisperEngine.cleanup(beforeQuit: true)
         appleSpeechEngine.cleanup()
     }
 
@@ -788,7 +777,7 @@ class STTRouter: ObservableObject {
             return parakeetEngine.modelDownloadState(for: .v3)
         case .parakeetUltraExperimental:
             return parakeetEngine.modelDownloadState(for: .ultra)
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             return whisperEngine.modelDownloadState
         case .appleSpeech:
             return appleSpeechEngine.modelDownloadState

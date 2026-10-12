@@ -614,7 +614,7 @@ extension TranscriptedSettingsView {
             modelCacheCleanupInProgress: modelCacheCleanupInProgress,
             modelCacheCleanupStatus: modelCacheCleanupStatus,
             modelCacheCleanupStatusDetails: modelCacheCleanupStatusDetails,
-            effectiveTranscriptionModelIsWhisper: effectiveTranscriptionModel.isWhisper,
+            effectiveTranscriptionModelIsWhisper: effectiveTranscriptionModel.whisperKitModelName != nil,
             supportFilesFolder: appStateFolder.deletingLastPathComponent(),
             onChooseCaptureLibrary: {
                 trackSettingsAction("choose_capture_library", page: .general)

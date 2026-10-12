@@ -57,6 +57,8 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
     case whisperLargeV3 = "whisper-large-v3"
     case appleSpeech = "apple-speech"
     case parakeetUltraExperimental = "parakeet-ultra-experimental"
+    /// Fork: MediaTek's Breeze-ASR-25 through whisper.cpp; see `BreezeModelInstall`.
+    case breezeASR25 = "breeze-asr-25"
 
     var id: String { rawValue }
 
@@ -74,6 +76,8 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
             return "Apple Speech (built into macOS)"
         case .parakeetUltraExperimental:
             return "Parakeet Ultra (Experimental)"
+        case .breezeASR25:
+            return "Breeze ASR 25 (Experimental)"
         }
     }
 
@@ -91,6 +95,8 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
             return "Apple Speech"
         case .parakeetUltraExperimental:
             return "Parakeet Ultra"
+        case .breezeASR25:
+            return "Breeze"
         }
     }
 
@@ -109,6 +115,9 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
         case .parakeetUltraExperimental:
             // CC-BY-4.0 attribution for Moondream's weights.
             return "Experimental. Moondream's retrained Parakeet V3 (Parakeet Ultra, CC-BY-4.0), converted to run on this Mac."
+        case .breezeASR25:
+            // Apache-2.0 weights by MediaTek Research.
+            return "Experimental. MediaTek's Breeze-ASR-25, a Whisper tuned for speech that mixes languages; keeps English terms in Latin letters. Transcribes dictation in pieces while you talk."
         }
     }
 
@@ -120,9 +129,14 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
         switch self {
         case .parakeetTDTv2, .parakeetTDTv3, .appleSpeech, .parakeetUltraExperimental:
             return false
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             return true
         }
+    }
+
+    /// Whisper models that run through whisper.cpp instead of WhisperKit.
+    var usesWhisperCpp: Bool {
+        self == .breezeASR25
     }
 
     var isAppleSpeech: Bool {
@@ -139,7 +153,7 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
         switch self {
         case .parakeetTDTv2, .parakeetTDTv3, .parakeetUltraExperimental:
             return "parakeet"
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             return "whisper"
         case .appleSpeech:
             return "apple_speech"
@@ -166,6 +180,8 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
             return "apple_speech_local"
         case .parakeetUltraExperimental:
             return "parakeet_ultra_local"
+        case .breezeASR25:
+            return "breeze_asr_25_local"
         }
     }
 
@@ -183,12 +199,14 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
             return "Apple Speech"
         case .parakeetUltraExperimental:
             return "Parakeet Ultra"
+        case .breezeASR25:
+            return "Breeze ASR 25"
         }
     }
 
     var whisperKitModelName: String? {
         switch self {
-        case .parakeetTDTv2, .parakeetTDTv3, .appleSpeech, .parakeetUltraExperimental:
+        case .parakeetTDTv2, .parakeetTDTv3, .appleSpeech, .parakeetUltraExperimental, .breezeASR25:
             return nil
         case .whisperLargeV3Turbo:
             return "large-v3-v20240930_turbo_632MB"
@@ -213,7 +231,16 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
         case .parakeetUltraExperimental:
             // Installed locally by the conversion script, never downloaded.
             return "~600 MB"
+        case .breezeASR25:
+            // q8 weights plus the Core ML encoder; installed locally.
+            return "~2.9 GB"
         }
+    }
+
+    /// Installed by a local script, never downloaded: hidden from the picker
+    /// until installed.
+    var isLocalInstallOnly: Bool {
+        parakeetVariant?.isLocalInstallOnly ?? false || self == .breezeASR25
     }
 
     var parakeetVariant: ParakeetModelVariant? {
@@ -221,7 +248,7 @@ enum TranscriptionModelChoice: String, CaseIterable, Identifiable {
         case .parakeetTDTv2: return .v2
         case .parakeetTDTv3: return .v3
         case .parakeetUltraExperimental: return .ultra
-        case .whisperLargeV3Turbo, .whisperLargeV3, .appleSpeech: return nil
+        case .whisperLargeV3Turbo, .whisperLargeV3, .appleSpeech, .breezeASR25: return nil
         }
     }
 }
@@ -233,10 +260,13 @@ enum TranscriptionModelVisibilityPolicy {
     static func isVisible(
         _ model: TranscriptionModelChoice,
         selectedModel: TranscriptionModelChoice,
-        isLocallyInstalled: (ParakeetModelVariant) -> Bool
+        isLocallyInstalled: (ParakeetModelVariant) -> Bool,
+        isBreezeInstalled: () -> Bool = { BreezeModelInstall.isInstalled() }
     ) -> Bool {
-        guard let variant = model.parakeetVariant, variant.isLocalInstallOnly else { return true }
-        return model == selectedModel || isLocallyInstalled(variant)
+        guard model.isLocalInstallOnly else { return true }
+        if model == selectedModel { return true }
+        if let variant = model.parakeetVariant { return isLocallyInstalled(variant) }
+        return model == .breezeASR25 && isBreezeInstalled()
     }
 }
 

@@ -112,6 +112,7 @@ later picker selection. Current identifiers are additive within format version 1
 | `whisper_large_v3_turbo_local` | Whisper Large v3 Turbo | `Whisper Large V3 Turbo` |
 | `whisper_large_v3_local` | Whisper Large v3 | `Whisper Large V3` |
 | `apple_speech_local` | Apple Speech (macOS SpeechTranscriber) | `Apple Speech` |
+| `breeze_asr_25_local` | Breeze-ASR-25 through whisper.cpp (fork, experimental, installed by `scripts/models/breeze-asr-25`) | `Breeze ASR 25` |
 
 Readers should preserve unknown identifiers rather than assuming every local
 capture uses Parakeet v3.

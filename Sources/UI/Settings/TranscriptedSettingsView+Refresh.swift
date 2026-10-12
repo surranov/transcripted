@@ -32,14 +32,16 @@ extension TranscriptedSettingsView {
                 selectedModel: preferredTranscriptionModel,
                 isLocallyInstalled: { variant in
                     ModelCacheInventory.activeParakeetModelDirectory(variant: variant) != nil
-                }
+                },
+                isBreezeInstalled: { BreezeModelInstall.isInstalled() }
             )
         }
     }
 
     /// Only script-installed models can be missing; downloaded ones count as present.
     func isLocalModelInstalled(_ model: TranscriptionModelChoice) -> Bool {
-        guard let variant = model.parakeetVariant, variant.isLocalInstallOnly else { return true }
+        guard model.isLocalInstallOnly else { return true }
+        guard let variant = model.parakeetVariant else { return BreezeModelInstall.isInstalled() }
         return ModelCacheInventory.activeParakeetModelDirectory(variant: variant) != nil
     }
 
@@ -47,7 +49,7 @@ extension TranscriptedSettingsView {
         // Script-installed models can't be downloaded; the button only re-checks
         // the install or retries the load.
         let model = sttRouter.selectedModel
-        if model.parakeetVariant?.isLocalInstallOnly == true {
+        if model.isLocalInstallOnly {
             switch sttRouter.modelDownloadState {
             case .notLoaded, .failed:
                 guard isLocalModelInstalled(model) else { return "Check Again" }
@@ -306,7 +308,8 @@ extension TranscriptedSettingsView {
 
     func removeReclaimableModelCaches() {
         guard !modelCacheCleanupInProgress else { return }
-        let includeWhisper = !effectiveTranscriptionModel.isWhisper
+        // Only a WhisperKit model reads the Whisper cache; Breeze (fork) lives elsewhere.
+        let includeWhisper = effectiveTranscriptionModel.whisperKitModelName == nil
         modelCacheCleanupInProgress = true
         modelCacheCleanupStatus = nil
         modelCacheCleanupStatusDetails = nil

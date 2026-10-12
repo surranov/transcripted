@@ -128,6 +128,7 @@ Claude Desktop integration installs the bundled read-only MCP helper under:
 Script-installed experimental models (never downloaded by the app) live under:
 
 - Parakeet Ultra: `~/Library/Application Support/Transcripted/models/parakeet-ultra/parakeet-tdt-0.6b-v3/`, installed by `scripts/models/parakeet-ultra/install.sh` and only used when its `transcripted-model.json` marker is present
+- Breeze-ASR-25 (fork): `~/Library/Application Support/Transcripted/models/breeze-asr-25/` (whisper.cpp q8 weights plus `ggml-breeze-asr-25-encoder.mlmodelc`), installed by `scripts/models/breeze-asr-25/install.sh` and only used when its `transcripted-model.json` marker is present; outside `cache/whisperkit`, so the Whisper cache cleanup never deletes it
 
 The ReDimNet2 voiceprint model ships inside the app
 (`Transcripted.app/Contents/Resources/redimnet2-voiceprint/Model.mlmodelc`). The build copies it

@@ -148,12 +148,13 @@ enum FirstRunExperience {
         // A script-installed model has nothing to download, so Retry Download
         // and download sizes don't apply. Say whether the install is missing
         // or present but failed to load, since only one needs a reinstall.
-        if model.parakeetVariant?.isLocalInstallOnly == true {
+        if model.isLocalInstallOnly {
+            let installScript = model == .breezeASR25 ? "scripts/models/breeze-asr-25" : "scripts/models/parakeet-ultra"
             switch modelState {
             case .notLoaded where !isLocallyInstalled, .failed where !isLocallyInstalled:
                 return FirstRunModelCardState(
                     title: "\(model.title) isn't installed",
-                    detail: "This experimental model is installed by a script, not downloaded. Install it with scripts/models/parakeet-ultra, or pick Parakeet V3.",
+                    detail: "This experimental model is installed by a script, not downloaded. Install it with \(installScript), or pick Parakeet V3.",
                     status: "Not installed",
                     progress: nil,
                     tone: .failed
@@ -169,10 +170,11 @@ enum FirstRunExperience {
             case .failed(let message):
                 // Only our own path-free text reaches the card; anything else
                 // may be raw Core ML output.
-                let known = ParakeetLocalModelError.allCases.map(\.localizedDescription)
-                let reason = known.contains(message)
-                    ? message
+                let known = ParakeetLocalModelError.allCases.map(\.localizedDescription) + BreezeModelInstall.knownMessages
+                let fallback = model == .breezeASR25
+                    ? BreezeModelInstall.loadFailedMessage
                     : ParakeetLocalModelError.loadFailed.localizedDescription
+                let reason = known.contains(message) ? message : fallback
                 return FirstRunModelCardState(
                     title: "Couldn't load \(model.title)",
                     detail: "\(reason) You can also pick Parakeet V3.",
@@ -251,7 +253,7 @@ enum FirstRunExperience {
         let card = modelCard(for: modelState, model: model, isLocallyInstalled: isLocallyInstalled)
         // A script-installed model is already on this Mac and loads on
         // demand, so there's nothing to wait for.
-        if model.parakeetVariant?.isLocalInstallOnly == true,
+        if model.isLocalInstallOnly,
            isLocallyInstalled,
            case .notLoaded = modelState {
             return OnboardingDoneModelPresentation(
@@ -275,7 +277,7 @@ enum FirstRunExperience {
             return OnboardingDoneModelPresentation(
                 headline: "Almost set.",
                 statusLine: card.title,
-                detail: model.parakeetVariant?.isLocalInstallOnly == true
+                detail: model.isLocalInstallOnly
                     ? card.detail
                     : "Try again from the Transcription section in Settings. Dictation and meetings need it.",
                 progress: nil,

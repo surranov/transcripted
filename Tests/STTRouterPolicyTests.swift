@@ -161,9 +161,13 @@ func testSTTRouterPolicy() {
         }
     }
 
-    runSuite("STTRouter policy — Whisper models carry a WhisperKit bundle name; Parakeet does not") {
+    runSuite("STTRouter policy — WhisperKit models carry a WhisperKit bundle name; Breeze and Parakeet do not") {
         for model in TranscriptionModelChoice.allCases {
-            if model.isWhisper {
+            if model.usesWhisperCpp {
+                // Breeze is a Whisper model run by whisper.cpp from local files.
+                assertTrue(model.isWhisper, "\(model.rawValue) is a Whisper model")
+                assertNil(model.whisperKitModelName, "\(model.rawValue) must not request a WhisperKit bundle")
+            } else if model.isWhisper {
                 assertNotNil(
                     model.whisperKitModelName,
                     "Whisper model \(model.rawValue) must resolve to a WhisperKit bundle"
@@ -200,6 +204,10 @@ func testSTTRouterPolicy() {
             TranscriptionModelChoice.parakeetUltraExperimental.transcriptionEngineIdentifier,
             "parakeet_ultra_local"
         )
+        assertEqual(
+            TranscriptionModelChoice.breezeASR25.transcriptionEngineIdentifier,
+            "breeze_asr_25_local"
+        )
 
         // Identifiers must be unique across all cases.
         let ids = TranscriptionModelChoice.allCases.map { $0.transcriptionEngineIdentifier }
@@ -232,6 +240,7 @@ func testSTTRouterPolicy() {
         assertEqual(TranscriptionModelChoice.whisperLargeV3Turbo.rawValue, "whisper-large-v3-turbo")
         assertEqual(TranscriptionModelChoice.whisperLargeV3.rawValue, "whisper-large-v3")
         assertEqual(TranscriptionModelChoice.parakeetUltraExperimental.rawValue, "parakeet-ultra-experimental")
+        assertEqual(TranscriptionModelChoice.breezeASR25.rawValue, "breeze-asr-25")
 
         for model in TranscriptionModelChoice.allCases {
             assertEqual(

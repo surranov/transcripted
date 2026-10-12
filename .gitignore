@@ -125,3 +125,6 @@ Tools/SpeakerEvalHarness/.build-vp2/
 
 # Speaker lab run outputs (local paths, own-call timelines; do not commit)
 reports/speaker-lab/
+
+# Fork: whisper.cpp for Breeze (scripts/fork/build-whisper-cpp.sh)
+/deps-whisper-cpp/

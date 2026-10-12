@@ -96,20 +96,22 @@ final class ValidatorTests: XCTestCase {
     }
 
     func testTranscriptValidatorAcceptsEverySupportedLocalEngine() throws {
-        for engine in [
+        let engines = [
             "parakeet_local",
             "parakeet_v2_local",
             "whisper_large_v3_turbo_local",
             "whisper_large_v3_local",
             "apple_speech_local",
             "parakeet_ultra_local",
-        ] {
+            "breeze_asr_25_local",
+        ]
+        for engine in engines {
             try writeTranscriptWithEngine(engine)
         }
 
         let results = TranscriptValidator(directory: tempRoot).validate()
         let engineResults = results.filter { $0.check == "transcript/yaml-engine-stt" }
-        XCTAssertEqual(engineResults.count, 6)
+        XCTAssertEqual(engineResults.count, engines.count)
         XCTAssertTrue(engineResults.allSatisfy { $0.status == .pass })
         XCTAssertFalse(results.contains { $0.status == .fail })
     }

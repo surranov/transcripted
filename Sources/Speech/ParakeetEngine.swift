@@ -104,6 +104,10 @@ class ParakeetEngine: ObservableObject {
     /// (`DictationRecordingSpool`), so a crash mid-take keeps its audio.
     /// Guarded by `pendingSamplesLock`; nil between takes.
     nonisolated(unsafe) var recordingSpoolSink: DictationPreviewSampleSink?
+    /// Fork: Breeze's copy for transcribing the take in pieces while it
+    /// records (`BreezeLiveDictation`). Guarded by `pendingSamplesLock`; nil
+    /// unless a Breeze take is recording.
+    nonisolated(unsafe) var dictationChunkSink: DictationPreviewSampleSink?
     var lastAudioSampleAt: CFAbsoluteTime = 0
     /// When the first audio buffer of this dictation arrived. Guarded by
     /// `pendingSamplesLock`; a recovery restart keeps the original value.

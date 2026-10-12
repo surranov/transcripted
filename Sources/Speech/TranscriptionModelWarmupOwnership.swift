@@ -14,7 +14,7 @@ extension TranscriptionModelChoice {
         switch self {
         case .parakeetTDTv3, .parakeetTDTv2, .parakeetUltraExperimental:
             return .parakeet
-        case .whisperLargeV3Turbo, .whisperLargeV3:
+        case .whisperLargeV3Turbo, .whisperLargeV3, .breezeASR25:
             return .whisper
         case .appleSpeech:
             return .appleSpeech

@@ -8,7 +8,7 @@ func testTranscriptionModelPreferences() {
         TranscriptionModelPreferences.setPreferredModel(.parakeetTDTv2, userDefaults: defaults)
         assertEqual(TranscriptionModelPreferences.preferredModel(userDefaults: defaults), .parakeetTDTv2)
         assertEqual(TranscriptionModelPreferences.defaultModel, .parakeetTDTv3)
-        assertEqual(TranscriptionModelChoice.allCases.count, 6)
+        assertEqual(TranscriptionModelChoice.allCases.count, 7)
         assertEqual(TranscriptionModelChoice.parakeetTDTv2.parakeetVariant, .v2)
         assertEqual(TranscriptionModelChoice.parakeetTDTv3.parakeetVariant, .v3)
         assertEqual(TranscriptionModelChoice.parakeetUltraExperimental.parakeetVariant, .ultra)
@@ -35,9 +35,12 @@ func testTranscriptionModelPreferences() {
     runSuite("The model picker hides Ultra until it is installed") {
         let installed: (ParakeetModelVariant) -> Bool = { _ in true }
         let missing: (ParakeetModelVariant) -> Bool = { _ in false }
-        for model in TranscriptionModelChoice.allCases where model != .parakeetUltraExperimental {
+        let local: Set<TranscriptionModelChoice> = [.parakeetUltraExperimental, .breezeASR25]
+        assertEqual(Set(TranscriptionModelChoice.allCases.filter(\.isLocalInstallOnly)), local,
+            "only the script-installed models can be missing")
+        for model in TranscriptionModelChoice.allCases where !local.contains(model) {
             assertTrue(TranscriptionModelVisibilityPolicy.isVisible(
-                model, selectedModel: .parakeetTDTv3, isLocallyInstalled: missing
+                model, selectedModel: .parakeetTDTv3, isLocallyInstalled: missing, isBreezeInstalled: { false }
             ), "\(model.rawValue) is always offered")
         }
         assertFalse(TranscriptionModelVisibilityPolicy.isVisible(

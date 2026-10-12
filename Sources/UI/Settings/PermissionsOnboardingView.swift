@@ -203,7 +203,8 @@ struct PermissionsOnboardingView: View {
     }
 
     private static func isLocalModelInstalled(_ model: TranscriptionModelChoice) -> Bool {
-        guard let variant = model.parakeetVariant, variant.isLocalInstallOnly else { return true }
+        guard model.isLocalInstallOnly else { return true }
+        guard let variant = model.parakeetVariant else { return BreezeModelInstall.isInstalled() }
         return ModelCacheInventory.activeParakeetModelDirectory(variant: variant) != nil
     }
 

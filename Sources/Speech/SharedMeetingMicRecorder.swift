@@ -12,6 +12,8 @@ final class SharedMeetingMicRecorder: @unchecked Sendable {
     private var timeline = RecordedAudioTimeline()
     /// Fork: the take's on-disk spool feed (`STTRouter.setDictationRecordingSpoolSink`).
     private var spoolSink: DictationPreviewSampleSink?
+    /// Fork: Breeze's live transcription feed (`STTRouter.setDictationChunkSink`).
+    private var chunkSink: DictationPreviewSampleSink?
 
     init(maxDurationSeconds: Double = TranscriptedConstants.dictationSessionMaxDuration) {
         precondition(maxDurationSeconds > 0)
@@ -40,11 +42,16 @@ final class SharedMeetingMicRecorder: @unchecked Sendable {
                 : Array(monoSamples.prefix(remainingSamples))
             timeline.append(admitted, sampleRate: sampleRate)
             spoolSink?.append(admitted, sampleRate: sampleRate)
+            chunkSink?.append(admitted, sampleRate: sampleRate)
         }
     }
 
     func setSpoolSink(_ sink: DictationPreviewSampleSink?) {
         lock.withLock { spoolSink = sink }
+    }
+
+    func setChunkSink(_ sink: DictationPreviewSampleSink?) {
+        lock.withLock { chunkSink = sink }
     }
 
     func finish() -> RecordedAudioTimeline {

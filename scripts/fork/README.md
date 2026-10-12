@@ -5,7 +5,10 @@ Personal fork of [r3dbars/transcripted](https://github.com/r3dbars/transcripted)
 ```bash
 bash scripts/fork/build-dev.sh               # build and install ~/Applications/Transcripted Dev.app
 bash scripts/fork/test-dev-variant-plist.sh  # check the Info.plist overrides
+bash scripts/fork/build-whisper-cpp.sh       # whisper.cpp for the Breeze model (build-dev.sh runs it)
 ```
+
+`build-whisper-cpp.sh` builds whisper.cpp at a pinned release into `deps-whisper-cpp/` (its own folder, because `build-deps.sh` replaces `deps-libs`/`deps-modules` wholesale). The app links it only when it's there; without it the Breeze model shows as not built. The model itself is installed separately: `scripts/models/breeze-asr-25/README.md`.
 
 ## What the Dev variant changes
 

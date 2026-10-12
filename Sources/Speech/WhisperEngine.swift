@@ -16,6 +16,11 @@ final class WhisperEngine: ObservableObject {
     private var initializingModel: TranscriptionModelChoice?
     private var initializationTask: Task<Void, Never>?
     private var initializationGeneration = SupersessionEpoch()
+    /// Fork: Breeze runs through whisper.cpp; see the Breeze section below.
+    private let breeze = WhisperCppTranscriber()
+    private var liveDictation: BreezeLiveDictation?
+    private var liveDictationModel: TranscriptionModelChoice?
+    private var detachLiveDictationSink: (() -> Void)?
 
     /// Ties the cached-model manifest to this app build, so the first Whisper
     /// load after an update re-checks Hugging Face once, like every load did.
@@ -27,7 +32,8 @@ final class WhisperEngine: ObservableObject {
     }()
 
     func isModelLoaded(for model: TranscriptionModelChoice) -> Bool {
-        loadedModel == model && whisperKit != nil && modelDownloadState.isReady
+        let engineLoaded = model.usesWhisperCpp ? breeze.isLoaded : whisperKit != nil
+        return loadedModel == model && engineLoaded && modelDownloadState.isReady
     }
 
     func initialize(model: TranscriptionModelChoice) async {
@@ -77,6 +83,9 @@ final class WhisperEngine: ObservableObject {
         }
 
         try Task.checkCancellation()
+        if model.usesWhisperCpp {
+            return try await transcribeWithBreeze(samples, source: source, model: model, languageCode: languageCode)
+        }
         guard let whisperKit, isModelLoaded(for: model) else {
             EventReporter.shared.capture(
                 level: .error,
@@ -184,6 +193,14 @@ final class WhisperEngine: ObservableObject {
                 NSLocalizedDescriptionKey: "\(model.title) is not a Whisper model."
             ])
         }
+        if model.usesWhisperCpp {
+            // One context decodes one segment at a time.
+            var texts: [String] = []
+            for segment in segments {
+                texts.append(try await transcribeSamples(segment, source: source, model: model, languageCode: languageCode))
+            }
+            return texts
+        }
         if !isModelLoaded(for: model) {
             await initialize(model: model)
         }
@@ -280,6 +297,11 @@ final class WhisperEngine: ObservableObject {
             }
             return TranscriptionLanguageContext(selection: selection, languageCode: code, resolution: .explicit)
         }
+        // Fork: no detection pass for Breeze; it uses the person's language
+        // (`BreezeDictationLanguage`) when no code is given.
+        if model.usesWhisperCpp {
+            return TranscriptionLanguageContext(selection: selection, languageCode: nil, resolution: .automaticUncertain)
+        }
 
         if !isModelLoaded(for: model) { await initialize(model: model) }
         try Task.checkCancellation()
@@ -326,7 +348,9 @@ final class WhisperEngine: ObservableObject {
         }
     }
 
-    func cleanup() {
+    /// `beforeQuit` waits for whisper.cpp to free Breeze (see
+    /// `WhisperCppTranscriber.unload`); a model switch doesn't.
+    func cleanup(beforeQuit: Bool = false) {
         initializationGeneration.invalidate()
         initializationTask?.cancel()
         initializationTask = nil
@@ -335,12 +359,18 @@ final class WhisperEngine: ObservableObject {
         whisperKit = nil
         loadedModel = nil
         modelDownloadState = .notLoaded
+        endLiveDictation()
+        breeze.unload(waitUntilFreed: beforeQuit)
         Task {
             await pipe?.unloadModels()
         }
     }
 
     private func load(model: TranscriptionModelChoice, generation: SupersessionEpoch.Token) async {
+        if model.usesWhisperCpp {
+            await loadBreeze(model: model, generation: generation)
+            return
+        }
         guard let variant = model.whisperKitModelName else { return }
         guard initializationGeneration.isCurrent(generation), !Task.isCancelled else { return }
 
@@ -348,6 +378,8 @@ final class WhisperEngine: ObservableObject {
             let existing = whisperKit
             whisperKit = nil
             loadedModel = nil
+            endLiveDictation()
+            breeze.unload()
             await existing?.unloadModels()
             guard initializationGeneration.isCurrent(generation), !Task.isCancelled else { return }
         }
@@ -459,5 +491,170 @@ final class WhisperEngine: ObservableObject {
                 ]
             )
         }
+    }
+    // MARK: - Breeze (fork)
+
+    /// Loads the script-installed Breeze files into whisper.cpp. Never
+    /// downloads: a missing install fails with a path-free message the model
+    /// card can show.
+    private func loadBreeze(model: TranscriptionModelChoice, generation: SupersessionEpoch.Token) async {
+        guard initializationGeneration.isCurrent(generation), !Task.isCancelled else { return }
+        if loadedModel != model {
+            let existing = whisperKit
+            whisperKit = nil
+            loadedModel = nil
+            await existing?.unloadModels()
+            guard initializationGeneration.isCurrent(generation), !Task.isCancelled else { return }
+        }
+        guard WhisperCppTranscriber.isAvailableInThisBuild else {
+            failBreezeLoad(model: model, message: BreezeModelInstall.notBuiltMessage, event: "model_not_built")
+            return
+        }
+        guard BreezeModelInstall.isInstalled() else {
+            failBreezeLoad(model: model, message: BreezeModelInstall.notInstalledMessage, event: "model_not_installed")
+            return
+        }
+        modelDownloadState = .loading
+        let startTime = CFAbsoluteTimeGetCurrent()
+        AppLogger.transcription.info("WHISPER | loading \(model.title) through whisper.cpp")
+        do {
+            try await breeze.load(weightsURL: BreezeModelInstall.weightsURL())
+            // Superseded: leave the context alone. Whatever superseded this
+            // load frees it (cleanup) or replaces it (the next load), and an
+            // unload here could free a newer load's context instead.
+            guard initializationGeneration.isCurrent(generation), !Task.isCancelled else { return }
+            loadedModel = model
+            modelDownloadState = .ready
+            let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+            AppLogger.transcription.info("WHISPER | \(model.title) ready in \(String(format: "%.1f", elapsed))s")
+            EventReporter.shared.capture(
+                level: .info,
+                engine: model.engineName,
+                event: "model_ready",
+                message: "\(model.title) initialized successfully",
+                context: ["model": model.rawValue, "runtime": "whisper_cpp", "elapsed_s": String(format: "%.1f", elapsed)]
+            )
+        } catch {
+            guard initializationGeneration.isCurrent(generation), !Task.isCancelled else { return }
+            failBreezeLoad(model: model, message: BreezeModelInstall.loadFailedMessage, event: "model_init_failed")
+        }
+    }
+
+    private func failBreezeLoad(model: TranscriptionModelChoice, message: String, event: String) {
+        AppLogger.transcription.error("WHISPER | \(message)")
+        modelDownloadState = .failed(message)
+        EventReporter.shared.capture(
+            level: .error,
+            engine: model.engineName,
+            event: event,
+            message: message,
+            context: ["model": model.rawValue, "runtime": "whisper_cpp"]
+        )
+    }
+
+    /// The language Breeze transcribes in when the caller gives none.
+    private func breezeLanguage() -> String? {
+        let meeting = TranscriptionLanguagePreferences.preferredLanguageCode()
+        return BreezeDictationLanguage.code(
+            userLanguageCodes: DictationUserLanguages.current(),
+            explicitMeetingLanguage: meeting == TranscriptionLanguagePreferences.automaticValue ? nil : meeting
+        )
+    }
+
+    private func transcribeWithBreeze(
+        _ samples: [Float],
+        source: AudioSource,
+        model: TranscriptionModelChoice,
+        languageCode: String?
+    ) async throws -> String {
+        guard isModelLoaded(for: model) else {
+            throw NSError(domain: "WhisperEngine", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "\(model.title) is not loaded."
+            ])
+        }
+        guard TranscriptedConstants.hasMinimumParakeetAudioSamples(samples.count) else { return "" }
+        let sourceDescription = source == .microphone ? "microphone" : "system"
+        let prompt = BreezeDictationPrompt.make(dictionary: CustomDictionaryPreferences.entries(), precedingText: "")
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let text = try await breeze.transcribe(samples, language: languageCode ?? breezeLanguage(), prompt: prompt)
+        try Task.checkCancellation()
+        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+        let audioDuration = Double(samples.count) / TranscriptedConstants.parakeetSampleRate
+        let transcript = SegmentedEngineTranscript(segmentTexts: [text])
+        AppLogger.transcription.info("WHISPER | \(model.title) transcribed \(sourceDescription) in \(String(format: "%.2f", elapsed))s, chars=\(transcript.uncorrected.count)")
+        EventReporter.shared.capture(
+            level: .info,
+            engine: model.engineName,
+            event: source == .microphone ? "dictation_transcribed" : "meeting_segment_transcribed",
+            message: "Whisper segment transcribed in \(String(format: "%.2f", elapsed))s",
+            context: [
+                "model": model.rawValue,
+                "elapsed_s": String(format: "%.3f", elapsed),
+                "audio_duration_s": String(format: "%.2f", audioDuration),
+                "rtf": String(format: "%.3f", audioDuration > 0 ? elapsed / audioDuration : 0),
+                "chars": "\(transcript.uncorrected.count)",
+                "source": sourceDescription,
+            ]
+        )
+        return transcript.text
+    }
+
+    /// Called as every take starts recording. For Breeze with the model
+    /// loaded, transcribes the take in pieces while it records; any other
+    /// model, or a Breeze still loading, records as before.
+    /// A device-recovery restart inside the take (`continuingTake`) keeps the
+    /// pieces so far: the sink stays attached, and audio lost in the gap is
+    /// lost from the take's own samples too.
+    func beginLiveDictation(
+        model: TranscriptionModelChoice,
+        continuingTake: Bool = false,
+        attachSink: @escaping (DictationPreviewSampleSink?) -> Void
+    ) {
+        if continuingTake, liveDictation != nil, liveDictationModel == model { return }
+        endLiveDictation()
+        guard model.usesWhisperCpp, isModelLoaded(for: model) else { return }
+        let dictionary = CustomDictionaryPreferences.entries()
+        let live = BreezeLiveDictation(
+            transcriber: breeze,
+            language: breezeLanguage(),
+            prompt: { precedingText in
+                BreezeDictationPrompt.make(dictionary: dictionary, precedingText: precedingText)
+            }
+        )
+        liveDictation = live
+        liveDictationModel = model
+        detachLiveDictationSink = { attachSink(nil) }
+        attachSink(live.sink)
+        live.start()
+    }
+
+    /// Stop, cancel or a failed start: drops the live pieces. Idempotent.
+    func endLiveDictation() {
+        detachLiveDictationSink?()
+        detachLiveDictationSink = nil
+        liveDictation?.cancel()
+        liveDictation = nil
+    }
+
+    /// A dictation take at Stop. Breeze returns the pieces it transcribed
+    /// while recording plus the last one; if anything about them is in doubt
+    /// it transcribes the whole take, like the other Whisper models always do.
+    func transcribeDictationTake(_ samples: [Float], model: TranscriptionModelChoice) async throws -> String {
+        if model.usesWhisperCpp, let live = liveDictation {
+            detachLiveDictationSink?()
+            detachLiveDictationSink = nil
+            liveDictation = nil
+            let startTime = CFAbsoluteTimeGetCurrent()
+            if let pieces = await live.finish(fullSampleCount: samples.count) {
+                try Task.checkCancellation()
+                let summary = live.summary
+                let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+                AppLogger.transcription.info("WHISPER | \(model.title) live take: pieces=\(summary.pieces) reused_speculation=\(summary.reusedSpeculation) tail_s=\(String(format: "%.2f", elapsed))")
+                return SegmentedEngineTranscript(segmentTexts: pieces).text
+            }
+            try Task.checkCancellation()
+            AppLogger.transcription.info("WHISPER | \(model.title) live take fell back to the whole take")
+        }
+        return try await transcribeSamples(samples, source: .microphone, model: model)
     }
 }
