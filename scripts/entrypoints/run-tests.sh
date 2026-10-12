@@ -542,6 +542,7 @@ APP_SOURCES=(
     "Sources/Meeting/MeetingPromptHeuristics.swift"
     "Sources/Meeting/MeetingPromptProvider.swift"
     "Sources/Meeting/MeetingPromptAutoRecord.swift"
+    "Sources/Meeting/MeetingPromptDetector+DecisionLog.swift"
     "Sources/Meeting/MeetingPromptTelemetry.swift"
     "Sources/Meeting/MicActivityMonitor.swift"
     "Sources/Meeting/CameraActivityMonitor.swift"

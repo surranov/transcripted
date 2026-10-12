@@ -70,6 +70,12 @@ final class MeetingPromptDetector {
     /// How long an unrecognized browser has to hold the mic before it prompts.
     /// Tests shrink these.
     var browserEvidenceTiming: BrowserCallEvidence.Timing = .standard
+    /// Local trace of why a call did or did not prompt: signal changes, title
+    /// verdicts, prompts shown and held back. Enums and candidate ids only,
+    /// never titles, URLs or bundle IDs. The app writes it to its own log;
+    /// nil (tests) logs nothing.
+    var decisionLog: ((String, [String: String]) -> Void)?
+    var lastLoggedCallSignals = "none"
 
     // State below that isn't `private` is only internal because the
     // MeetingPromptDetector+*.swift extensions use it. Treat it as private
@@ -307,10 +313,9 @@ final class MeetingPromptDetector {
         pruneExpiredEntries(now: now)
         seedNativeActivityIfNeeded(frontmostBundleID: frontmostBundleID, now: now)
         refreshBrowserListenTitles(now: now)
-        updateDetectedCallSession(
-            signals: callSignals(frontmostBundleID: frontmostBundleID),
-            now: now
-        )
+        let signals = callSignals(frontmostBundleID: frontmostBundleID)
+        logCallSignalsIfChanged(signals)
+        updateDetectedCallSession(signals: signals, now: now)
 
         var candidates: [ScoredCandidate] = []
         if calendarAccessGranted() {
@@ -366,6 +371,7 @@ final class MeetingPromptDetector {
         }
 
         if onPromptRequest?(match.candidate) == true {
+            decisionLog?("Call prompt shown", Self.decisionContext(match.candidate))
             pendingUntil[match.candidate.id] = now.addingTimeInterval(pendingCooldown)
             cooldownReasons[match.candidate.id] = "prompt_pending"
             // Any prompt shown while a call is live feeds the funnel outcome:
@@ -496,6 +502,10 @@ final class MeetingPromptDetector {
         ].joined(separator: "|")
         guard (suppressionTelemetryUntil[dedupeKey] ?? .distantPast) <= now else { return }
         suppressionTelemetryUntil[dedupeKey] = now.addingTimeInterval(suppressionTelemetryCooldown)
+        var context = Self.decisionContext(candidate)
+        context["held_back"] = reason.rawValue
+        context["cooldown"] = cooldownReason ?? ""
+        decisionLog?("Call prompt held back", context)
         onPromptSuppressed?(
             MeetingPromptSuppression(
                 candidate: candidate,

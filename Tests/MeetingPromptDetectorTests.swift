@@ -1546,6 +1546,58 @@ func testMeetingPromptDetector() async {
         assertTrue(titleReads.count < 20, "a few reads, not one after another (got \(titleReads.count))")
     }
 
+    await runSuite("MeetingPromptDetector.decisionLog — says why a muted call prompted, without its title") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        showBrowserTab("Встреча \u{2014} Толк", on: detector)
+        let log = DecisionLogRecorder()
+        detector.decisionLog = { message, context in log.lines.append((message, context)) }
+        let box = CandidateBox()
+        detector.onPromptRequest = { _ in
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { box.promptCount > 0 })
+
+        assertTrue(
+            log.lines.contains { $0.0 == "Browser titles read" && $0.1["verdict"] == "call:ktalk" && $0.1["via"] == "playback" },
+            "the trace says the playing browser's titles named a Talk room"
+        )
+        assertTrue(
+            log.lines.contains { $0.0 == "Call signals changed" && $0.1["signals"] == "browser:audio_output" },
+            "and that it became a call signal"
+        )
+        assertTrue(
+            log.lines.contains { $0.0 == "Call prompt shown" && $0.1["candidate"] == "mic:ktalk" && $0.1["evidence"] == "tab_title" },
+            "and that the prompt went up"
+        )
+        let everything = log.lines.flatMap { [$0.0] + Array($0.1.values) }.joined(separator: " ")
+        assertFalse(everything.contains("Встреча") || everything.contains("Толк"), "window titles never reach the log")
+        assertFalse(everything.contains("com.google.Chrome"), "nor bundle IDs")
+    }
+
+    await runSuite("MeetingPromptDetector.decisionLog — a video playing logs its verdict once, not every read") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        let titleReads = TitleReadCounter()
+        detector.browserWindowTitlesProvider = { _ in
+            titleReads.count += 1
+            return [BrowserWindowTitle(title: "Lo-fi beats - YouTube", isFocused: true)]
+        }
+        let log = DecisionLogRecorder()
+        detector.decisionLog = { message, context in log.lines.append((message, context)) }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { titleReads.count >= 3 })
+
+        assertEqual(log.lines.filter { $0.0 == "Browser titles read" }.count, 1, "hours of video stay one line")
+        assertFalse(log.lines.contains { $0.0 == "Call signals changed" }, "a video never changes the call signals")
+    }
+
     await runSuite("MeetingPromptDetector.liveCallWasRecorded — only the call still going on counts") {
         let detector = makeIsolatedDetector()
         detector.onPromptRequest = { _ in true }
@@ -1643,6 +1695,11 @@ private let listenBrowserEvidenceTiming = BrowserCallEvidence.Timing(
 @MainActor
 private final class TitleReadCounter {
     var count = 0
+}
+
+@MainActor
+private final class DecisionLogRecorder {
+    var lines: [(String, [String: String])] = []
 }
 
 /// Makes the detector see these browser windows.

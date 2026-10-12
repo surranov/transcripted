@@ -138,6 +138,10 @@ enum MeetingPromptProvider: String, CaseIterable, Hashable {
         "com.apple.WebKit",           // Safari / WKWebView service processes (GPU, Networking, WebContent)
     ]
 
+    /// The provider a browser signal carries before its titles name the call
+    /// (`micInputProvider` maps every browser to it).
+    static let browserSignalProvider: MeetingPromptProvider = .googleMeet
+
     /// Whether `bundleID` belongs to a known browser family (main app or any of
     /// its helper/service processes). Prefix-aware: a prefix matches the exact id
     /// or any dotted child (`com.google.Chrome` matches `com.google.Chrome.helper`).

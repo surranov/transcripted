@@ -341,8 +341,7 @@ class TranscriptedAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
             }
             capturePillController.onRecord = { recordPrompt($0, false) }
             capturePillController.onAutoRecord = { [weak self] candidate in
-                guard let self else { return }
-                if self.callPromptAutoRecordStillAllowed() { recordPrompt(candidate, true) } else { expirePrompt(candidate) }
+                if self?.callPromptAutoRecordStillAllowed() == true { recordPrompt(candidate, true) } else { expirePrompt(candidate) }
             }
             capturePillController.onDismiss = dismissPrompt
             capturePillController.onExpired = expirePrompt
@@ -450,6 +449,7 @@ class TranscriptedAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
             meetingPromptDetector.isMicInputPromptEnabled = {
                 AutoCallDetectionPreferences.isEnabled()
             }
+            meetingPromptDetector.decisionLog = { SubsystemLogger("call-detection").info($0, $1) }
             // Assigned before start(), same contract as onChange/onOutputChange
             // below. Injected rather than a direct `DefaultInputDeviceMonitor
             // .shared` reference inside MicActivityMonitor.swift itself, so

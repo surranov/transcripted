@@ -226,6 +226,7 @@ extension MeetingPromptDetector {
     private func applyBrowserTitles(_ titles: [BrowserWindowTitle], now: Date) {
         guard var session = browserTitles else { return }
         let verdict = BrowserCallEvidence.classify(titles)
+        logBrowserTitleVerdict(verdict, windows: titles.count, previous: session.latest)
         session.readTask = nil
         session.readAt = now
         session.latest = verdict
