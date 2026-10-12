@@ -76,6 +76,7 @@ final class MeetingPromptDetector {
     /// nil (tests) logs nothing.
     var decisionLog: ((String, [String: String]) -> Void)?
     var lastLoggedCallSignals = "none"
+    var lastLoggedBrowserTitleKind: String?
 
     // State below that isn't `private` is only internal because the
     // MeetingPromptDetector+*.swift extensions use it. Treat it as private

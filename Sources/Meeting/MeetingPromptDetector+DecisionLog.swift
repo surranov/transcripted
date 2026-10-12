@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 
 /// The detector's local decision trace (`decisionLog`). Every value is an enum
@@ -39,14 +40,20 @@ extension MeetingPromptDetector {
     /// `via` says which signal asked: a browser on the mic, the camera, or a
     /// browser playing audio with nothing on the mic.
     func logBrowserTitleVerdict(_ verdict: BrowserCallTitleVerdict, windows: Int, previous: BrowserCallTitleVerdict?) {
-        guard verdict != previous else { return }
         let kind: String
         switch verdict {
         case .call(let provider): kind = "call:\(provider.rawValue)"
         case .callSite(let provider): kind = "call_site:\(provider?.rawValue ?? "other")"
         case .notCall: kind = "not_call"
-        case .unknown: kind = windows == 0 ? "no_titles" : "unknown"
+        // No titles has two causes the trace must tell apart: no Accessibility
+        // (titles never come) or no browser window visible right now.
+        case .unknown where windows == 0: kind = AXIsProcessTrusted() ? "no_titles" : "no_accessibility"
+        case .unknown: kind = "unknown"
         }
+        // Same verdict, different kind (no windows, then unreadable ones) is
+        // still news; a repeat of both is not.
+        guard verdict != previous || kind != lastLoggedBrowserTitleKind else { return }
+        lastLoggedBrowserTitleKind = kind
         let via: String
         if micActiveBundleIDs.contains(where: MeetingPromptProvider.isBrowserBundleID) {
             via = "mic"

@@ -70,6 +70,39 @@ func testBrowserCallEvidence() {
         }
     }
 
+    runSuite("BrowserCallEvidence.classify — a tab in a tab group is read by its own title") {
+        // Chrome quotes the active tab's title when the tab is in a group and
+        // appends the group (measured 2026-10-12 in the Russian UI).
+        let grouped: [(String, BrowserCallTitleVerdict)] = [
+            ("\"Встреча \u{2014} Толк\" \u{2013} элемент группы \"Звонки\" - Google Chrome", .call(provider: .ktalk)),
+            ("\"Meet - abc-defg-hij\" - Part of group \"Calls\" - Google Chrome", .call(provider: .googleMeet)),
+            ("\"Идёт звонок \u{00B7} Яндекс Телемост\" \u{2013} элемент группы \"Работа\" - Google Chrome", .call(provider: .telemost)),
+        ]
+        for (title, verdict) in grouped {
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]),
+                verdict,
+                "\"\(title)\" is the call tab, only grouped"
+            )
+        }
+        assertEqual(
+            BrowserCallEvidence.classify([BrowserWindowTitle(
+                title: "\"Подключение к встрече \u{2014} Толк\" \u{2013} элемент группы \"Звонки\" - Google Chrome",
+                isFocused: true
+            )]),
+            .callSite(provider: .ktalk),
+            "a grouped pre-join screen is still only a call site"
+        )
+        assertEqual(
+            BrowserCallEvidence.classify([BrowserWindowTitle(
+                title: "\"Встреча\" - элемент группы \"Толк\" - Google Chrome",
+                isFocused: false
+            )]),
+            .unknown,
+            "a group named after a call app does not make its tab a call"
+        )
+    }
+
     runSuite("BrowserCallEvidence.classify — Talk and Telemost outside a call are only call sites") {
         let sites: [(String, MeetingPromptProvider)] = [
             ("Подключение к встрече \u{2014} Толк", .ktalk),

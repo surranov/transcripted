@@ -469,9 +469,18 @@ enum BrowserCallEvidence {
             .replacingOccurrences(of: "\u{2014}", with: "-") // em dash
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        // A tab in a Chrome tab group titles its window with the tab's title
+        // in quotes, then the group ("\"Встреча — Толк\" – элемент группы
+        // \"Звонки\" - Google Chrome"). Keep the quoted tab title, or every
+        // prefix rule misses a grouped call tab.
+        let tabTitle = lowered.replacingOccurrences(
+            of: #"^["“«](.+?)["”»] - .*$"#,
+            with: "$1",
+            options: .regularExpression
+        )
         // Drop a leading unread badge such as "(3) " so prefix rules still see
         // the page's own title.
-        return lowered.replacingOccurrences(
+        return tabTitle.replacingOccurrences(
             of: #"^\(\d+\)\s*"#,
             with: "",
             options: .regularExpression

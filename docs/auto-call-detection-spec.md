@@ -738,7 +738,10 @@ the title tells them apart.
 | In-call title (named call) | `Встреча — Толк` | `Идёт звонок · Яндекс Телемост` |
 | Call site only | `Подключение к встрече — Толк` (pre-join), `Толк` | `Яндекс Телемост` |
 
-Titles were measured in live rooms (Russian UI). Russian mail and calendar
+Titles were measured in live rooms (Russian UI). A tab in a Chrome tab group
+titles its window with the tab title in quotes plus the group (`"Встреча — Толк"
+– элемент группы "Звонки" - Google Chrome`); the quoted tab title is what gets
+matched. Russian mail and calendar
 pages (`Яндекс Почта`, `Яндекс Календарь`, `mail.ru`) are skipped like Gmail, so
 an invite subject is not a call. Both apps join the Boost Mic call-app list
 (drift guard). An open Talk or Telemost app is never a runtime prompt: both are
@@ -784,5 +787,6 @@ forward does not trigger an evaluation.
 **Local trace.** `MeetingPromptDetector.decisionLog` writes to the app log,
 subsystem `call-detection`: call signal changes (`browser:audio_output`,
 `telegram:mic_input`), browser title verdicts by kind and by which signal asked
-(`call:ktalk via playback`), prompts shown and held back with their reason.
+(`call:ktalk via playback`; no titles is `no_titles`, or `no_accessibility`
+when the permission is missing), prompts shown and held back with their reason.
 Enums and candidate ids only.
