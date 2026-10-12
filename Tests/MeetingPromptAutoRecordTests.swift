@@ -5,6 +5,7 @@ import Foundation
 func testMeetingPromptAutoRecord() {
     func delay(
         reason: MeetingPromptReason = .micInput,
+        provider: MeetingPromptProvider = .zoom,
         evidence: MeetingPromptCallEvidence = .nativeApp,
         chosen: Int? = 10,
         mic: Bool = true,
@@ -13,6 +14,7 @@ func testMeetingPromptAutoRecord() {
     ) -> Int? {
         MeetingPromptHeuristics.autoRecordDelaySeconds(
             for: reason,
+            provider: provider,
             evidence: evidence,
             chosenDelay: chosen,
             microphoneGranted: mic,
@@ -26,6 +28,11 @@ func testMeetingPromptAutoRecord() {
         assertEqual(delay(chosen: 30), 30, "the delay is the one chosen in Settings")
         assertEqual(delay(reason: .cameraInput), 10, "a camera-on, mic-muted join is a live call too")
         assertEqual(delay(evidence: .tabTitle), 10, "a Meet tab whose title only exists during a call")
+        assertEqual(
+            delay(reason: .audioOutput, provider: .ktalk, evidence: .tabTitle),
+            10,
+            "a Talk room joined muted: its call audio plays and the room title only exists once joined"
+        )
         assertEqual(delay(systemAudio: .denied), 10, "call audio already turned down: records the mic without asking macOS again")
         assertEqual(delay(systemAudio: .unavailable), 10, "no answer from macOS's permission API is not a dialog either")
     }
@@ -40,7 +47,11 @@ func testMeetingPromptAutoRecord() {
         for reason in [MeetingPromptReason.calendarNearby, .calendarPlusRuntimeMatch, .runtimeOnly] {
             assertNil(delay(reason: reason, evidence: .none), "\(reason.rawValue) can come before anyone joined")
         }
-        assertNil(delay(reason: .audioOutput), "call audio alone is also a call ringing before anyone answers")
+        assertNil(delay(reason: .audioOutput), "a native app's call audio alone is also a call ringing before anyone answers")
+        assertNil(
+            delay(reason: .audioOutput, provider: .googleMeet, evidence: .tabTitle),
+            "a Meet code title with no mic may be the pre-join screen while music plays"
+        )
         for evidence in [MeetingPromptCallEvidence.callSite, .camera, .micAndOutput, .micOnly, .none] {
             assertNil(
                 delay(evidence: evidence),

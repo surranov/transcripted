@@ -39,7 +39,7 @@ private struct ProbeFilterProjections: Equatable {
     let micProviders: Set<String>
     let micBrowserFamilies: Set<String>
     let callOutput: Set<String>
-    let browserCallOutput: Set<String>
+    let browserOutput: Set<String>
 }
 
 @available(macOS 14.0, *)
@@ -55,7 +55,7 @@ private func projections(
         micProviders: Set(mic.compactMap(MeetingPromptProvider.micInputProvider(forBundleID:)).map(\.rawValue)),
         micBrowserFamilies: Set(mic.compactMap(MeetingPromptProvider.browserFamily(forBundleID:))),
         callOutput: MicActivityMonitor.callOutputBundleIDs(from: outputRows, ownBundleID: probeFilterOwnBundleID),
-        browserCallOutput: MicActivityMonitor.browserCallOutputBundleIDs(from: outputRows, micBundleIDs: mic)
+        browserOutput: MicActivityMonitor.browserOutputBundleIDs(from: outputRows)
     )
 }
 
@@ -136,7 +136,7 @@ func testMicActivityMonitorProbeFilter() {
         assertEqual(expectedMicProviders.count, 2, "Chrome and Teams are two different providers")
         assertEqual(filtered.micProviders, expectedMicProviders, "the browser and Teams mic users are still seen")
         assertEqual(filtered.callOutput, ["us.zoom.xos"], "the listen-only Zoom call is still seen")
-        assertTrue(filtered.browserCallOutput.contains("com.google.Chrome.helper.Renderer"), "the browser talking back is still seen")
+        assertTrue(filtered.browserOutput.contains("com.google.Chrome.helper.Renderer"), "the browser talking back is still seen")
         assertTrue(log.inputReads.contains(12), "a process whose bundle read failed is still probed")
         for skipped in [6, 7, 8, 9, 10, 11] {
             assertFalse(log.inputReads.contains(skipped), "process \(skipped) can't be a call, so its flags are never read")
@@ -144,15 +144,18 @@ func testMicActivityMonitorProbeFilter() {
         }
     }
 
-    runSuite("MicActivityMonitor scan — browser output is only read while a browser holds the mic") {
+    runSuite("MicActivityMonitor scan — browser output is read with no browser on the mic (a call joined muted)") {
         let quietBrowser = probeFilterTable.filter { $0.id != 1 }
         let log = FlagReadLog()
         let filtered = projections(of: filteredRows(quietBrowser, log: log))
         assertEqual(filtered, projections(of: unfilteredRows(quietBrowser)), "projections match with no browser on the mic")
-        assertEqual(filtered.browserCallOutput, [], "browser playback alone is never corroboration")
-        assertFalse(log.outputReads.contains(2), "browser output is not read when no browser holds the mic")
-        assertFalse(log.outputReads.contains(3), "WebKit output is not read when no browser holds the mic")
+        assertEqual(
+            filtered.browserOutput,
+            ["com.google.Chrome.helper.Renderer", "com.apple.WebKit.GPU"],
+            "a muted call's audio is still seen"
+        )
         assertTrue(log.outputReads.contains(4), "native conferencing output is always read (listen-only calls)")
+        assertFalse(log.outputReads.contains(11), "Spotify's playback is never read")
     }
 
     runSuite("MicActivityMonitor scan — a row carries the fresh bundle ID, not the one used to pick it") {

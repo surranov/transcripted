@@ -22,6 +22,9 @@ extension MeetingPromptDetector {
         /// A call-only title was seen. Sticky: switching away from the Meet
         /// tab mid-call must not demote it.
         var namedCall: MeetingPromptProvider?
+        /// When a read last saw that title. A call joined muted has no mic to
+        /// end it, so it only counts while this is recent.
+        var namedCallSeenAt: Date?
         /// A known non-call site was focused. Sticky too, so ChatGPT voice
         /// does not prompt when the user clicks to another tab; only a
         /// call-only title can still win.
@@ -69,6 +72,12 @@ extension MeetingPromptDetector {
         case .call(let provider):
             detectedCallSession?.sawBrowserCallTitle = true
             detectedCallSession?.namedBrowserProvider = provider
+            if signal.reason == .micInput {
+                // Holding the mic is the call going on; the mic path stops
+                // reading once named, so keep it current for a mute that
+                // hands it to the listen path.
+                browserTitles?.namedCallSeenAt = now
+            }
         case .notCall:
             detectedCallSession?.sawBrowserNonCallSite = true
         case .callSite, .unknown:
@@ -142,6 +151,9 @@ extension MeetingPromptDetector {
     private func browserFamiliesForEvidence(reason: MeetingPromptReason, frontmostBundleID: String?) -> Set<String> {
         if reason == .cameraInput {
             return Self.browserAppFamilies(for: [frontmostBundleID].compactMap { $0 })
+        }
+        if reason == .audioOutput {
+            return browserListenFamilies
         }
         return Self.browserAppFamilies(for: micActiveBundleIDs)
     }
@@ -221,8 +233,14 @@ extension MeetingPromptDetector {
         switch verdict {
         case .call(let provider):
             session.namedCall = provider
+            session.namedCallSeenAt = now
         case .notCall:
-            if now.timeIntervalSince(session.startedAt) <= browserEvidenceTiming.nonCallSiteStickyWindow {
+            // Only for the mic or camera use it explains, counted from when
+            // that began: a session a playing video opened earlier must not
+            // let ChatGPT in front then silence a call that starts later.
+            let anchor = max(session.startedAt, browserMicSince ?? session.startedAt)
+            if browserMicSince != nil || cameraInUse,
+               now.timeIntervalSince(anchor) <= browserEvidenceTiming.nonCallSiteStickyWindow {
                 session.sawNonCallSite = true
             }
         case .callSite, .unknown:
@@ -255,14 +273,16 @@ extension MeetingPromptDetector {
         browserEvidenceRecheckAt = nil
     }
 
-    /// No browser holds the mic. Keep the session for `micReleaseGrace` in
-    /// case it comes straight back (Safari lets go of the mic while muted).
+    /// No browser holds the mic (or a muted call's audio stopped). Keep the
+    /// session for `micReleaseGrace` in case it comes straight back (Safari
+    /// lets go of the mic while muted).
     func scheduleBrowserMicSessionEnd() {
         let grace = browserEvidenceTiming.micReleaseGrace
         guard grace > 0 else {
             endBrowserMicSession()
             return
         }
+        browserMicEndTask?.cancel()
         browserMicEndTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(grace * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
@@ -272,15 +292,121 @@ extension MeetingPromptDetector {
         }
     }
 
-    /// The browser session is over: forget the title verdict and stop
-    /// re-checking. The next browser mic use starts its own wait.
+    /// The browser mic session is over: the next browser mic use starts its
+    /// own wait. The title verdict goes too, unless a browser is still
+    /// playing audio: a call the user muted (Safari lets go of the mic) or
+    /// joined muted is still on, and its title already said so.
     func endBrowserMicSession() {
         browserMicSince = nil
         browserMicEndTask?.cancel()
         browserMicEndTask = nil
+        cancelBrowserEvidenceRecheck()
+        guard browserOutputActiveBundleIDs.isEmpty else { return }
         browserTitles?.readTask?.cancel()
         browserTitles = nil
-        cancelBrowserEvidenceRecheck()
+    }
+
+    /// A browser mic session starts while the title session lives on from
+    /// playback (`endBrowserMicSession` keeps it while audio plays). What it
+    /// stuck to was about earlier use (a call that has ended into a video, a
+    /// non-call site in front back then), so this mic use gets a fresh read,
+    /// as a new session would. Unmuting a muted call still names it at once:
+    /// its room title is in the window the user unmutes in. Not nows given
+    /// in this session stay.
+    func startBrowserMicSessionTitles(now: Date) {
+        guard var session = browserTitles else { return }
+        session.readTask?.cancel()
+        session.readTask = nil
+        session.sawNonCallSite = false
+        session.namedCall = nil
+        session.namedCallSeenAt = nil
+        session.latest = nil
+        session.readAt = nil
+        browserTitles = session
+    }
+
+    // MARK: - A call joined muted
+
+    /// Browsers playing audio while no browser holds the mic: a call joined
+    /// muted, or just a video. Only their titles can tell which.
+    var browserListenFamilies: Set<String> {
+        guard !micActiveBundleIDs.contains(where: MeetingPromptProvider.isBrowserBundleID) else { return [] }
+        return Self.browserAppFamilies(for: browserOutputActiveBundleIDs)
+    }
+
+    /// The provider whose call-only title a playing browser showed within
+    /// `listenNamedCallGrace`, or nil. That is the whole signal for a call
+    /// joined muted: no mic, so the title has to keep showing up, and a tab
+    /// switch longer than the grace (or the call ending into a video) lets
+    /// it go.
+    func browserListenNamedCall(now: Date) -> MeetingPromptProvider? {
+        let families = browserListenFamilies
+        guard !families.isEmpty,
+              let session = browserTitles,
+              !session.families.isDisjoint(with: families),
+              let named = session.namedCall,
+              let seenAt = session.namedCallSeenAt,
+              now.timeIntervalSince(seenAt) <= browserEvidenceTiming.listenNamedCallGrace else { return nil }
+        return named
+    }
+
+    /// Each evaluate pass: while a browser plays audio with nothing on the
+    /// mic, read its window titles every `listenRecheckInterval`, named call
+    /// or not, so a call joined muted is noticed and its end is too. Reads
+    /// never log or keep the titles, and nothing here records a suppression:
+    /// a video playing is not a held-back prompt.
+    func refreshBrowserListenTitles(now: Date) {
+        let families = browserListenFamilies
+        guard !families.isEmpty else {
+            cancelBrowserListenRecheck()
+            return
+        }
+        if var session = browserTitles, !session.families.isDisjoint(with: families) {
+            session.families.formUnion(families)
+            browserTitles = session
+        } else if browserTitles != nil, cameraInUse {
+            // The camera path is reading another browser (camera on, that
+            // one in front). Taking its session would make the two paths
+            // swap it back and forth, rereading titles without end.
+            cancelBrowserListenRecheck()
+            return
+        } else {
+            browserTitles?.readTask?.cancel()
+            browserTitles = BrowserTitleSession(families: families, startedAt: now)
+        }
+        guard let session = browserTitles else { return }
+        let interval = browserEvidenceTiming.listenRecheckInterval
+        // A tenth of slack: the last read landed a little after the pass that
+        // scheduled this one, and must not push every read a whole period.
+        let readIsDue = session.readAt.map { now.timeIntervalSince($0) >= interval * 0.9 } ?? true
+        if session.readTask == nil, readIsDue {
+            startBrowserTitleRead(families: families)
+        }
+        scheduleBrowserListenRecheck(at: now.addingTimeInterval(interval), now: now)
+    }
+
+    private func scheduleBrowserListenRecheck(at date: Date, now: Date) {
+        if let pending = browserListenRecheckAt, pending > now, pending <= date {
+            return
+        }
+        browserListenRecheckTask?.cancel()
+        browserListenRecheckAt = date
+        let delay = max(0.05, date.timeIntervalSince(now))
+        browserListenRecheckTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.browserListenRecheckAt = nil
+            self.browserListenRecheckTask = nil
+            self.evaluationsInFlight += 1
+            await self.evaluate()
+            self.finishEvaluation()
+        }
+    }
+
+    func cancelBrowserListenRecheck() {
+        browserListenRecheckTask?.cancel()
+        browserListenRecheckTask = nil
+        browserListenRecheckAt = nil
     }
 
     /// Providers a browser tab can be named after (see

@@ -155,12 +155,12 @@ enum MeetingPromptCallTelemetry {
     }
 
     /// Browser or native, plus the strongest sensor seen (mic, then output,
-    /// then camera), in the prompt events' `app_signal` values. Output is
-    /// native-only by construction.
+    /// then camera), in the prompt events' `app_signal` values. Browser
+    /// output is a call joined muted whose tab title named it.
     static func appSignal(isBrowser: Bool, micSeen: Bool, outputSeen: Bool, cameraSeen: Bool) -> String {
         let surface = isBrowser ? "browser" : "native"
         if micSeen { return "\(surface)_mic" }
-        if outputSeen, !isBrowser { return "native_output" }
+        if outputSeen { return "\(surface)_output" }
         if cameraSeen { return "\(surface)_camera" }
         return "\(surface)_mic"
     }

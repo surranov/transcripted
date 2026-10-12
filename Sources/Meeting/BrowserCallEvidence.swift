@@ -142,6 +142,14 @@ enum BrowserCallEvidence {
     /// one using it. Seen later (notes in Claude during a call), it only
     /// holds the prompt back while it stays in front.
     static let nonCallSiteStickyWindow: TimeInterval = 10
+    /// How often the titles are re-read while a browser plays audio with
+    /// nothing on the mic. That is a call joined muted or, far more often, a
+    /// video; one cheap read per half minute tells them apart.
+    static let listenRecheckInterval: TimeInterval = 30
+    /// How long a call joined muted still counts after its call-only title
+    /// was last seen (a tab switch mid-call). With no mic to end it, a stale
+    /// title must not turn the next video into a call.
+    static let listenNamedCallGrace: TimeInterval = 5 * 60
 
     struct Timing: Equatable {
         var corroboratedDelay: TimeInterval
@@ -150,6 +158,8 @@ enum BrowserCallEvidence {
         var nonCallSiteRecheckInterval: TimeInterval = BrowserCallEvidence.nonCallSiteRecheckInterval
         var micReleaseGrace: TimeInterval = BrowserCallEvidence.micReleaseGrace
         var nonCallSiteStickyWindow: TimeInterval = BrowserCallEvidence.nonCallSiteStickyWindow
+        var listenRecheckInterval: TimeInterval = BrowserCallEvidence.listenRecheckInterval
+        var listenNamedCallGrace: TimeInterval = BrowserCallEvidence.listenNamedCallGrace
         /// Minimum spacing between title reads within one browser session.
         /// Several sensor edges can land in the same second; one read answers
         /// all of them.
@@ -264,8 +274,11 @@ enum BrowserCallEvidence {
             || isExactlyOrFollowedBySeparator(title, "zoom webinar") {
             return .zoom
         }
-        // Teams web names the window after the meeting or call itself.
-        if title.contains("microsoft teams"),
+        // Teams web names the window after the meeting or call itself, with
+        // Teams' own title part after it ("Meeting with Ana | Microsoft
+        // Teams"). A page merely about Teams ("Meeting in Microsoft Teams -
+        // Tutorial - YouTube") does not have that part.
+        if title.contains("| microsoft teams"),
            teamsInCallPrefixes.contains(where: { title.hasPrefix($0) }) {
             return .teams
         }

@@ -201,6 +201,11 @@ func testMeetingPromptTelemetry() async {
             "browser_camera",
             "a camera-only browser call"
         )
+        assertEqual(
+            MeetingPromptCallTelemetry.appSignal(isBrowser: true, micSeen: false, outputSeen: true, cameraSeen: false),
+            "browser_output",
+            "a browser call joined muted, named by its tab title"
+        )
     }
 
     runSuite("MeetingPromptTelemetry decision and outcome properties stay enum and bucket only") {

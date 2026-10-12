@@ -136,6 +136,10 @@ final class MeetingPromptDetector {
     var browserTitles: BrowserTitleSession?
     var browserEvidenceRecheckTask: Task<Void, Never>?
     var browserEvidenceRecheckAt: Date?
+    // Title re-reads for a browser playing audio with nothing on the mic (a
+    // call joined muted, or a video); see `refreshBrowserListenTitles`.
+    var browserListenRecheckTask: Task<Void, Never>?
+    var browserListenRecheckAt: Date?
     // Persisted per-kind "Not now" learning (see MeetingPromptLearnedBackoff).
     let learnedBackoff: MeetingPromptLearnedBackoff
     // Consecutive unattended-countdown expiries per candidate id, so an ignored
@@ -245,7 +249,10 @@ final class MeetingPromptDetector {
         browserEvidenceRecheckTask?.cancel()
         browserEvidenceRecheckTask = nil
         browserEvidenceRecheckAt = nil
+        cancelBrowserListenRecheck()
         endBrowserMicSession()
+        browserTitles?.readTask?.cancel()
+        browserTitles = nil
         for observer in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
@@ -299,6 +306,7 @@ final class MeetingPromptDetector {
         let now = Date()
         pruneExpiredEntries(now: now)
         seedNativeActivityIfNeeded(frontmostBundleID: frontmostBundleID, now: now)
+        refreshBrowserListenTitles(now: now)
         updateDetectedCallSession(
             signals: callSignals(frontmostBundleID: frontmostBundleID),
             now: now

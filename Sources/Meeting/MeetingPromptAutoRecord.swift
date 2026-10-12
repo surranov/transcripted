@@ -5,8 +5,11 @@ extension MeetingPromptHeuristics {
     /// when it only asks. `chosenDelay` is the Settings choice (nil = off).
     /// Each guard keeps a prompt that may be wrong, or a start that would
     /// need a click anyway, asking instead:
-    /// - Only an app holding the mic or turning the camera on. Call audio
-    ///   alone (`.audioOutput`) is also a call ringing before anyone answers;
+    /// - Only an app holding the mic or turning the camera on, or a call
+    ///   joined muted in a browser tab whose title only exists once joined
+    ///   (not Meet: its code title is on the pre-join screen too, and with no
+    ///   mic nothing says the user went in). A native app's call audio alone
+    ///   (`.audioOutput`) is also a call ringing before anyone answers;
     ///   calendar and app-running prompts can come before anyone joins.
     /// - Only a native call app or a tab title that exists only during a
     ///   call. Browser guesses from mic time (ChatGPT voice, web dictation and
@@ -17,6 +20,7 @@ extension MeetingPromptHeuristics {
     ///   for the same call asks.
     static func autoRecordDelaySeconds(
         for reason: MeetingPromptReason,
+        provider: MeetingPromptProvider,
         evidence: MeetingPromptCallEvidence,
         chosenDelay: Int?,
         microphoneGranted: Bool,
@@ -24,7 +28,8 @@ extension MeetingPromptHeuristics {
         callAlreadyRecorded: Bool
     ) -> Int? {
         guard let chosenDelay, chosenDelay > 0,
-              reason == .micInput || reason == .cameraInput,
+              reason == .micInput || reason == .cameraInput
+                || (reason == .audioOutput && evidence == .tabTitle && provider != .googleMeet),
               evidence == .nativeApp || evidence == .tabTitle,
               microphoneGranted,
               systemAudioStatus != .notDetermined,

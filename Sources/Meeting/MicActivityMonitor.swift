@@ -49,13 +49,15 @@
 // Output uses a longer sustain than the mic because conferencing apps also play
 // short notification sounds (message dings, join chimes) that must not prompt.
 //
-// Browser output is collected separately and only while that same browser holds
-// the mic (`browserCallOutputBundleIDs`). It never prompts on its own; it is
-// corroboration that an unrecognized browser mic is a conversation, not web
-// dictation or a screen recorder. Scoping it to "this browser is also on the
-// mic" keeps music in another browser from ever entering it. It is per
-// process, so the same browser's other tabs (YouTube, a voice assistant
-// talking back) do count; that is why it only shortens the wait.
+// Browser output is collected separately (`browserOutputBundleIDs`). It never
+// prompts on its own: one audio process plays every tab, so a call and YouTube
+// look the same here. The detector uses it two ways. With the same browser on
+// the mic it is corroboration that an unrecognized browser mic is a
+// conversation (it only shortens the wait, since another tab may be the one
+// playing). With no browser on the mic it wakes a look at the browser's window
+// titles, because joining a call muted holds no mic at all; only a title that
+// exists during a call (a joined Talk room, a Meet code) turns that into a
+// prompt, so music and videos never do.
 //
 // Scan cost: each read is a coreaudiod round trip, and a Mac has 30-60 audio
 // clients. A scan reads every new process's bundle ID first (known ones are
@@ -81,10 +83,10 @@ final class MicActivityMonitor: @unchecked Sendable {
     /// empty set is the explicit "inactive" edge. Assign before calling `start()`
     /// and do not mutate while running.
     var onOutputChange: ((Set<String>) -> Void)?
-    /// Delivered on the main actor with the browser processes playing audio
-    /// while their browser family also holds the mic. Corroboration for the
-    /// browser-call evidence rules only; never a prompt by itself. Assign
-    /// before calling `start()` and do not mutate while running.
+    /// Delivered on the main actor with the browser processes playing audio.
+    /// Corroboration for a browser on the mic, and the wake-up for a call
+    /// joined muted; never a prompt by itself (see the header). Assign before
+    /// calling `start()` and do not mutate while running.
     var onBrowserOutputChange: ((Set<String>) -> Void)?
     /// Injected accessor for the shared `DefaultInputDeviceMonitor` facade
     /// (start/addObserver/removeObserver over the single
@@ -247,20 +249,15 @@ final class MicActivityMonitor: @unchecked Sendable {
         return nonSelfBundleIDs(Set(active), ownBundleID: ownBundleID)
     }
 
-    /// Browser processes playing audio output whose browser family also has a
-    /// process holding the mic right now. Empty whenever no browser is on the
-    /// mic, so ordinary browser playback never reaches the confirmer.
-    static func browserCallOutputBundleIDs(
-        from processes: [(bundleID: String?, isRunningOutput: Bool)],
-        micBundleIDs: Set<String>
+    /// Browser processes playing audio output, mic or not. Other apps'
+    /// playback (Spotify, Music) never enters it.
+    static func browserOutputBundleIDs(
+        from processes: [(bundleID: String?, isRunningOutput: Bool)]
     ) -> Set<String> {
-        let micFamilies = Set(micBundleIDs.compactMap(MeetingPromptProvider.browserFamily(forBundleID:)))
-        guard !micFamilies.isEmpty else { return [] }
-        return Set(processes.compactMap { process -> String? in
+        Set(processes.compactMap { process -> String? in
             guard process.isRunningOutput,
                   let bundleID = process.bundleID,
-                  let family = MeetingPromptProvider.browserFamily(forBundleID: bundleID),
-                  micFamilies.contains(family) else { return nil }
+                  MeetingPromptProvider.browserFamily(forBundleID: bundleID) != nil else { return nil }
             return bundleID
         })
     }
@@ -281,11 +278,9 @@ final class MicActivityMonitor: @unchecked Sendable {
     /// One scan's process rows, with the CoreAudio reads injected so the
     /// filtering is testable. Reads each process's bundle ID (`label`) first
     /// and only probes the ones `shouldProbe` keeps. Output is read for
-    /// native conferencing processes always, for browser processes only
-    /// when some browser holds the mic this scan (the only time browser
-    /// output is used), and for unlabeled processes always. A process with
-    /// a flag set gets a fresh `bundleID` read, and that value is what the
-    /// row carries, as before this filter existed.
+    /// native conferencing processes, browser processes and unlabeled
+    /// processes. A process with a flag set gets a fresh `bundleID` read,
+    /// and that value is what the row carries, as before this filter existed.
     static func probedProcessAudioState<Object>(
         objects: [Object],
         ownBundleID: String,
@@ -301,15 +296,11 @@ final class MicActivityMonitor: @unchecked Sendable {
                 let input = isRunningInput(object)
                 return (object, objectLabel, input, input ? bundleID(object) : nil)
             }
-        let browserHoldsMic = probed.contains { row in
-            row.isRunningInput
-                && row.freshBundleID.flatMap(MeetingPromptProvider.browserFamily(forBundleID:)) != nil
-        }
         return probed.map { row in
             let readsOutput: Bool
             if let objectLabel = row.label {
                 readsOutput = MeetingPromptProvider.audioOutputProvider(forBundleID: objectLabel) != nil
-                    || (browserHoldsMic && MeetingPromptProvider.browserFamily(forBundleID: objectLabel) != nil)
+                    || MeetingPromptProvider.browserFamily(forBundleID: objectLabel) != nil
             } else {
                 readsOutput = true
             }
@@ -356,11 +347,11 @@ final class MicActivityMonitor: @unchecked Sendable {
         )
         outputActiveSince = outputOutcome.activeSince
 
-        // Keyed off the raw mic set so the corroboration is already confirmed
-        // by the time the mic itself clears its sustain gate.
-        let browserOutputRaw = Self.browserCallOutputBundleIDs(
-            from: processes.map { (bundleID: $0.bundleID, isRunningOutput: $0.isRunningOutput) },
-            micBundleIDs: micRaw
+        // Same short sustain as the mic, so the corroboration is already
+        // confirmed by the time the mic itself clears its gate. A notification
+        // ding never lasts that long.
+        let browserOutputRaw = Self.browserOutputBundleIDs(
+            from: processes.map { (bundleID: $0.bundleID, isRunningOutput: $0.isRunningOutput) }
         )
         let browserOutputOutcome = SustainedActivityConfirmer.confirm(
             raw: browserOutputRaw,

@@ -97,6 +97,16 @@ func testBrowserCallEvidence() {
         }
     }
 
+    runSuite("BrowserCallEvidence.classify — a page about Teams meetings is not a Teams call") {
+        let verdict = BrowserCallEvidence.classify([
+            BrowserWindowTitle(title: "Meeting in Microsoft Teams - Tutorial - YouTube", isFocused: true),
+        ])
+        assertFalse(
+            verdict == .call(provider: .teams),
+            "a video about Teams playing in a tab must not read as a Teams call joined muted (at most a call site)"
+        )
+    }
+
     runSuite("BrowserCallEvidence.classify — a Talk or Telemost invite in Russian mail is not a call") {
         for title in [
             "Встреча \u{2014} Толк \u{2014} Яндекс Почта",

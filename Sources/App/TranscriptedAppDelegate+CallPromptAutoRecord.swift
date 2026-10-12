@@ -12,6 +12,7 @@ extension TranscriptedAppDelegate {
     ) -> Int? {
         MeetingPromptHeuristics.autoRecordDelaySeconds(
             for: candidate.reason,
+            provider: candidate.provider,
             evidence: candidate.callEvidence,
             chosenDelay: CallPromptAutoRecordPreferences.delaySeconds(),
             microphoneGranted: TranscriptedPermissionAccess.isGranted(.microphone),

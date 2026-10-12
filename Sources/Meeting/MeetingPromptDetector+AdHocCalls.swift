@@ -18,7 +18,9 @@ extension MeetingPromptDetector {
             browserMicEndTask?.cancel()
             browserMicEndTask = nil
             if browserMicSince == nil {
-                browserMicSince = Date()
+                let now = Date()
+                browserMicSince = now
+                startBrowserMicSessionTitles(now: now)
             }
         } else if browserMicSince != nil, browserMicEndTask == nil {
             scheduleBrowserMicSessionEnd()
@@ -26,13 +28,20 @@ extension MeetingPromptDetector {
         scheduleEvaluation()
     }
 
-    /// Pushed by `MicActivityMonitor` with the browser processes playing audio
-    /// while a browser holds the mic. Someone talking back makes an
+    /// Pushed by `MicActivityMonitor` with the browser processes playing
+    /// audio. With a browser on the mic, someone talking back makes an
     /// unrecognized browser mic look like a call, so the prompt comes sooner.
+    /// With no browser on the mic it starts a look at that browser's titles:
+    /// a call joined muted holds no mic (see `refreshBrowserListenTitles`).
     func updateBrowserOutputUsers(_ bundleIDs: Set<String>) {
         guard bundleIDs != browserOutputActiveBundleIDs else { return }
         browserOutputActiveBundleIDs = bundleIDs
-        guard browserMicSince != nil else { return }
+        if bundleIDs.isEmpty, browserMicSince == nil, !cameraInUse {
+            // A muted call's audio stopped: forget its titles unless it comes
+            // straight back (one tab paused, another started). A camera-only
+            // call keeps them; the camera's own end clears them.
+            scheduleBrowserMicSessionEnd()
+        }
         scheduleEvaluation()
     }
 
@@ -66,7 +75,7 @@ extension MeetingPromptDetector {
     func currentSignalSnapshot() -> MeetingPromptSignalSnapshot {
         MeetingPromptSignalSnapshot(
             micActive: !micInputProviders().isEmpty,
-            speakerActive: !audioOutputProviders().isEmpty,
+            speakerActive: !audioOutputProviders().isEmpty || browserListenNamedCall(now: Date()) != nil,
             cameraActive: cameraInUse
         )
     }
@@ -330,6 +339,14 @@ extension MeetingPromptDetector {
         let outputProviders = audioOutputProviders()
         if !outputProviders.isEmpty {
             return outputProviders.map { ($0, .audioOutput) }
+        }
+
+        // A call joined muted in a browser: its audio is playing and a title
+        // proves the call (a joined Talk room, a Meet code). Playback a title
+        // can't name (videos, music) is not a signal at all, so it never
+        // starts a call session or a suppression event.
+        if browserListenNamedCall(now: Date()) != nil {
+            return [(.googleMeet, .audioOutput)]
         }
 
         if cameraInUse,

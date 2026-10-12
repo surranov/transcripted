@@ -711,3 +711,56 @@ instead of also sending `meeting_prompt_outcome_recorded` with
 `outcome_kind=suppressed`, and each candidate + reason reports at most once per
 15 minutes instead of every 90 s. Those two cut about 33k and most of the
 remaining ~33k monthly suppression events (86.9% of prompt-family events).
+
+## Phase 6 — Kontur.Talk, Telemost, and calls joined muted (2026-10-12, dev-variant)
+
+**Problem.** Joining a Kontur.Talk (ktalk.ru) room in Chrome with the mic off
+raised no prompt at all. Measured live: in the room only
+`com.google.Chrome.helper output=1` showed; nothing held the mic, and browser
+output was only read while a browser held the mic. With the mic on, Talk was
+an unrecognized site (`mic_only` / `mic_and_output`), so the prompt waited
+20-60 s as a guess and auto-record never applied to it.
+
+**Principle.** The mic is a wake-up, not proof. Proof of a call is the app
+(a native call app) or a title that only exists during a call. A browser has
+one audio process for every tab (verified: Chrome's `AudioService` utility
+process; Core Audio process objects carry only PID, bundle ID, devices and
+running flags), so call audio and a YouTube video are the same signal; only
+the title tells them apart.
+
+**Providers.** `MeetingPromptProvider` (now its own file) gains `.ktalk` and
+`.telemost`:
+
+| | Kontur.Talk | Telemost |
+|---|---|---|
+| Native app | `kontur.talk` (Electron helpers by family) | `ru.yandex.desktop.telemost` |
+| Meeting links | `*.ktalk.ru` | `telemost.yandex.ru`, `telemost.360.yandex.ru` |
+| In-call title (named call) | `Встреча — Толк` | `Идёт звонок · Яндекс Телемост` |
+| Call site only | `Подключение к встрече — Толк` (pre-join), `Толк` | `Яндекс Телемост` |
+
+Titles were measured in live rooms (Russian UI). Russian mail and calendar
+pages (`Яндекс Почта`, `Яндекс Календарь`, `mail.ru`) are skipped like Gmail, so
+an invite subject is not a call. Both apps join the Boost Mic call-app list
+(drift guard). An open Talk or Telemost app is never a runtime prompt: both are
+chat apps too.
+
+**Calls joined muted (the listen path).** `MicActivityMonitor` now reports
+browser output whether or not a browser holds the mic. With no browser on the
+mic, a playing browser starts a title look every `listenRecheckInterval`
+(30 s). Only a call-only title turns it into a signal:
+`(browser, audio_output)` with `tab_title` evidence, the same `mic:<provider>`
+candidate as the mic path, so Not now, Record and backoff carry over. A video
+or music produces no signal, no suppression event and no call session. The
+named call stays a signal while its title was seen within
+`listenNamedCallGrace` (5 min), so a tab switch mid-call keeps it and the next
+video after the call does not. A non-call site seen while a video played no
+longer sticks to a mic session that starts later. Auto-record treats a muted
+browser call with a call-only title as proven.
+
+**Known limits.**
+- Accessibility does not list windows on another Space (seen with Chrome on
+  this Mac). The title is read when the call starts, almost always in front.
+- Unknown or self-hosted call sites stay guesses (generic prompt, no
+  auto-record). English Talk/Telemost UIs are not measured yet.
+- Messenger calls (Telegram, WhatsApp, Slack, Discord) are not detected: their
+  mic use includes voice messages, so they need a two-way-audio rule first.

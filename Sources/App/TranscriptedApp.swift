@@ -466,9 +466,9 @@ class TranscriptedAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
             micActivityMonitor.onOutputChange = { [weak self] outputUsers in
                 self?.meetingPromptDetector.updateAudioOutputUsers(outputUsers)
             }
-            // A browser playing audio while it holds the mic: corroboration
-            // that an unrecognized browser mic is a conversation. Never a
-            // prompt on its own.
+            // A browser playing audio: corroboration for a browser on the
+            // mic, or the wake-up to read titles for a call joined muted.
+            // Never a prompt on its own.
             micActivityMonitor.onBrowserOutputChange = { [weak self] browserOutputUsers in
                 self?.meetingPromptDetector.updateBrowserOutputUsers(browserOutputUsers)
             }

@@ -1337,6 +1337,215 @@ func testMeetingPromptDetector() async {
         assertEqual(box.candidate?.callEvidence, .nativeApp)
     }
 
+    await runSuite("MeetingPromptDetector — a Talk room joined muted prompts from its audio and title, with no mic") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        showBrowserTab("Встреча \u{2014} Толк", on: detector)
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { box.promptCount > 0 })
+
+        assertEqual(box.promptCount, 1, "joining with the mic off still gets the prompt")
+        assertEqual(box.candidate?.id, "mic:ktalk", "same prompt as the call on the mic, so Not now and Record carry over")
+        assertEqual(box.candidate?.reason, .audioOutput)
+        assertEqual(box.candidate?.callEvidence, .tabTitle)
+        assertEqual(box.candidate?.analyticsAppSignal, "browser_output")
+        assertNotNil(detector.detectedCallSession, "the muted call counts as a call for the funnel and the missed-call nudge")
+    }
+
+    await runSuite("MeetingPromptDetector — a browser playing a video is never a call and leaves no trace") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        let titleReads = TitleReadCounter()
+        detector.browserWindowTitlesProvider = { _ in
+            titleReads.count += 1
+            return [BrowserWindowTitle(title: "Lo-fi beats - YouTube", isFocused: true)]
+        }
+        let box = CandidateBox()
+        detector.onPromptRequest = { _ in
+            box.promptCount += 1
+            return true
+        }
+        detector.onPromptSuppressed = { _ in box.suppressionCount += 1 }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { titleReads.count >= 2 })
+
+        assertTrue(titleReads.count >= 2, "the titles are looked at again while it keeps playing")
+        assertEqual(box.promptCount, 0, "a video is not a call")
+        assertEqual(box.suppressionCount, 0, "and not a held-back prompt either, so analytics see nothing")
+        assertNil(detector.detectedCallSession, "no call session, so no funnel event and no missed-call nudge")
+    }
+
+    await runSuite("MeetingPromptDetector — a call joined muted while a video already plays is noticed on the next look") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        showBrowserTab("Lo-fi beats - YouTube", on: detector)
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector)
+        assertEqual(box.promptCount, 0)
+
+        // Same Chrome audio process keeps playing; the user opens the room.
+        showBrowserWindows([
+            BrowserWindowTitle(title: "Lo-fi beats - YouTube", isFocused: false),
+            BrowserWindowTitle(title: "Идёт звонок \u{00B7} Яндекс Телемост", isFocused: true),
+        ], on: detector)
+        await waitForPromptEvaluation(detector, until: { box.promptCount > 0 })
+
+        assertEqual(box.candidate?.id, "mic:telemost", "the periodic look finds the call with no new audio edge")
+    }
+
+    await runSuite("MeetingPromptDetector — a muted call ends once its title has been gone for the grace") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        showBrowserTab("Встреча \u{2014} Толк", on: detector)
+        detector.onPromptRequest = { _ in true }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { detector.detectedCallSession != nil })
+        assertNotNil(detector.detectedCallSession)
+
+        // The call is over; the same browser goes on to play a video.
+        showBrowserTab("Lo-fi beats - YouTube", on: detector)
+        await waitForPromptEvaluation(detector, until: { detector.detectedCallSession == nil })
+
+        assertNil(detector.detectedCallSession, "a stale room title must not keep the next video a call")
+    }
+
+    await runSuite("MeetingPromptDetector — a non-call site seen while a video played doesn't silence a later mic call") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = BrowserCallEvidence.Timing(
+            corroboratedDelay: 0,
+            uncorroboratedDelay: 0,
+            titleRecheckInterval: 60,
+            micReleaseGrace: 0,
+            nonCallSiteStickyWindow: 600,
+            listenRecheckInterval: 60,
+            titleReadSpacing: 0.2
+        )
+        showBrowserTab("ChatGPT", on: detector)
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector)
+
+        // Past the read spacing, so the mic's own look sees the new tab.
+        showBrowserTab("Hacker News", on: detector)
+        await waitForPromptEvaluation(detector, extraMilliseconds: 300)
+        detector.updateMicInputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { box.promptCount > 0 })
+
+        assertEqual(box.promptCount, 1, "ChatGPT in front during a video says nothing about a mic that starts later")
+        assertEqual(box.candidate?.id, "mic:browser")
+    }
+
+    await runSuite("MeetingPromptDetector — after a muted call, the mic in the same browser is not that call any more") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        showBrowserTab("Встреча \u{2014} Толк", on: detector)
+        let box = CandidateBox()
+        // Never shown, so no pending cooldown can hide a wrong request.
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return false
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { box.promptCount > 0 })
+        assertEqual(box.candidate?.id, "mic:ktalk")
+
+        // The call ends into a video, past the grace; then ChatGPT voice
+        // takes the mic in the same Chrome.
+        showBrowserTab("ChatGPT", on: detector)
+        await waitForPromptEvaluation(detector, until: { detector.detectedCallSession == nil })
+        let requestsBeforeMic = box.promptCount
+        detector.updateMicInputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, extraMilliseconds: 300)
+
+        assertEqual(box.promptCount, requestsBeforeMic, "the old room title must not name the new mic use a Talk call")
+    }
+
+    await runSuite("MeetingPromptDetector — unmuting during a muted call keeps it the same named call") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = BrowserCallEvidence.Timing(
+            corroboratedDelay: 60,
+            uncorroboratedDelay: 60,
+            titleRecheckInterval: 60,
+            micReleaseGrace: 0,
+            listenRecheckInterval: 0.2,
+            listenNamedCallGrace: 600,
+            titleReadSpacing: 0.2
+        )
+        showBrowserTab("Встреча \u{2014} Толк", on: detector)
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return false
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { box.promptCount > 0 })
+        // The user unmutes in the room's window while notes sit in front in
+        // another window: the fresh read still finds the room, with no wait.
+        showBrowserWindows([
+            BrowserWindowTitle(title: "Встреча \u{2014} Толк", isFocused: false),
+            BrowserWindowTitle(title: "Notes - Google Docs", isFocused: true),
+        ], on: detector)
+        detector.updateMicInputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector)
+
+        assertEqual(box.candidate?.id, "mic:ktalk", "the unmuted call is the Talk call it was a moment ago")
+        assertEqual(box.candidate?.reason, .micInput)
+    }
+
+    await runSuite("MeetingPromptDetector — a camera call in one browser and audio in another don't fight over titles") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        detector.frontmostBundleIDProvider = { "com.google.Chrome" }
+        let titleReads = TitleReadCounter()
+        detector.browserWindowTitlesProvider = { _ in
+            titleReads.count += 1
+            return [BrowserWindowTitle(title: "Lo-fi beats - YouTube", isFocused: true)]
+        }
+        detector.onPromptRequest = { _ in false }
+
+        detector.updateCameraInUse(true)
+        detector.updateBrowserOutputUsers(["com.apple.WebKit.GPU"])
+        // Not a settle wait: if the two looks took the title session from
+        // each other, evaluations would never settle.
+        try? await Task.sleep(nanoseconds: 600_000_000)
+
+        assertTrue(titleReads.count < 20, "a few reads, not one after another (got \(titleReads.count))")
+    }
+
     await runSuite("MeetingPromptDetector.liveCallWasRecorded — only the call still going on counts") {
         let detector = makeIsolatedDetector()
         detector.onPromptRequest = { _ in true }
@@ -1417,6 +1626,24 @@ private let instantBrowserEvidenceTiming = BrowserCallEvidence.Timing(
     micReleaseGrace: 0,
     titleReadSpacing: 0.2
 )
+
+/// No waits, and while a browser plays with nothing on the mic its titles
+/// are re-read every fifth of a second and a named call goes stale after
+/// half a second, so a test can watch a muted call start and end.
+private let listenBrowserEvidenceTiming = BrowserCallEvidence.Timing(
+    corroboratedDelay: 0,
+    uncorroboratedDelay: 0,
+    titleRecheckInterval: 60,
+    micReleaseGrace: 0,
+    listenRecheckInterval: 0.2,
+    listenNamedCallGrace: 0.5,
+    titleReadSpacing: 0.2
+)
+
+@MainActor
+private final class TitleReadCounter {
+    var count = 0
+}
 
 /// Makes the detector see these browser windows.
 @available(macOS 14.0, *)
