@@ -7,7 +7,9 @@ import AppKit
 /// picks the route: the regular paste when the user is still there, typing
 /// into a terminal or an Accessibility insertion in the background, or a
 /// deferred paste that runs once the user is back in that window. The words
-/// are saved to Dictations on every route.
+/// are saved to Dictations on every route. With Anchored Enter on
+/// (`AnchoredPastePreferences.pressesEnter`) every route ends with Enter in
+/// that field, or a notice on the island saying it couldn't be pressed.
 struct DeferredAnchoredPaste {
     let text: String
     let anchor: DictationPasteAnchor
@@ -149,6 +151,36 @@ extension DictationSessionController {
         }
     }
 
+    /// Anchored Enter: a take with an anchor expects Enter even in an app not
+    /// chosen for Press send after pasting (`anchoredEnterDecision`).
+    func withAnchoredEnter(_ decision: DictationAutoSendRequestDecision, text: String) -> DictationAutoSendRequestDecision {
+        guard pasteAnchor != nil else { return decision }
+        return DictationAutoSendPolicy.anchoredEnterDecision(
+            perApp: decision,
+            pressesEnter: AnchoredPastePreferences.pressesEnter(),
+            text: text,
+            duration: CFAbsoluteTimeGetCurrent() - sessionStartTime
+        )
+    }
+
+    /// Why Anchored Enter can't press Enter where the regular paste went:
+    /// the anchored field (or, for an anchor without one, its window) no
+    /// longer has focus, so Enter would land elsewhere. Nil when it can.
+    func anchoredEnterBlocker() -> DictationAutoSendFailure? {
+        guard let anchor = pasteAnchor else { return .anchoredFieldLeft }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == anchor.pid else { return .targetChanged }
+        if anchor.field != nil { return AnchoredTextDelivery.anchoredFieldIsFocused(anchor) ? nil : .anchoredFieldLeft }
+        if anchor.window != nil { return AnchoredTextDelivery.anchoredWindowIsFocused(anchor) ? nil : .anchoredFieldLeft }
+        return nil
+    }
+
+    /// Whether the anchored field holds `text`: the proof Anchored Enter
+    /// takes for a likely paste (Electron apps report nothing better).
+    func pasteAnchorHolds(_ text: String) -> Bool {
+        guard let anchor = pasteAnchor else { return false }
+        return AnchoredTextDelivery.fieldContains(text, anchor: anchor)
+    }
+
     /// The marker belongs to the take on the island: a handed-off take
     /// leaves it alone.
     private func updateAnchorMarker(_ phase: AnchorMarkerController.Phase) {
@@ -164,14 +196,14 @@ extension DictationSessionController {
     }
 
     private func autoSendDecision(for text: String, bundleID: String?) -> DictationAutoSendRequestDecision {
-        DictationAutoSendPolicy.requestDecision(
+        withAnchoredEnter(DictationAutoSendPolicy.requestDecision(
             isEnabled: DictationAutoSendPreferences.isEnabled(),
             key: DictationAutoSendPreferences.sendKey(),
             text: text,
             duration: CFAbsoluteTimeGetCurrent() - sessionStartTime,
             sourceBundleID: bundleID,
             allowedBundleIDs: DictationAutoSendPreferences.allowedBundleIDs()
-        )
+        ), text: text)
     }
 
     /// In the anchored app, the regular paste follows the user; elsewhere the
@@ -265,8 +297,10 @@ extension DictationSessionController {
     private func finishLandedUnconfirmedWrite(_ pending: DeferredAnchoredPaste) {
         appState?.logger.log("DICTATION | unconfirmed anchored write arrived; not pasting again")
         anchorMarker.update(.done)
-        overlayController?.showSuccessAndDismiss(title: "Pasted")
-        guard pending.autoSend.expected else { return }
+        guard pending.autoSend.expected else {
+            overlayController?.showSuccessAndDismiss(title: "Pasted")
+            return
+        }
         Task { @MainActor [weak self] in
             var outcome = await AnchoredTextDelivery.pressSend(pending.autoSend.key, route: .accessibilityInsert, anchor: pending.anchor)
             // No send button: Return, only into the anchored field itself.
@@ -275,6 +309,28 @@ extension DictationSessionController {
                 outcome = self?.autoSender.send(pending.autoSend.key, target: target) ?? outcome
             }
             self?.appState?.logger.log("DICTATION | deferred anchored send: \(outcome.diagnosticName)")
+            self?.showDeferredSendResult(pasteOutcome: .pasted, sendOutcome: outcome)
+        }
+    }
+
+    /// The island's word on a deferred paste, as for any take
+    /// (`DictationDeliveryPresentation`): "Pasted + Enter", or why send wasn't
+    /// pressed.
+    private func showDeferredSendResult(
+        pasteOutcome: DictationPasteOutcome,
+        sendOutcome: DictationAutoSendOutcome,
+        expected: Bool = true
+    ) {
+        guard let overlayController else { return }
+        switch DictationDeliveryPresentation.resolve(
+            outcome: pasteOutcome, saveFailureMessage: nil, autoSend: sendOutcome, autoSendExpected: expected
+        ) {
+        case .success(let title):
+            overlayController.showSuccessAndDismiss(title: title)
+        case .clipboardNotice(let message):
+            overlayController.showClipboardNotice(message)
+        case .error(let message), .notPasted(let message, _), .clipboardBusy(let message):
+            overlayController.showError(message)
         }
     }
 
@@ -285,17 +341,28 @@ extension DictationSessionController {
         switch outcome {
         case .pasted, .likelyPasted:
             anchorMarker.update(.done)
-            overlayController?.showSuccessAndDismiss(title: "Pasted")
             // Auto Enter needs proof the words landed: a confirmed paste, or
             // the anchored field now holding them (Electron apps only ever
             // report a likely paste).
             guard pending.autoSend.expected,
-                  outcome == .pasted || AnchoredTextDelivery.fieldContains(pending.text, anchor: pending.anchor) else { return }
+                  outcome == .pasted || AnchoredTextDelivery.fieldContains(pending.text, anchor: pending.anchor) else {
+                showDeferredSendResult(pasteOutcome: outcome, sendOutcome: .disabled, expected: pending.autoSend.expected)
+                return
+            }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: TranscriptedConstants.dictationAutoEnterDelay)
                 guard let self else { return }
-                let sent = self.autoSender.send(pending.autoSend.key, target: target)
+                // Anchored Enter goes only into the anchored field: the user
+                // may be back in its window but in another box.
+                let sent: DictationAutoSendOutcome
+                if pending.autoSend.requiresAnchoredField, pending.anchor.field != nil,
+                   !AnchoredTextDelivery.anchoredFieldIsFocused(pending.anchor) {
+                    sent = .failed(.anchoredFieldLeft)
+                } else {
+                    sent = self.autoSender.send(pending.autoSend.key, target: target)
+                }
                 self.appState?.logger.log("DICTATION | deferred anchored send: \(sent.diagnosticName)")
+                self.showDeferredSendResult(pasteOutcome: outcome, sendOutcome: sent)
             }
         case .copied, .failed:
             anchorMarker.hide()

@@ -59,6 +59,10 @@ struct DictationAutoSendRequestDecision: Equatable {
     let expected: Bool
     let key: DictationAutoSendKey
     let blockReason: DictationAutoSendBlockReason
+    /// Fork (Anchored Enter): the take expects Enter only because it is
+    /// anchored, so Enter goes only into the anchored field, never into
+    /// wherever the regular paste followed the user.
+    var requiresAnchoredField = false
 
     static let notEvaluated = DictationAutoSendRequestDecision(
         expected: false,
@@ -145,6 +149,32 @@ enum DictationAutoSendPolicy {
         )
     }
 
+    /// Fork (Anchored Enter, `AnchoredPastePreferences.pressesEnter`): an
+    /// anchored take expects Enter in any app. An app chosen for Press send
+    /// after pasting keeps its own decision and key.
+    static func anchoredEnterDecision(
+        perApp: DictationAutoSendRequestDecision,
+        pressesEnter: Bool,
+        text: String,
+        duration: TimeInterval
+    ) -> DictationAutoSendRequestDecision {
+        guard pressesEnter, !perApp.expected else { return perApp }
+        let blockReason: DictationAutoSendBlockReason
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            blockReason = .emptyText
+        } else if duration < TranscriptedConstants.dictationAutoEnterMinimumDuration {
+            blockReason = .durationTooShort
+        } else {
+            blockReason = .none
+        }
+        return DictationAutoSendRequestDecision(
+            expected: blockReason == .none,
+            key: .enter,
+            blockReason: blockReason,
+            requiresAnchoredField: true
+        )
+    }
+
     static func isRequested(
         isEnabled: Bool,
         text: String,
@@ -224,9 +254,14 @@ enum DictationAutoSendFailure: Equatable {
     case accessibilityMissing
     case targetChanged
     case eventCreationFailed
-    /// Fork (Anchored paste): the words went into a window in the background
-    /// that takes no keystrokes and has no send button to press.
-    case backgroundSendUnavailable
+    /// Fork (Anchored paste): the words went into a window in the background,
+    /// and neither its send button nor Enter could be pressed there: the
+    /// window is minimized, its app wouldn't focus the field, or the field
+    /// didn't take the key.
+    case backgroundSendUnavailable(appName: String)
+    /// Fork (Anchored Enter): after the regular paste the field the take
+    /// started in no longer has focus, so Enter would land elsewhere.
+    case anchoredFieldLeft
 
     /// Shown after the text did paste. Settings calls this feature "Press
     /// send after pasting", and the key may be Return or ⌘Return, so the copy
@@ -239,8 +274,10 @@ enum DictationAutoSendFailure: Equatable {
             return "Pasted, but didn't press send because you switched apps."
         case .eventCreationFailed:
             return "Pasted, but couldn't press send. Press it yourself."
-        case .backgroundSendUnavailable:
-            return "Pasted in the background, but that window can't be sent from here. Press send there."
+        case .backgroundSendUnavailable(let appName):
+            return "Pasted in \(appName), but couldn't press Enter there. Press it yourself."
+        case .anchoredFieldLeft:
+            return "Pasted, but didn't press Enter: you've left the box you started in."
         }
     }
 
@@ -248,7 +285,7 @@ enum DictationAutoSendFailure: Equatable {
         switch self {
         case .accessibilityMissing:
             return .accessibilityMissing
-        case .targetChanged:
+        case .targetChanged, .anchoredFieldLeft:
             return .targetChanged
         case .eventCreationFailed, .backgroundSendUnavailable:
             return .eventCreationFailed
@@ -295,6 +332,10 @@ struct DictationAutoSendTelemetry: Equatable {
         let blockReason: DictationAutoSendBlockReason
         if !request.expected {
             blockReason = request.blockReason
+        } else if case .sent = sendOutcome {
+            // Anchored Enter may press Enter after a likely paste, once the
+            // anchored field shows the words.
+            blockReason = .none
         } else if let pasteBlockReason = pasteOutcome.autoSendBlockReason {
             blockReason = pasteBlockReason
         } else {

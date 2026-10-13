@@ -440,6 +440,7 @@ APP_SOURCES=(
     "Sources/Dictation/DictationLeftoverRecovery.swift"
     "Sources/Dictation/DictationRecordingSpool.swift"
     "Sources/Support/AnchoredPastePolicy.swift"
+    "Sources/Support/AnchoredPastePreferences.swift"
     "Sources/Dictation/DictationTextRefiner.swift"
     "Sources/Dictation/DictationRefinementChunking.swift"
     "Sources/Dictation/DictationDeliveryOrder.swift"

@@ -103,17 +103,29 @@ func testAnchoredPastePolicy() {
     runSuite("AnchoredPastePolicy picks how send is pressed in the background") {
         func method(
             route: AnchoredPasteRoute = .accessibilityInsert, button: Bool = false,
-            bundleID: String? = "com.google.Chrome", onScreen: Bool = true, focused: Bool = true
+            frontmost: Bool = false, window: Bool = true
         ) -> AnchoredSendMethod {
-            AnchoredPastePolicy.sendMethod(route: route, hasSubmitButton: button, bundleID: bundleID, windowIsOnScreen: onScreen, fieldIsFocused: focused)
+            AnchoredPastePolicy.sendMethod(route: route, hasSubmitButton: button, anchorAppIsFrontmost: frontmost, hasWindow: window)
         }
-        assertEqual(method(route: .terminalKeystrokes, bundleID: "com.apple.Terminal", onScreen: false), .returnKeystroke, "a terminal takes Return on any desktop")
-        assertEqual(method(button: true, bundleID: "com.t3tools.t3code"), .pressSubmitButton, "the field's send button first (T3)")
-        assertEqual(method(), .returnKeystroke, "Chrome on screen, no button, field still focused: Return (a Google search)")
-        assertEqual(method(onScreen: false), .unavailable, "Chrome on another desktop may hold Return until shown")
-        assertEqual(method(focused: false), .unavailable, "focus moved in that window: Return would go elsewhere")
-        assertEqual(method(bundleID: "md.obsidian"), .unavailable, "an Electron window drops background keystrokes")
+        assertEqual(method(route: .terminalKeystrokes), .returnKeystroke, "a terminal takes Return on any desktop")
+        assertEqual(method(button: true), .pressSubmitButton, "the field's send button first (T3)")
+        assertEqual(method(button: true, frontmost: true), .pressSubmitButton, "a button press leaves the user's caret alone")
+        assertEqual(method(), .keyWindowReturn, "no button, app in the background: Return once its window is key (Chrome, Electron, native)")
+        assertEqual(method(frontmost: true), .unavailable, "the user is typing in that app elsewhere: Return would land in their box")
+        assertEqual(method(window: false), .unavailable, "no window to make key")
         assertEqual(method(route: .deferred), .unavailable, "nothing delivered, nothing sent")
+        assertEqual(method(route: .normalPaste), .unavailable, "the regular paste presses send its own way")
+    }
+
+    runSuite("AnchoredPastePolicy tells from the field whether a background Return went in") {
+        func took(_ before: String, _ after: String?, multiLine: Bool = true) -> Bool {
+            AnchoredPastePolicy.returnTook(valueBefore: before, valueAfter: after, isMultiLine: multiLine)
+        }
+        assertTrue(took("hello there", ""), "a chat sent the message and cleared the box")
+        assertTrue(took("hello there", "hello there\n"), "an editor added a line")
+        assertTrue(took("hello there", nil), "the box is gone: the page moved on")
+        assertFalse(took("hello there", "hello there"), "a multi-line box that didn't change dropped the key")
+        assertTrue(took("weather", "weather", multiLine: false), "a search box acts on Return and keeps its text")
     }
 
     runSuite("AnchoredPastePolicy recognizes a send button by its label") {

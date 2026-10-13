@@ -506,6 +506,7 @@ extension DictationSessionController {
                         stopTiming.autoEnterStartedAt = CFAbsoluteTimeGetCurrent()
                         let outcome = await self.performAutoEnterIfNeeded(
                             pasteOutcome: pasteOutcome,
+                            text: text,
                             sessionID: taskSessionID
                         )
                         stopTiming.autoEnterFinishedAt = CFAbsoluteTimeGetCurrent()

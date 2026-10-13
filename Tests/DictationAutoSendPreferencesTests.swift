@@ -15,6 +15,64 @@ func testDictationAutoSendPreferences() {
         )
     }
 
+    runSuite("Anchored Enter expects Enter for an anchored take in any app") {
+        func decision(
+            perApp: DictationAutoSendRequestDecision = DictationAutoSendRequestDecision(expected: false, key: .enter, blockReason: .appNotAllowed),
+            on: Bool = true, text: String = "ship it", duration: TimeInterval = 2
+        ) -> DictationAutoSendRequestDecision {
+            DictationAutoSendPolicy.anchoredEnterDecision(perApp: perApp, pressesEnter: on, text: text, duration: duration)
+        }
+        let anchored = decision()
+        assertTrue(anchored.expected, "an app never chosen for Press send after pasting still gets Enter")
+        assertEqual(anchored.key, .enter, "Anchored Enter presses Enter")
+        assertTrue(anchored.requiresAnchoredField, "and only into the anchored field")
+        assertTrue(decision(perApp: .init(expected: false, key: .enter, blockReason: .featureOff)).expected, "Press send after pasting may be off entirely")
+
+        let chosen = DictationAutoSendRequestDecision(expected: true, key: .commandEnter, blockReason: .none)
+        assertEqual(decision(perApp: chosen), chosen, "a chosen app keeps its own key and rules")
+
+        let off = decision(on: false)
+        assertFalse(off.expected, "off: only the per-app choice counts")
+        assertEqual(off.blockReason, .appNotAllowed, "and its reason is kept")
+        assertFalse(off.requiresAnchoredField)
+
+        assertEqual(decision(text: "  \n").blockReason, .emptyText, "no words, no Enter")
+        assertFalse(decision(text: "  \n").expected)
+        assertEqual(decision(duration: 0.1).blockReason, .durationTooShort, "an accidental tap sends nothing")
+        assertFalse(decision(duration: 0.1).expected)
+    }
+
+    runSuite("Anchored Enter's notices say Enter wasn't pressed and where") {
+        let background = DictationAutoSendFailure.backgroundSendUnavailable(appName: "T3 Code").message
+        assertTrue(background.hasPrefix("Pasted in T3 Code"), "names the app the words went into")
+        assertTrue(background.contains("Enter"), "says which key wasn't pressed")
+        let left = DictationAutoSendFailure.anchoredFieldLeft.message
+        assertTrue(left.hasPrefix("Pasted, but"), "the text did paste, so lead with that")
+        assertTrue(left.contains("Enter"), "says which key wasn't pressed")
+        assertEqual(DictationAutoSendFailure.anchoredFieldLeft.blockReason, .targetChanged, "counted as a target change")
+    }
+
+    runSuite("DictationAutoSendTelemetry counts Enter sent after a likely paste as sent") {
+        let request = DictationAutoSendRequestDecision(expected: true, key: .enter, blockReason: .none, requiresAnchoredField: true)
+        let sent = DictationAutoSendTelemetry.snapshot(request: request, pasteOutcome: .likelyPasted, sendOutcome: .sent(.enter))
+        assertEqual(sent.blockReason, .none, "the anchored field showed the words, so Enter went")
+        let held = DictationAutoSendTelemetry.snapshot(request: request, pasteOutcome: .likelyPasted, sendOutcome: .disabled)
+        assertEqual(held.blockReason, .pasteUnverified, "without that proof Enter is held, as before")
+    }
+
+    runSuite("AnchoredPastePreferences: Press Enter there needs Anchored paste") {
+        let suiteName = "AnchoredEnterTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        assertFalse(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "off by default")
+        AnchoredPastePreferences.setPressesEnter(true, userDefaults: defaults)
+        assertFalse(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "nothing to press Enter in without Anchored paste")
+        AnchoredPastePreferences.setEnabled(true, userDefaults: defaults)
+        assertTrue(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "both on")
+        AnchoredPastePreferences.setPressesEnter(false, userDefaults: defaults)
+        assertFalse(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "Anchored paste alone only pastes")
+    }
+
     runSuite("DictationAutoSendPreferences defaults to disabled Enter") {
         let (defaults, suiteName) = makeAutoSendDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }

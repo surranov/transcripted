@@ -121,10 +121,18 @@ enum DictationDeliveryPresentation: Equatable {
             if let saveFailureMessage {
                 return .error(saveFailureMessage)
             }
-            // Auto Enter only presses Return after a confirmed paste.
-            return autoSendExpected
-                ? .clipboardNotice(likelyPastedAutoSendNotice)
-                : .success(title: "Pasted")
+            // Auto Enter only presses Return after a confirmed paste; Anchored
+            // Enter also does once the anchored field shows the words.
+            switch autoSend {
+            case .sent:
+                return .success(title: autoSend.confirmationTitle ?? "Pasted")
+            case .failed(let failure):
+                return .error(failure.message)
+            case .disabled:
+                return autoSendExpected
+                    ? .clipboardNotice(likelyPastedAutoSendNotice)
+                    : .success(title: "Pasted")
+            }
         case .copied(let message, reason: let reason):
             if let saveFailureMessage {
                 return .error("\(message) \(saveFailureMessage)")

@@ -381,6 +381,20 @@ func testClipboardRestoringTextPaster() async {
                 .error("Couldn't save."),
                 "a save failure still surfaces after a likely paste"
             )
+            assertEqual(
+                DictationDeliveryPresentation.resolve(
+                    outcome: .likelyPasted, saveFailureMessage: nil, autoSend: .sent(.enter), autoSendExpected: true
+                ),
+                .success(title: "Pasted + Enter"),
+                "Anchored Enter pressed Enter once the anchored box showed the words"
+            )
+            assertEqual(
+                DictationDeliveryPresentation.resolve(
+                    outcome: .likelyPasted, saveFailureMessage: nil, autoSend: .failed(.anchoredFieldLeft), autoSendExpected: true
+                ),
+                .error(DictationAutoSendFailure.anchoredFieldLeft.message),
+                "and says why when it couldn't"
+            )
         }
 
         runSuite("A clipboard fallback is a calm Not pasted notice, and an unconfirmed paste says so") {

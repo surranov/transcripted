@@ -60,14 +60,15 @@ extension DictationSessionController {
         } else {
             appState?.logger.log("DICTATION | long model wait, keeping the original paste target")
         }
-        autoSendRequestDecision = DictationAutoSendPolicy.requestDecision(
+        // Fork: an anchored take may expect Enter in any app (Anchored Enter).
+        autoSendRequestDecision = withAnchoredEnter(DictationAutoSendPolicy.requestDecision(
             isEnabled: DictationAutoSendPreferences.isEnabled(),
             key: DictationAutoSendPreferences.sendKey(),
             text: text,
             duration: CFAbsoluteTimeGetCurrent() - sessionStartTime,
             sourceBundleID: sessionSourceApp?.bundleIdentifier,
             allowedBundleIDs: DictationAutoSendPreferences.allowedBundleIDs()
-        )
+        ), text: text)
         let sessionID = currentDictationSessionID
         let trigger = currentDictationTrigger
         let outcome = textPaster.paste(
@@ -185,12 +186,17 @@ extension DictationSessionController {
 
     func performAutoEnterIfNeeded(
         pasteOutcome: DictationPasteOutcome,
+        text: String,
         sessionID: UUID
     ) async -> DictationAutoSendOutcome {
         // Fork: a background (anchored) delivery presses send its own way.
         if let anchored = await performAnchoredSendIfNeeded() { return anchored }
-        guard autoSendRequestDecision.expected,
-              pasteOutcome.allowsAutoSend else {
+        let decision = autoSendRequestDecision
+        // Fork (Anchored Enter): the anchored field holding the words stands
+        // in for a confirmed paste (Electron apps only report a likely one).
+        guard decision.expected,
+              pasteOutcome.allowsAutoSend
+                || (decision.requiresAnchoredField && pasteOutcome == .likelyPasted && pasteAnchorHolds(text)) else {
             return .disabled
         }
 
@@ -206,6 +212,7 @@ extension DictationSessionController {
             sessionID: sessionID, currentSessionID: currentDictationSessionID,
             isDictating: activeTakeIsLive, cancelled: Task.isCancelled
         ) else { return .disabled }
-        return autoSender.send(autoSendRequestDecision.key, target: sessionPasteTarget)
+        if decision.requiresAnchoredField, let blocker = anchoredEnterBlocker() { return .failed(blocker) }
+        return autoSender.send(decision.key, target: sessionPasteTarget)
     }
 }

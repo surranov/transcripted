@@ -13,7 +13,9 @@ import Foundation
 ///   value until it is on screen again (T3 Code), so a write there that can't
 ///   be read back is unconfirmed, not failed.
 /// - Keystrokes addressed to a process reach terminals on any desktop, but
-///   an inactive Electron window drops them, so they're used for terminals only.
+///   an inactive Electron window drops them, so text is typed into terminals
+///   only. (Enter reaches an inactive Electron window once it is made key
+///   inside its app: `AnchoredSendMethod.keyWindowReturn`.)
 /// - Apps can reuse one field for several documents (T3 keeps one composer
 ///   for every thread), so a field is trusted only while its window title and
 ///   page URL still match what they were when the dictation started.
@@ -34,8 +36,14 @@ enum AnchoredPasteRoute: String, Equatable {
 enum AnchoredSendMethod: Equatable {
     /// The field's own send button, through Accessibility.
     case pressSubmitButton
-    /// Return addressed to the app's process.
+    /// Return addressed to the app's process (a terminal: its window is
+    /// already the app's current one).
     case returnKeystroke
+    /// The field's window made key inside its app, without activating the
+    /// app or raising the window (`BackgroundKeyWindow`), the field focused
+    /// in it, then Return addressed to the app's process. An inactive
+    /// Chromium/Electron window drops keystrokes until it is key.
+    case keyWindowReturn
     case unavailable
 }
 
@@ -95,38 +103,36 @@ enum AnchoredPastePolicy {
         "dev.warp.Warp-Stable",
     ]
 
-    /// Browsers whose window takes Return addressed to their process while
-    /// it is on screen but not in front (measured: Chrome submits a Google
-    /// search). Electron apps drop such keystrokes, and Chrome on another
-    /// desktop may hold them until it is shown, so neither is listed.
-    static let backgroundReturnBundleIDs: Set<String> = [
-        "com.google.Chrome",
-        "com.google.Chrome.beta",
-        "com.google.Chrome.dev",
-        "com.google.Chrome.canary",
-    ]
-
     /// How send is pressed after a background delivery.
     static func sendMethod(
         route: AnchoredPasteRoute,
         hasSubmitButton: Bool,
-        bundleID: String?,
-        windowIsOnScreen: Bool,
-        fieldIsFocused: Bool
+        anchorAppIsFrontmost: Bool,
+        hasWindow: Bool
     ) -> AnchoredSendMethod {
         switch route {
         case .terminalKeystrokes:
             return .returnKeystroke
         case .accessibilityInsert:
             if hasSubmitButton { return .pressSubmitButton }
-            // Return goes to whatever has focus in that window: only while
-            // it is still the field the words went into.
-            guard let bundleID, backgroundReturnBundleIDs.contains(bundleID),
-                  windowIsOnScreen, fieldIsFocused else { return .unavailable }
-            return .returnKeystroke
+            // With the app in front the user is typing in it elsewhere (the
+            // words went to a field they moved away from): its key window is
+            // theirs, and refocusing the anchored field would take their caret.
+            guard !anchorAppIsFrontmost, hasWindow else { return .unavailable }
+            return .keyWindowReturn
         case .normalPaste, .deferred:
             return .unavailable
         }
+    }
+
+    /// Whether Return pressed in the background went into the field, read
+    /// back after it (`valueAfter` nil: the field is gone, a page that moved
+    /// on). A multi-line field shows Return either way: a chat clears it, an
+    /// editor adds a line. A single-line field may act on Return and keep its
+    /// text (a search), so it isn't held against the key.
+    static func returnTook(valueBefore: String, valueAfter: String?, isMultiLine: Bool) -> Bool {
+        guard let valueAfter else { return true }
+        return valueAfter != valueBefore || !isMultiLine
     }
 
     static func hasLineBreaks(_ text: String) -> Bool {

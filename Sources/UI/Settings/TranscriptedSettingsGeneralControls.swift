@@ -178,10 +178,35 @@ struct AnchoredPasteRow: View {
                 : "Words paste into whatever is in front when they're ready.",
             info: GeneralInfo(
                 title: "Anchored paste",
-                message: "Pins each dictation to the text box you were in when you started, and shows a small marker there. Switch to another window or desktop while it transcribes: the words still go into that box, in the background, without bringing its window forward. Terminals, Chrome and other browser text fields, chat boxes like T3 Code, and native Mac text views are filled right away (and sent, if Press send after pasting is on for that app). Editors that can't be filled from outside, like Obsidian, get the words the moment you come back to them. Every dictation is still saved in Dictations."
+                message: "Pins each dictation to the text box you were in when you started, and shows a small marker there. Switch to another window or desktop while it transcribes: the words still go into that box, in the background, without bringing its window forward. Terminals, Chrome and other browser text fields, chat boxes like T3 Code, and native Mac text views are filled right away (and sent, if Press send after pasting is on for that app, or Press Enter there is on). Editors that can't be filled from outside, like Obsidian, get the words the moment you come back to them. Every dictation is still saved in Dictations."
             ),
             automationIdentifier: "transcripted.settings.general.anchored-paste"
         )
+    }
+}
+
+/// Fork: Anchored Enter (`AnchoredPastePreferences.pressesEnter`), off by
+/// default; needs Anchored paste.
+struct AnchoredEnterRow: View {
+    @AppStorage(AnchoredPastePreferences.enabledKey)
+    private var anchoredPasteEnabled = false
+    @AppStorage(AnchoredPastePreferences.enterEnabledKey)
+    private var enabled = false
+
+    var body: some View {
+        GeneralToggleRow(
+            title: "Press Enter there",
+            isOn: $enabled,
+            help: !anchoredPasteEnabled
+                ? "Needs Anchored paste."
+                : enabled ? "Enter goes into that box after the words, in any app." : "Anchored paste only pastes.",
+            info: GeneralInfo(
+                title: "Press Enter there",
+                message: "Once Anchored paste puts the words into the box you started in, presses Enter in that same box, in any app, even while you're in another window, so a chat or a terminal sends them. In the background it uses the box's own Send button if it has one; otherwise it points that app's keyboard at the box for a moment, without bringing its window forward or taking your keyboard. It never presses Enter anywhere else: if the window is minimized, the app won't take the key, or you've moved to another box, the island says Enter wasn't pressed and the words just stay there. Apps chosen in Press send after pasting keep their own key."
+            ),
+            automationIdentifier: "transcripted.settings.general.anchored-enter"
+        )
+        .disabled(!anchoredPasteEnabled)
     }
 }
 

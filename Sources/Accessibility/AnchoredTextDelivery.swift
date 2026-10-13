@@ -188,6 +188,15 @@ enum AnchoredTextDelivery {
         return element(of: appElement, kAXFocusedUIElementAttribute).map { CFEqual(field, $0) } ?? false
     }
 
+    /// Whether the anchored window is its app's focused window (for an
+    /// anchor without a field).
+    static func anchoredWindowIsFocused(_ anchor: DictationPasteAnchor) -> Bool {
+        guard let window = anchor.window else { return false }
+        let appElement = AXUIElementCreateApplication(anchor.pid)
+        AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
+        return element(of: appElement, kAXFocusedWindowAttribute).map { CFEqual(window, $0) } ?? false
+    }
+
     /// Whether the anchored field now holds `text` (a paste into an app that
     /// reports no confirmation of its own).
     static func fieldContains(_ text: String, anchor: DictationPasteAnchor) -> Bool {
@@ -210,11 +219,10 @@ enum AnchoredTextDelivery {
         }.value
     }
 
-    /// Presses send after a background insertion (`AnchoredPastePolicy.sendMethod`):
+    /// Presses send after a background delivery (`AnchoredPastePolicy.sendMethod`):
     /// Return (or ⌘Return) in a terminal; the field's own send button,
-    /// pressed through Accessibility, elsewhere; Return in a Chrome window on
-    /// screen when there is no such button. A background Electron window
-    /// ignores keystrokes, so without a button nothing is pressed there.
+    /// pressed through Accessibility, when there is one; otherwise Return in
+    /// the field once its window is key inside its app (`pressReturnInKeyWindow`).
     static func pressSend(
         _ key: DictationAutoSendKey,
         route: AnchoredPasteRoute,
@@ -224,9 +232,8 @@ enum AnchoredTextDelivery {
         let method = AnchoredPastePolicy.sendMethod(
             route: route,
             hasSubmitButton: button != nil,
-            bundleID: anchor.bundleID,
-            windowIsOnScreen: anchor.windowID.flatMap(windowState)?.isOnScreen ?? false,
-            fieldIsFocused: anchoredFieldIsFocused(anchor)
+            anchorAppIsFrontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier == anchor.pid,
+            hasWindow: anchor.window != nil && anchor.windowID != nil
         )
         switch method {
         case .returnKeystroke:
@@ -236,17 +243,78 @@ enum AnchoredTextDelivery {
             }.value
             return sent ? .sent(key) : .failed(.eventCreationFailed)
         case .pressSubmitButton:
-            guard let button else { return .failed(.backgroundSendUnavailable) }
+            guard let button else { return .failed(.backgroundSendUnavailable(appName: anchor.appName)) }
             // A React form enables its button a beat after the value changes.
             for _ in 0..<10 where (bool(of: button, kAXEnabledAttribute) == false) {
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
             return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
                 ? .sent(key)
-                : .failed(.backgroundSendUnavailable)
+                : .failed(.backgroundSendUnavailable(appName: anchor.appName))
+        case .keyWindowReturn:
+            return await pressReturnInKeyWindow(key, anchor: anchor)
         case .unavailable:
-            return route == .accessibilityInsert ? .failed(.backgroundSendUnavailable) : .disabled
+            return route == .accessibilityInsert ? .failed(.backgroundSendUnavailable(appName: anchor.appName)) : .disabled
         }
+    }
+
+    /// Return into the anchored field of an app in the background. Its window
+    /// is made key inside the app (`BackgroundKeyWindow`), the field focused
+    /// in it if the app had moved focus, and Return goes only once the app
+    /// reports both, so it can't land in another window or box. The window
+    /// then resigns key unless the user came to it meanwhile. A multi-line
+    /// field read back unchanged didn't take the key.
+    private static func pressReturnInKeyWindow(_ key: DictationAutoSendKey, anchor: DictationPasteAnchor) async -> DictationAutoSendOutcome {
+        let unavailable = DictationAutoSendOutcome.failed(.backgroundSendUnavailable(appName: anchor.appName))
+        guard let field = anchor.field, let window = anchor.window, let windowID = anchor.windowID else { return unavailable }
+        AXUIElementSetMessagingTimeout(field, messagingTimeout)
+        let valueBefore = stringValue(of: field)
+        let isMultiLine = string(of: field, kAXRoleAttribute) == kAXTextAreaRole
+        guard BackgroundKeyWindow.makeKey(windowID, pid: anchor.pid) else { return unavailable }
+        func resignUnlessUserIsThere() {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != anchor.pid {
+                BackgroundKeyWindow.resignKey(windowID, pid: anchor.pid)
+            }
+        }
+        // AppKit takes the records on its next event loop turn.
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        let appElement = AXUIElementCreateApplication(anchor.pid)
+        AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
+        guard element(of: appElement, kAXFocusedWindowAttribute).map({ CFEqual($0, window) }) == true else {
+            // Minimized, or the app wouldn't take it.
+            resignUnlessUserIsThere()
+            return unavailable
+        }
+        if !anchoredFieldIsFocused(anchor) {
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard anchoredFieldIsFocused(anchor) else {
+                resignUnlessUserIsThere()
+                return unavailable
+            }
+        }
+        let pid = anchor.pid
+        let sent = await Task.detached(priority: .userInitiated) {
+            BackgroundKeystrokes.press(keyCode: 36, flags: key.eventFlags, pid: pid)
+        }.value
+        guard sent else {
+            resignUnlessUserIsThere()
+            return .failed(.eventCreationFailed)
+        }
+        // Read back while the window is still key: an app may handle Return
+        // a beat later. A field that couldn't be read before is trusted.
+        var took = valueBefore == nil
+        for _ in 0..<6 where !took {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            let isGone = string(of: field, kAXRoleAttribute) == nil
+            took = AnchoredPastePolicy.returnTook(
+                valueBefore: valueBefore ?? "",
+                valueAfter: isGone ? nil : stringValue(of: field) ?? "",
+                isMultiLine: isMultiLine
+            )
+        }
+        resignUnlessUserIsThere()
+        return took ? .sent(key) : unavailable
     }
 
     // MARK: - Window
