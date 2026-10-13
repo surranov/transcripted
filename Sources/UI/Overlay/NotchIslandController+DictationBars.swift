@@ -10,18 +10,20 @@ import QuartzCore
 extension NotchIslandController {
     func updateDictationLevel(_ reading: DictationAudioLevel) {
         guard isShown, dictation?.phase == .listening else { return }
-        islandView?.receiveDictationLevel(reading, at: CACurrentMediaTime())
+        let now = CACurrentMediaTime()
+        islandViews.forEach { $0.receiveDictationLevel(reading, at: now) }
     }
 
-    /// The bars' clock runs only while a dictation listens on screen.
+    /// The bars' clock runs only while a dictation listens on screen. One
+    /// clock steps every surface's bars, so they keep one pace.
     func updateDictationBarsClock() {
-        guard isShown, dictation?.phase == .listening, let islandView else {
+        guard isShown, dictation?.phase == .listening, let islandView = surfaces.first?.view else {
             dictationBarsClock.stop()
             return
         }
         guard !dictationBarsClock.isRunning else { return }
         dictationBarsClock.onFrame = { [weak self] time, frameDuration in
-            self?.islandView?.advanceDictationBars(to: time, frameDuration: frameDuration)
+            self?.islandViews.forEach { $0.advanceDictationBars(to: time, frameDuration: frameDuration) }
         }
         dictationBarsClock.start(on: islandView)
     }

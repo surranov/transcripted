@@ -11,7 +11,7 @@ func testNotchIslandPanel() async {
     _ = NSApplication.shared
 
     func makePanel() -> NotchIslandPanel {
-        // Same arguments NotchIslandController uses.
+        // Same arguments NotchIslandSurface uses.
         NotchIslandPanel(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 32),
             styleMask: [],

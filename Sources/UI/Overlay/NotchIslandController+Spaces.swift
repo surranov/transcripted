@@ -21,7 +21,11 @@ extension NotchIslandController {
 
     /// `moment` says what prompted the check, for the local event log.
     func rejoinAllSpacesIfLeftBehind(_ moment: String) {
-        guard let panel, panel.rejoinAllSpacesIfLeftBehind() else { return }
+        surfaces.forEach { rejoinAllSpacesIfLeftBehind($0, moment) }
+    }
+
+    func rejoinAllSpacesIfLeftBehind(_ surface: NotchIslandSurface, _ moment: String) {
+        guard surface.panel.rejoinAllSpacesIfLeftBehind() else { return }
         // Local events.jsonl only: the check runs on every show and desktop
         // switch, and a hit is the evidence that macOS dropped the panel.
         EventReporter.shared.capture(

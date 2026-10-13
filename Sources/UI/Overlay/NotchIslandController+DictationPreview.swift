@@ -1,7 +1,7 @@
 // NotchIslandController+DictationPreview.swift
-// The dictation hover's live words: one preview view that lives as long as
-// the island and is updated in place, never by re-rendering it, like the
-// meeting's live transcript (NotchIslandController+LiveTranscript.swift).
+// The dictation hover's live words: one preview view per surface that lives
+// as long as the island and is updated in place, never by re-rendering it,
+// like the meeting's live transcript (NotchIslandController+LiveTranscript.swift).
 
 import AppKit
 import Combine
@@ -24,19 +24,20 @@ extension NotchIslandController {
         case .loading, .message:
             content.showsLivePreview = false
         }
-        if content.showsLivePreview { ensureDictationPreviewView() }
+        if content.showsLivePreview { ensureDictationPreviewViews() }
         return content
     }
 
     @discardableResult
-    func ensureDictationPreviewView() -> NotchIslandDictationPreviewView {
-        let (_, islandView) = ensurePanel()
-        if let view = islandView.dictationPreviewView { return view }
-        let view = NotchIslandDictationPreviewView(width: NotchIslandDropView.contentWidth)
-        islandView.dictationPreviewView = view
-        let captions = LiveDictationCaptions.shared
-        view.apply(captions.preview, settling: captions.isStreaming)
-        return view
+    func ensureDictationPreviewViews() -> [NotchIslandDictationPreviewView] {
+        ensureSurfaces().map { surface in
+            if let view = surface.view.dictationPreviewView { return view }
+            let view = NotchIslandDictationPreviewView(width: NotchIslandDropView.contentWidth)
+            surface.view.dictationPreviewView = view
+            let captions = LiveDictationCaptions.shared
+            view.apply(captions.preview, settling: captions.isStreaming)
+            return view
+        }
     }
 
     func watchDictationPreview() {
@@ -51,8 +52,8 @@ extension NotchIslandController {
     /// New words update the view in place. Only a change in whether there
     /// are words to show re-renders, so the drop-down can make room.
     private func updateDictationPreview(_ preview: LiveDictationPreview, streaming: Bool) {
-        if islandView == nil, preview.isEmpty, !streaming { return }
-        ensureDictationPreviewView().apply(preview, settling: streaming)
+        if surfaces.isEmpty, preview.isEmpty, !streaming { return }
+        ensureDictationPreviewViews().forEach { $0.apply(preview, settling: streaming) }
         let updated = withLivePreview(dictation)
         if updated != dictation {
             dictation = updated

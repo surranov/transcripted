@@ -10,7 +10,7 @@ extension NotchIslandController {
     /// The "Insert into <app>" icon at the button's size, drawn the first
     /// time a drop-down asks for it during a take and reused after.
     func targetAppIcon() -> NSImage? {
-        let colorSpace = islandView?.window?.colorSpace ?? NSScreen.main?.colorSpace ?? .sRGB
+        let colorSpace = surfaces.first?.panel.colorSpace ?? NSScreen.main?.colorSpace ?? .sRGB
         return targetAppIconCache.icon(for: targetApp) { [targetApp] in
             targetApp?.icon.map {
                 NotchIslandAppIconCache.bitmap(of: $0, side: NotchIslandButton.appIconSide(), colorSpace: colorSpace)
@@ -25,7 +25,7 @@ extension NotchIslandController {
         case .starting?, .listening?:
             return
         default:
-            islandView?.releaseKeptDictationDrop()
+            islandViews.forEach { $0.releaseKeptDictationDrop() }
         }
     }
 }

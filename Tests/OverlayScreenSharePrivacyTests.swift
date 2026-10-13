@@ -26,7 +26,7 @@ func testOverlayScreenSharePrivacy() async {
     _ = NSApplication.shared
 
     runSuite("NotchIslandPanel is excluded from screen capture and never takes focus") {
-        // Same arguments NotchIslandController.ensurePanel() uses.
+        // Same arguments NotchIslandSurface uses.
         let panel = NotchIslandPanel(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 32),
             styleMask: [],
