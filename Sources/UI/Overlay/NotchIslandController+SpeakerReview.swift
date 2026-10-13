@@ -1,0 +1,165 @@
+// NotchIslandController+SpeakerReview.swift
+// "Who was on this call?" on every display, and the keyboard while a name is
+// typed. The presenter's view is one live view with name boxes and playback,
+// and a view sits in one window, so it lives on one surface (the display under
+// the pointer when it opened) and the others show a picture of it, repainted
+// while it is up. The pointer reaching the island on another display moves
+// the live view there, unless a name box has the keyboard where it is.
+
+import AppKit
+
+extension NotchIslandController {
+    /// Shows (or with nil, takes down) "Who was on this call?". The view is
+    /// owned by the review's presenter and kept alive across drop-down
+    /// rebuilds so typing and playback carry on.
+    func showSpeakerReview(_ content: NotchIslandSpeakerReviewContent?, view: NSView?) {
+        let surfaces = ensureSurfaces()
+        speakerReview = content
+        speakerReviewView = content == nil ? nil : view
+        if speakerReviewView == nil {
+            speakerReviewHostID = nil
+        } else if speakerReviewHost == nil {
+            speakerReviewHostID = (surfaceUnderPointer() ?? surfaces.first)?.display.id
+        }
+        placeSpeakerReview()
+        render()
+    }
+
+    /// The surface holding the live view.
+    var speakerReviewHost: NotchIslandSurface? {
+        guard let id = speakerReviewHostID else { return nil }
+        return surfaces.first { $0.display.id == id }
+    }
+
+    func surfaceUnderPointer() -> NotchIslandSurface? {
+        NotchIslandDisplays.index(under: NSEvent.mouseLocation, in: surfaces.map(\.display)).map { surfaces[$0] }
+    }
+
+    /// The live view on its display, a picture of it on the others.
+    func placeSpeakerReview() {
+        let host = speakerReviewHost
+        for surface in surfaces {
+            let isHost = surface === host
+            let shown: NSView? = speakerReviewView.map { isHost ? $0 : surface.speakerReviewMirror }
+            if surface.view.speakerReviewView !== shown {
+                surface.view.speakerReviewView = shown
+                rebuildDropOnNextRender(surface)
+            }
+            if speakerReviewView == nil { surface.speakerReviewMirror.image = nil }
+            // Once naming ends (Done, Later, or a newer review), the name boxes
+            // can't take the keyboard again; render() hands it back if they had it.
+            surface.panel.acceptsKeyForTyping = isHost && speakerReview?.stage == .naming
+        }
+    }
+
+    /// The pointer reached the island on `surface`: bring the live review
+    /// there, so what it points at is what it clicks.
+    func moveSpeakerReview(to surface: NotchIslandSurface) {
+        guard speakerReviewOnScreen,
+              let host = speakerReviewHost,
+              host !== surface,
+              // Typing a name over there: the review stays with the keyboard.
+              !host.panel.isKeyWindow else { return }
+        speakerReviewHostID = surface.display.id
+        placeSpeakerReview()
+        render(animated: false)
+    }
+
+    /// Repaints the picture of the review on the displays the live view is
+    /// not on. A picture that changes size needs the island resized, which
+    /// `render()` does itself, so only the clock asks for it.
+    func refreshSpeakerReviewMirrors(rendersOnResize: Bool) {
+        guard surfaces.count > 1, let live = speakerReviewView, let window = live.window else { return }
+        // Just rendered: lay the drop-down out so the picture has its size now.
+        window.layoutIfNeeded()
+        let bounds = live.bounds
+        guard bounds.width > 0, bounds.height > 0,
+              let rep = live.bitmapImageRepForCachingDisplay(in: bounds) else { return }
+        live.cacheDisplay(in: bounds, to: rep)
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+        let host = speakerReviewHost
+        var resized = false
+        for surface in surfaces where surface !== host {
+            resized = resized || surface.speakerReviewMirror.image?.size != image.size
+            surface.speakerReviewMirror.image = image
+        }
+        if resized, rendersOnResize { render() }
+    }
+
+    /// Keeps the pictures moving (rings, the match animation, the Later
+    /// countdown) while the review is on screen on more than one display.
+    func updateSpeakerReviewMirrorClock() {
+        guard isShown, speakerReviewOnScreen, surfaces.count > 1, speakerReviewView != nil else {
+            speakerReviewMirrorTask?.cancel()
+            speakerReviewMirrorTask = nil
+            return
+        }
+        guard speakerReviewMirrorTask == nil else { return }
+        speakerReviewMirrorTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard !Task.isCancelled else { return }
+                self?.refreshSpeakerReviewMirrors(rendersOnResize: true)
+            }
+        }
+    }
+
+    /// The review's rows grew or shrank.
+    func speakerReviewLayoutChanged() {
+        guard isShown, speakerReview != nil else { return }
+        render()
+    }
+
+    /// A name box was clicked: take the keyboard, only while the review asks.
+    func makeKeyForTyping() {
+        guard let panel = speakerReviewHost?.panel, panel.acceptsKeyForTyping else { return }
+        if !panel.isKeyWindow {
+            // The panel is non-activating, so the app the person was in is
+            // still the frontmost app while they type a name here.
+            keyboardReturnApp = Self.frontmostOtherApp()
+        }
+        panel.makeKey()
+    }
+
+    /// Gives the keyboard back to the app the person was in, without hiding
+    /// the island and without activating Transcripted.
+    ///
+    /// The island is a non-activating panel: clicking a name box made it the
+    /// key window but left the other app active (its menu bar stays up). So
+    /// only key focus has to move back. AppKit has no public "stop being key"
+    /// for a window that stays on screen (`resignKey()` is documented as
+    /// never to be called directly and only updates AppKit's side), but
+    /// ordering a key non-activating panel out hands key focus back to the
+    /// active app, which is what `hide()` has always relied on. The panel can
+    /// no longer become key at this point, so ordering it straight back in,
+    /// in the same pass with its layers untouched, leaves the island where it
+    /// was. Re-activating the app that was frontmost then asks it to take its
+    /// key window back, in case the window server has not already; it never
+    /// activates Transcripted.
+    func returnKeyboardIfHeld() {
+        guard let panel = surfaces.first(where: { $0.panel.isKeyWindow })?.panel else {
+            keyboardReturnApp = nil
+            return
+        }
+        let returnTo = keyboardReturnApp ?? Self.frontmostOtherApp()
+        keyboardReturnApp = nil
+        panel.makeFirstResponder(nil)
+        let couldTakeKey = panel.acceptsKeyForTyping
+        panel.acceptsKeyForTyping = false
+        if panel.isVisible {
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+        }
+        panel.acceptsKeyForTyping = couldTakeKey
+        if let returnTo, !returnTo.isTerminated {
+            returnTo.activate(options: [])
+        }
+    }
+
+    static func frontmostOtherApp() -> NSRunningApplication? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+        return app
+    }
+}

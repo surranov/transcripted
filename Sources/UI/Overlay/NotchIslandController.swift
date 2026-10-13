@@ -46,12 +46,12 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     var dictation: NotchIslandDictationContent?
     var meeting: NotchIslandMeetingContent?
     private var callPrompt: NotchIslandCallPromptContent?
-    private var speakerReview: NotchIslandSpeakerReviewContent?
+    var speakerReview: NotchIslandSpeakerReviewContent?
     private var reportedSpeakerReviewVisible: Bool?
     private var reportedCallPromptVisible: Bool?
     /// The app that was in front when a name box took the keyboard. It gets
     /// the keyboard back once naming ends.
-    private var keyboardReturnApp: NSRunningApplication?
+    var keyboardReturnApp: NSRunningApplication?
     private var recentInsert: NotchIslandRecentInsert?
     private(set) var targetApp: NSRunningApplication?
     private var listeningSince: Date?
@@ -68,6 +68,11 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     /// state lives here once and every surface draws it.
     private(set) var surfaces: [NotchIslandSurface] = []
     var islandViews: [NotchIslandView] { surfaces.map(\.view) }
+    /// The presenter's one live "Who was on this call?" view, the display it
+    /// sits on, and the clock repainting its picture on the other displays.
+    var speakerReviewView: NSView?
+    var speakerReviewHostID: UInt32?
+    var speakerReviewMirrorTask: Task<Void, Never>?
     private(set) var isShown = false
     /// Steps the dictation waveform while a dictation listens on screen
     /// (NotchIslandController+DictationBars.swift).
@@ -267,34 +272,19 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         refreshLive()
     }
 
-    // MARK: - Speaker review
+    // MARK: - Speaker review (and NotchIslandController+SpeakerReview.swift)
 
-    /// Shows (or with nil, takes down) "Who was on this call?". The view is
-    /// owned by the review's presenter and kept alive across drop-down
-    /// rebuilds so typing and playback carry on.
-    func showSpeakerReview(_ content: NotchIslandSpeakerReviewContent?, view: NSView?) {
-        let surfaces = ensureSurfaces()
-        // One view can sit in one window: it opens on the display under the
-        // pointer and stays there while it is up.
-        let host = speakerReviewHost ?? surfaceUnderPointer() ?? surfaces[0]
-        speakerReview = content
-        for surface in surfaces {
-            let isHost = surface === host && content != nil
-            surface.view.speakerReviewView = isHost ? view : nil
-            // Once naming ends (Done, Later, or a newer review), the name boxes
-            // can't take the keyboard again; render() hands it back if they had it.
-            surface.panel.acceptsKeyForTyping = isHost && content?.stage == .naming
-        }
-        render()
-    }
+    /// "Who was on this call?" is in the drop-down now.
+    var speakerReviewOnScreen: Bool { lastLayout?.showsSpeakerReview == true }
 
-    /// The surface whose view holds "Who was on this call?".
-    private var speakerReviewHost: NotchIslandSurface? {
-        surfaces.first { $0.view.speakerReviewView != nil }
-    }
-
-    private func surfaceUnderPointer() -> NotchIslandSurface? {
-        NotchIslandDisplays.index(under: NSEvent.mouseLocation, in: surfaces.map(\.display)).map { surfaces[$0] }
+    /// The view a surface's drop-down holds was swapped (the review moved to
+    /// or from its display): take the drop-down down so the next render
+    /// builds it again around the new view.
+    func rebuildDropOnNextRender(_ surface: NotchIslandSurface) {
+        // Any other drop-down is rebuilt by the next render anyway.
+        guard var cleared = lastLayout, case .speakerReview? = cleared.drop else { return }
+        cleared.drop = nil
+        surface.view.apply(cleared, live: live)
     }
 
     private func reportSpeakerReviewVisibility(_ visible: Bool) {
@@ -313,64 +303,6 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         guard reportedCallPromptVisible != visible else { return }
         reportedCallPromptVisible = visible
         callVisibilityHandler?(visible)
-    }
-
-    /// The review's rows grew or shrank.
-    func speakerReviewLayoutChanged() {
-        guard isShown, speakerReview != nil else { return }
-        render()
-    }
-
-    /// A name box was clicked: take the keyboard, only while the review asks.
-    func makeKeyForTyping() {
-        guard let panel = speakerReviewHost?.panel, panel.acceptsKeyForTyping else { return }
-        if !panel.isKeyWindow {
-            // The panel is non-activating, so the app the person was in is
-            // still the frontmost app while they type a name here.
-            keyboardReturnApp = Self.frontmostOtherApp()
-        }
-        panel.makeKey()
-    }
-
-    /// Gives the keyboard back to the app the person was in, without hiding
-    /// the island and without activating Transcripted.
-    ///
-    /// The island is a non-activating panel: clicking a name box made it the
-    /// key window but left the other app active (its menu bar stays up). So
-    /// only key focus has to move back. AppKit has no public "stop being key"
-    /// for a window that stays on screen (`resignKey()` is documented as
-    /// never to be called directly and only updates AppKit's side), but
-    /// ordering a key non-activating panel out hands key focus back to the
-    /// active app, which is what `hide()` has always relied on. The panel can
-    /// no longer become key at this point, so ordering it straight back in,
-    /// in the same pass with its layers untouched, leaves the island where it
-    /// was. Re-activating the app that was frontmost then asks it to take its
-    /// key window back, in case the window server has not already; it never
-    /// activates Transcripted.
-    private func returnKeyboardIfHeld() {
-        guard let panel = surfaces.first(where: { $0.panel.isKeyWindow })?.panel else {
-            keyboardReturnApp = nil
-            return
-        }
-        let returnTo = keyboardReturnApp ?? Self.frontmostOtherApp()
-        keyboardReturnApp = nil
-        panel.makeFirstResponder(nil)
-        let couldTakeKey = panel.acceptsKeyForTyping
-        panel.acceptsKeyForTyping = false
-        if panel.isVisible {
-            panel.orderOut(nil)
-            panel.orderFrontRegardless()
-        }
-        panel.acceptsKeyForTyping = couldTakeKey
-        if let returnTo, !returnTo.isTerminated {
-            returnTo.activate(options: [])
-        }
-    }
-
-    private static func frontmostOtherApp() -> NSRunningApplication? {
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
-        return app
     }
 
     // MARK: - Rendering
@@ -410,17 +342,18 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
             hideGeneration += 1
         }
         var reshaped = false
-        let reviewHost = speakerReviewHost
-        for surface in ensureSurfaces() {
-            var surfaceLayout = layout
-            if layout.showsSpeakerReview, surface !== reviewHost {
-                // The review's one view is on another display; this one
-                // keeps the wings.
-                surfaceLayout.drop = nil
-                surfaceLayout.dropIsSticky = false
+        // The live review first: the other displays show a picture of it,
+        // taken once it is laid out.
+        let all = ensureSurfaces()
+        let reviewHost = layout.showsSpeakerReview ? speakerReviewHost : nil
+        let ordered = reviewHost.map { host in [host] + all.filter { $0 !== host } } ?? all
+        for surface in ordered {
+            if surface === ordered.dropFirst().first, reviewHost != nil {
+                refreshSpeakerReviewMirrors(rendersOnResize: false)
             }
-            reshaped = render(surface, surfaceLayout, edgeProgress: edgeProgress, animated: animated, appearing: appearing) || reshaped
+            reshaped = render(surface, layout, edgeProgress: edgeProgress, animated: animated, appearing: appearing) || reshaped
         }
+        updateSpeakerReviewMirrorClock()
         if let widths = surfaces.first?.view.wingContentWidths {
             lastWingWidths = widths
         }
@@ -527,17 +460,18 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     private func pointerMoved() {
         guard isShown else { return }
         let pointer = NSEvent.mouseLocation
-        var insideAny = false
+        var under: NotchIslandSurface?
         for surface in surfaces {
             guard let frame = surface.targetFrame else { continue }
             let inside = frame.contains(pointer)
             if surface.panel.ignoresMouseEvents == inside {
                 surface.panel.ignoresMouseEvents = !inside
             }
-            insideAny = insideAny || inside
+            if inside { under = surface }
         }
         guard surfaces.contains(where: { $0.targetFrame != nil }) else { return }
-        handleHover(insideAny)
+        if let under { moveSpeakerReview(to: under) }
+        handleHover(under != nil)
     }
 
     /// Timers and countdowns tick without rebuilding the island, unless a
@@ -558,6 +492,8 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         tickTask?.cancel()
         tickTask = nil
         dictationBarsClock.stop()
+        speakerReviewMirrorTask?.cancel()
+        speakerReviewMirrorTask = nil
         islandViews.forEach { $0.releaseKeptDictationDrop() }
         expanded = false
         isHovered = false
@@ -648,8 +584,6 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     /// back to the app in front and takes it again on the next click.
     private func rebuildSurfaces() {
         let wasShown = isShown
-        let reviewView = speakerReviewHost?.view.speakerReviewView
-        let reviewTakesKeyboard = speakerReviewHost?.panel.acceptsKeyForTyping ?? false
         stopPointerWatch()
         dictationBarsClock.stop()
         isShown = false
@@ -661,10 +595,10 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         }
         surfaces = []
         let rebuilt = ensureSurfaces()
-        if let reviewView, let host = surfaceUnderPointer() ?? rebuilt.first {
-            host.view.speakerReviewView = reviewView
-            host.panel.acceptsKeyForTyping = reviewTakesKeyboard
+        if speakerReviewView != nil, speakerReviewHost == nil {
+            speakerReviewHostID = (surfaceUnderPointer() ?? rebuilt.first)?.display.id
         }
+        placeSpeakerReview()
         if Self.showsLiveTranscript(meeting) { ensureLiveTranscriptViews() }
         if dictation?.showsLivePreview == true { ensureDictationPreviewViews() }
         if wasShown {

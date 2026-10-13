@@ -17,6 +17,10 @@ final class NotchIslandSurface {
 
     var screen: NotchIslandScreenInfo { display.screen }
 
+    /// A picture of "Who was on this call?" while its live view is on
+    /// another display (NotchIslandController+SpeakerReview.swift).
+    let speakerReviewMirror = NotchIslandSpeakerReviewMirror()
+
     init(display: NotchIslandDisplay) {
         self.display = display
         let initial = NSRect(x: 0, y: 0, width: NotchIslandGeometry.minimumTabWidth, height: NotchIslandGeometry.tabRowHeight)
@@ -77,4 +81,21 @@ final class NotchIslandSurface {
             completion?()
         }
     }
+}
+
+/// The picture of "Who was on this call?" shown where its live view is not.
+/// Clicks fall through to the drop-down (a click between the review's rows
+/// does nothing); the pointer arriving brings the live view here first.
+final class NotchIslandSpeakerReviewMirror: NSImageView {
+    init() {
+        super.init(frame: .zero)
+        imageScaling = .scaleNone
+        imageFrameStyle = .none
+        setAccessibilityElement(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
