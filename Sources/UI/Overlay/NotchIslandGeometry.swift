@@ -143,44 +143,49 @@ enum NotchIslandGeometry {
     }
 }
 
-// MARK: - Which display
+// MARK: - Which displays
 
-/// Picks the display the island opens on. A dictation opens on the display
-/// with the focused text field, so the island (and the "Not pasted" Paste
-/// and Copy buttons) sit where the words go; otherwise the display under the
-/// pointer, then the main display. The island keeps it while shown.
-enum NotchIslandScreenChoice {
-    /// Reading the focused field costs an Accessibility round trip to the
-    /// target app, so only a dictation opening the island asks, and only
-    /// when there is more than one display to choose between.
-    static func looksUpFocusedField(dictationOpensIsland: Bool, screenCount: Int) -> Bool {
-        dictationOpensIsland && screenCount > 1
+/// A display the island draws on.
+struct NotchIslandDisplay: Equatable {
+    /// The `CGDirectDisplayID`; 0 for the stand-in used with no display.
+    var id: UInt32
+    var screen: NotchIslandScreenInfo
+}
+
+/// The island draws on every display. Its windows are made for the displays
+/// as they were, so any change (one plugged in or out, moved, resized, the
+/// notch coming or going with the lid) builds them all again. Fresh windows
+/// also join every desktop, which a window that lived through a replug may
+/// not (NotchIslandPanel.rejoinAllSpacesIfLeftBehind()).
+enum NotchIslandDisplays {
+    /// Keeps the island's state drawable in the moment macOS reports no
+    /// display at all (between unplugging the last one and the next).
+    static let standIn = NotchIslandDisplay(
+        id: 0,
+        screen: NotchIslandScreenInfo(
+            frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+            notchWidth: nil,
+            rowHeight: NotchIslandGeometry.tabRowHeight
+        )
+    )
+
+    /// Every reported display, or the stand-in when there are none.
+    static func drawnOn(_ reported: [NotchIslandDisplay]) -> [NotchIslandDisplay] {
+        reported.isEmpty ? [standIn] : reported
     }
 
-    /// `focusedFieldRect` is in global Cocoa coordinates. Returns one of
-    /// `screenFrames`, or `mainScreenFrame`, or nil with no displays at all.
-    static func screenFrame(
-        focusedFieldRect: CGRect?,
-        mouseLocation: CGPoint,
-        screenFrames: [CGRect],
-        mainScreenFrame: CGRect?
-    ) -> CGRect? {
-        if let field = focusedFieldRect, field.width > 0, field.height > 0 {
-            let center = CGPoint(x: field.midX, y: field.midY)
-            if let screen = screenFrames.first(where: { $0.contains(center) }) {
-                return screen
-            }
-        }
-        if let screen = screenFrames.first(where: { pointer(mouseLocation, isIn: $0) }) {
-            return screen
-        }
-        return mainScreenFrame ?? screenFrames.first
+    static func rebuildsWindows(drawnOn current: [NotchIslandDisplay], reported: [NotchIslandDisplay]) -> Bool {
+        current != drawnOn(reported)
     }
 
-    /// `NSMouseInRect` for unflipped screen coordinates: the pointer pinned
-    /// to a display's top edge reports y == maxY and still counts as on it.
-    private static func pointer(_ point: CGPoint, isIn rect: CGRect) -> Bool {
-        point.x >= rect.minX && point.x < rect.maxX && point.y > rect.minY && point.y <= rect.maxY
+    /// The display under the pointer, by index. The pointer pinned to a
+    /// display's top edge reports y == maxY and still counts as on it
+    /// (`NSMouseInRect` for unflipped screen coordinates).
+    static func index(under pointer: CGPoint, in displays: [NotchIslandDisplay]) -> Int? {
+        displays.firstIndex { display in
+            let rect = display.screen.frame
+            return pointer.x >= rect.minX && pointer.x < rect.maxX && pointer.y > rect.minY && pointer.y <= rect.maxY
+        }
     }
 }
 

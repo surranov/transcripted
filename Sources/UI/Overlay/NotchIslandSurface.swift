@@ -1,22 +1,24 @@
 // NotchIslandSurface.swift
-// One copy of the notch island on screen: its panel, its view, the display it
-// sits on and where the shape rests. NotchIslandController keeps the island's
-// state once and draws it into each surface; how a surface's shape springs
-// lives here.
+// One display's copy of the notch island: its panel, its view, the display
+// and where the shape rests. NotchIslandController keeps the island's state
+// once and draws it into the surface on every display; how a surface's shape
+// springs lives here.
 
 import AppKit
 
 @MainActor
 final class NotchIslandSurface {
+    let display: NotchIslandDisplay
     let panel: NotchIslandPanel
     let view: NotchIslandView
-    /// The display it is on, kept while the island is up so it never jumps.
-    var screen: NotchIslandScreenInfo?
     /// Where the finished island sits on screen (the panel can be larger
     /// while the shape springs).
     var targetFrame: NSRect?
 
-    init() {
+    var screen: NotchIslandScreenInfo { display.screen }
+
+    init(display: NotchIslandDisplay) {
+        self.display = display
         let initial = NSRect(x: 0, y: 0, width: NotchIslandGeometry.minimumTabWidth, height: NotchIslandGeometry.tabRowHeight)
         panel = NotchIslandPanel(contentRect: initial, styleMask: [], backing: .buffered, defer: true)
         view = NotchIslandView(frame: initial)
@@ -36,7 +38,6 @@ final class NotchIslandSurface {
     /// overshoot); only Core Animation moves the shape, so the window can
     /// never resize out of step with it.
     func springShape(
-        on screen: NotchIslandScreenInfo,
         from start: NSRect,
         fromRadius: CGFloat,
         to end: NSRect,

@@ -5,7 +5,7 @@
 ## What it does
 
 - `AccessibilityBridge` is `@MainActor`. `focusedTextElement(for:)` returns the focused element only if AX is trusted and the role passes `AccessibilityFocusedTextPolicy`. `focusedTextFieldRect(for:)` returns its screen rect. `textValue(of:)` reads `kAXValueAttribute`.
-- One caller: `focusedFieldRect()` in `Sources/UI/Overlay/NotchIslandController.swift`. On a dictation opening with multiple displays, `NotchIslandScreenChoice.screenFrame` uses the field's center to choose its display, then the mouse display, then the main or first display. The island anchors on the chosen display; it does not position itself beside the field.
+- `focusedTextFieldRect(for:)` has no caller in the fork: the island draws on every display, so it no longer reads the focused field to pick one.
 - Other AX code does its own queries and doesn't go through this file: `Sources/Support/FocusedTextPasteConfirmation.swift` (did the paste land), `Sources/Meeting/BrowserWindowTitleReader.swift`, and the Writing Screen Memory readers in `Sources/TranscriptedWriting/Runtime/ScreenMemory/`.
 
 ## Anchored paste (fork)
