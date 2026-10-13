@@ -8,6 +8,11 @@
 import AppKit
 
 final class NotchIslandPanel: NSPanel {
+    /// On every desktop, over full-screen apps too, never in window cycling.
+    static let allSpacesBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+
+    private var isRejoiningSpaces = false
+
     override init(
         contentRect: NSRect,
         styleMask style: NSWindow.StyleMask,
@@ -33,7 +38,7 @@ final class NotchIslandPanel: NSPanel {
         self.titlebarAppearsTransparent = true
         self.titleVisibility = .hidden
         self.isMovableByWindowBackground = false
-        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        self.collectionBehavior = Self.allSpacesBehavior
         self.acceptsMouseMovedEvents = true
         self.animationBehavior = .none
         // Exclude the island from screen capture / screen sharing, like the
@@ -57,6 +62,29 @@ final class NotchIslandPanel: NSPanel {
         // Called on every render; skip the window-server round trip when
         // nothing changed.
         if sharingType != wanted { sharingType = wanted }
+    }
+
+    /// macOS can leave this panel on one desktop with `canJoinAllSpaces`
+    /// still set: after a display was plugged back in while the island was
+    /// hidden, it stayed on that display's first desktop and never showed on
+    /// the others. Ordering it out and in again keeps it there; clearing the
+    /// behavior and setting it back on the next main-queue turn puts it on
+    /// every desktop again, hidden or shown (a same-turn clear and set
+    /// reaches the window server as no change). Returns whether it had to.
+    @discardableResult
+    func rejoinAllSpacesIfLeftBehind() -> Bool {
+        // A deferred panel that was never shown has no window yet.
+        guard windowNumber > 0, !isOnActiveSpace, !isRejoiningSpaces else { return false }
+        isRejoiningSpaces = true
+        collectionBehavior = []
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.collectionBehavior = Self.allSpacesBehavior
+                self.isRejoiningSpaces = false
+            }
+        }
+        return true
     }
 
     /// AppKit keeps windows out of the menu bar; the island belongs there.

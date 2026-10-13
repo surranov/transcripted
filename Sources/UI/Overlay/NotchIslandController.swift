@@ -64,7 +64,7 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     private var lastWingWidths: (left: CGFloat, right: CGFloat) = (0, 0)
     private var lastMeterPush: CFTimeInterval = 0
 
-    private var panel: NotchIslandPanel?
+    private(set) var panel: NotchIslandPanel?
     private(set) var islandView: NotchIslandView?
     /// The screen the island is on, kept while it is up so it never jumps.
     private var screen: NotchIslandScreenInfo?
@@ -82,6 +82,8 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     private var recentInsertTask: Task<Void, Never>?
     private var tickTask: Task<Void, Never>?
     private var screenObserver: NSObjectProtocol?
+    /// Watches desktop switches (NotchIslandController+Spaces.swift).
+    var spaceObserver: NSObjectProtocol?
     /// Mouse monitors while the island is up: the window lets clicks through
     /// everywhere except over the island itself, and hover is judged from
     /// the pointer instead of tracking areas on a window that may ignore it.
@@ -102,13 +104,18 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
                 self.screen = nil
                 self.targetFrame = nil
                 if self.isShown { self.render(animated: false) }
+                self.rejoinAllSpacesIfLeftBehind("display_change")
             }
         }
+        watchSpaces()
     }
 
     deinit {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
+        }
+        if let spaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver)
         }
         hoverTask?.cancel()
         recentInsertTask?.cancel()
@@ -414,6 +421,7 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
             targetFrame = frame
             islandView.setContentVisible(false, animated: false)
             springShape(panel, islandView, from: start, fromRadius: startRadius, to: frame, radius: radius, spring: animated ? growSpring(screen) : nil)
+            rejoinAllSpacesIfLeftBehind("show")
             panel.orderFrontRegardless()
             startPointerWatch()
             islandView.setContentVisible(true, animated: animated)
