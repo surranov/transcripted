@@ -209,4 +209,30 @@ func testNotchIslandGeometry() {
         assertEqual(NotchIslandDisplays.index(under: CGPoint(x: 1500, y: 0), in: both), 1, "the line between them belongs to the lower one's top")
         assertNil(NotchIslandDisplays.index(under: CGPoint(x: 9000, y: 9000), in: both), "off every display")
     }
+
+    runSuite("The review's live view stays on its display, else opens under the pointer") {
+        let both = [monitor, builtIn]
+        let onMonitor = CGPoint(x: 2000, y: 800)
+        assertEqual(
+            NotchIslandDisplays.reviewHost(keeping: builtIn.id, pointer: onMonitor, in: both),
+            builtIn.id,
+            "it stays where it is while that display is there"
+        )
+        assertEqual(
+            NotchIslandDisplays.reviewHost(keeping: nil, pointer: onMonitor, in: both),
+            monitor.id,
+            "a new review opens under the pointer"
+        )
+        assertEqual(
+            NotchIslandDisplays.reviewHost(keeping: 99, pointer: CGPoint(x: 1500, y: -400), in: both),
+            builtIn.id,
+            "its display was unplugged: under the pointer"
+        )
+        assertEqual(
+            NotchIslandDisplays.reviewHost(keeping: nil, pointer: CGPoint(x: 9000, y: 9000), in: both),
+            monitor.id,
+            "the pointer on no display: the first one"
+        )
+        assertNil(NotchIslandDisplays.reviewHost(keeping: nil, pointer: .zero, in: []), "no display at all")
+    }
 }

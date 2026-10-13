@@ -68,6 +68,9 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     /// state lives here once and every surface draws it.
     private(set) var surfaces: [NotchIslandSurface] = []
     var islandViews: [NotchIslandView] { surfaces.map(\.view) }
+    /// The views someone can see now (`NotchIslandSurface.isCovered`): the
+    /// only ones live levels and bars are drawn into.
+    var seenIslandViews: [NotchIslandView] { surfaces.filter { !$0.isCovered }.map(\.view) }
     /// The presenter's one live "Who was on this call?" view, the display it
     /// sits on, and the clock repainting its picture on the other displays.
     var speakerReviewView: NSView?
@@ -249,7 +252,7 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         let now = CACurrentMediaTime()
         guard now - lastMeterPush >= Self.meterInterval else { return }
         lastMeterPush = now
-        islandViews.forEach { $0.pushMeetingLevels(mic: mic, system: system) }
+        seenIslandViews.forEach { $0.pushMeetingLevels(mic: mic, system: system) }
     }
 
     // MARK: - Call prompt
@@ -508,6 +511,8 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
             guard let self, self.hideGeneration == generation, !self.isShown else { return }
             for surface in only.map({ [$0] }) ?? self.surfaces {
                 surface.panel.orderOut(nil)
+                // Kept through the shrink; the next review paints its own.
+                if self.speakerReviewView == nil { surface.speakerReviewMirror.image = nil }
             }
             self.keyboardReturnApp = nil
         }
@@ -576,14 +581,20 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
             return
         }
         rebuildSurfaces()
+        // Fresh windows join every desktop, unless the window server was
+        // still settling the displays' desktops when they were made.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            self?.rejoinAllSpacesIfLeftBehind("after_display_change")
+        }
     }
 
     /// Drops every window and draws the island again, without the grow, on
     /// fresh ones for the displays there are now. The review, live transcript
-    /// and live words carry over; a name box that had the keyboard gives it
-    /// back to the app in front and takes it again on the next click.
+    /// and live words carry over, and a name being typed keeps the keyboard.
     private func rebuildSurfaces() {
         let wasShown = isShown
+        let typingField = surfaces.lazy.compactMap(\.panel.typingField).first
         stopPointerWatch()
         dictationBarsClock.stop()
         isShown = false
@@ -594,10 +605,8 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
             surface.panel.orderOut(nil)
         }
         surfaces = []
-        let rebuilt = ensureSurfaces()
-        if speakerReviewView != nil, speakerReviewHost == nil {
-            speakerReviewHostID = (surfaceUnderPointer() ?? rebuilt.first)?.display.id
-        }
+        ensureSurfaces()
+        chooseSpeakerReviewHost()
         placeSpeakerReview()
         if Self.showsLiveTranscript(meeting) { ensureLiveTranscriptViews() }
         if dictation?.showsLivePreview == true { ensureDictationPreviewViews() }
@@ -606,6 +615,9 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         } else {
             prewarm()
         }
+        // The old window gave the keyboard back to the app in front when it
+        // went; without this the next keys would land in that app.
+        if let typingField { keepTyping(in: typingField) }
     }
 
     private func updateTicker() {

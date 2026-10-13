@@ -21,6 +21,13 @@ final class NotchIslandSurface {
     /// another display (NotchIslandController+SpeakerReview.swift).
     let speakerReviewMirror = NotchIslandSpeakerReviewMirror()
 
+    /// Up but seen by no one: its display asleep or locked, or the window
+    /// covered. Its level bars and the review's picture wait then. Only the
+    /// window server's word sets it, so a surface just shown (before that
+    /// word arrives, about 50 ms later) still animates from the first frame.
+    private(set) var isCovered = false
+    private var occlusionObserver: NSObjectProtocol?
+
     init(display: NotchIslandDisplay) {
         self.display = display
         let initial = NSRect(x: 0, y: 0, width: NotchIslandGeometry.minimumTabWidth, height: NotchIslandGeometry.tabRowHeight)
@@ -28,6 +35,22 @@ final class NotchIslandSurface {
         view = NotchIslandView(frame: initial)
         view.autoresizingMask = [.width, .height]
         panel.contentView = view
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isCovered = self.panel.isVisible && !self.panel.occlusionState.contains(.visible)
+            }
+        }
+    }
+
+    deinit {
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+        }
     }
 
     /// The shape's current on-screen rect, mid-spring included.
@@ -98,4 +121,12 @@ final class NotchIslandSpeakerReviewMirror: NSImageView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+extension NotchIslandPanel {
+    /// The name box being typed into, while this panel has the keyboard.
+    var typingField: NSView? {
+        guard isKeyWindow, let editor = firstResponder as? NSTextView, editor.isFieldEditor else { return nil }
+        return editor.delegate as? NSView
+    }
 }

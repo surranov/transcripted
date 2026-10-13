@@ -1,7 +1,7 @@
-// The island panel shows on every desktop and over full-screen apps, and
-// putting it back on every desktop never touches a panel that was never shown.
-// Whether macOS really moves a left-behind panel back is checked live: it needs
-// a window server with several desktops (see NotchIslandPanel).
+// The island panel shows on every desktop and over full-screen apps, and a
+// panel macOS left on one desktop is put back in two turns. Whether the window
+// server really moves it back is checked live: that needs several desktops
+// (see NotchIslandPanel.rejoinAllSpacesIfLeftBehind()).
 
 import AppKit
 import Foundation
@@ -36,13 +36,45 @@ func testNotchIslandPanel() async {
         )
     }
 
-    runSuite("Putting the island back on every desktop leaves a panel that was never shown alone") {
-        let panel = makePanel()
-        assertFalse(panel.rejoinAllSpacesIfLeftBehind(), "a panel with no window yet is on no desktop to leave")
-        assertEqual(
-            panel.collectionBehavior,
-            NotchIslandPanel.allSpacesBehavior,
-            "the panel keeps joining every desktop"
+    runSuite("Only a panel off the desktop in front is put back on every desktop") {
+        assertTrue(
+            NotchIslandPanel.isLeftBehind(hasWindow: true, isOnActiveSpace: false, isRejoining: false),
+            "a window the desktop in front doesn't have was left behind"
         )
+        assertFalse(
+            NotchIslandPanel.isLeftBehind(hasWindow: true, isOnActiveSpace: true, isRejoining: false),
+            "a panel on the desktop in front, hidden or shown, is left alone"
+        )
+        assertFalse(
+            NotchIslandPanel.isLeftBehind(hasWindow: false, isOnActiveSpace: false, isRejoining: false),
+            "a panel that was never shown has no window to move"
+        )
+        assertFalse(
+            NotchIslandPanel.isLeftBehind(hasWindow: true, isOnActiveSpace: false, isRejoining: true),
+            "a rejoin already halfway waits for its second turn"
+        )
+
+        let neverShown = makePanel()
+        assertFalse(neverShown.rejoinAllSpacesIfLeftBehind(), "a panel with no window yet is on no desktop to leave")
+        assertEqual(neverShown.collectionBehavior, NotchIslandPanel.allSpacesBehavior, "and keeps joining every desktop")
+    }
+
+    runSuite("Rejoining drops every-desktop for one turn, stays over full-screen apps, then sets it back") {
+        let panel = makePanel()
+        var heldTurns: [@MainActor () -> Void] = []
+        panel.onNextTurn = { heldTurns.append($0) }
+
+        panel.rejoinAllSpaces()
+        assertFalse(
+            panel.collectionBehavior.contains(.canJoinAllSpaces),
+            "dropped first: setting it back in the same turn reaches the window server as no change"
+        )
+        assertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary), "still over a full-screen app in between")
+        assertTrue(panel.isRejoiningSpaces, "halfway")
+        assertEqual(heldTurns.count, 1, "the second half waits for the next turn")
+
+        heldTurns.forEach { $0() }
+        assertEqual(panel.collectionBehavior, NotchIslandPanel.allSpacesBehavior, "every desktop again on the next turn")
+        assertFalse(panel.isRejoiningSpaces, "done")
     }
 }

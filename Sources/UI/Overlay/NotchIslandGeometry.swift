@@ -178,6 +178,14 @@ enum NotchIslandDisplays {
         current != drawnOn(reported)
     }
 
+    /// The display "Who was on this call?" keeps its one live view on: the
+    /// one it is on while that display is still there, else the one under
+    /// the pointer, else the first.
+    static func reviewHost(keeping current: UInt32?, pointer: CGPoint, in displays: [NotchIslandDisplay]) -> UInt32? {
+        if let current, displays.contains(where: { $0.id == current }) { return current }
+        return index(under: pointer, in: displays).map { displays[$0].id } ?? displays.first?.id
+    }
+
     /// The display under the pointer, by index. The pointer pinned to a
     /// display's top edge reports y == maxY and still counts as on it
     /// (`NSMouseInRect` for unflipped screen coordinates).

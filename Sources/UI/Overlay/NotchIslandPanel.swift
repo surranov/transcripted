@@ -10,8 +10,15 @@ import AppKit
 final class NotchIslandPanel: NSPanel {
     /// On every desktop, over full-screen apps too, never in window cycling.
     static let allSpacesBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+    /// The one turn in between while rejoining: still over full-screen apps.
+    static let rejoiningBehavior = allSpacesBehavior.subtracting(.canJoinAllSpaces)
 
-    private var isRejoiningSpaces = false
+    private(set) var isRejoiningSpaces = false
+    /// Runs the second half of a rejoin on the next main-queue turn. Tests
+    /// hold the turn back to see both halves.
+    var onNextTurn: (@escaping @MainActor () -> Void) -> Void = { step in
+        DispatchQueue.main.async { MainActor.assumeIsolated(step) }
+    }
 
     override init(
         contentRect: NSRect,
@@ -67,24 +74,34 @@ final class NotchIslandPanel: NSPanel {
     /// macOS can leave this panel on one desktop with `canJoinAllSpaces`
     /// still set: after a display was plugged back in while the island was
     /// hidden, it stayed on that display's first desktop and never showed on
-    /// the others. Ordering it out and in again keeps it there; clearing the
-    /// behavior and setting it back on the next main-queue turn puts it on
-    /// every desktop again, hidden or shown (a same-turn clear and set
-    /// reaches the window server as no change). Returns whether it had to.
+    /// the others. Ordering it out and in again keeps it there; dropping
+    /// `canJoinAllSpaces` and setting it back on the next main-queue turn
+    /// puts it on every desktop again, hidden or shown (a same-turn drop and
+    /// set reaches the window server as no change). Returns whether it had to.
     @discardableResult
     func rejoinAllSpacesIfLeftBehind() -> Bool {
-        // A deferred panel that was never shown has no window yet.
-        guard windowNumber > 0, !isOnActiveSpace, !isRejoiningSpaces else { return false }
-        isRejoiningSpaces = true
-        collectionBehavior = []
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.collectionBehavior = Self.allSpacesBehavior
-                self.isRejoiningSpaces = false
-            }
+        guard Self.isLeftBehind(hasWindow: windowNumber > 0, isOnActiveSpace: isOnActiveSpace, isRejoining: isRejoiningSpaces) else {
+            return false
         }
+        rejoinAllSpaces()
         return true
+    }
+
+    /// Off the desktop in front, with a window to move: a deferred panel that
+    /// was never shown has none. A healthy panel, hidden or shown, reports
+    /// itself on the desktop in front.
+    static func isLeftBehind(hasWindow: Bool, isOnActiveSpace: Bool, isRejoining: Bool) -> Bool {
+        hasWindow && !isOnActiveSpace && !isRejoining
+    }
+
+    func rejoinAllSpaces() {
+        isRejoiningSpaces = true
+        collectionBehavior = Self.rejoiningBehavior
+        onNextTurn { [weak self] in
+            guard let self else { return }
+            self.collectionBehavior = Self.allSpacesBehavior
+            self.isRejoiningSpaces = false
+        }
     }
 
     /// AppKit keeps windows out of the menu bar; the island belongs there.
