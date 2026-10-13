@@ -17,6 +17,7 @@ The words go to the field focused when the take started, even after the user mov
 - **A write into a window on another desktop can't be trusted to read back.** T3 Code takes it but reports the old value until its window is shown again. Such a write is `AnchoredInsertion.unconfirmed`: the paste is deferred with the field's value from before, and on return the session polls up to `unconfirmedWriteSettleTime` (1.5 s) before pasting, so the words never arrive twice. A window on screen that doesn't show the words ignored the write (`notTaken`) and is pasted on return without waiting.
 - Background send (`AnchoredPastePolicy.sendMethod`): a terminal gets Return as a keystroke; a web field gets AXPress on a nearby button labelled Send / Submit message / Отправить (`isSubmitButtonLabel`); without one, a Chrome window on screen whose focus is still the field gets Return as a keystroke (a Google search). Anything else reports `backgroundSendUnavailable` instead of guessing.
 - `windowState` (`kCGWindowIsOnscreen`) drives the marker: off screen means another desktop, minimized or closed.
+- `fieldBox` finds the field's box for the marker: the field's nearest parents that only pad it (at most 32 pt past it on the left, top and right, the window excluded), or the scroll view clipping it (`AnchoredPastePolicy.fieldBoxDepth`). It and `frame(of:)` are nonisolated: the marker calls them off the main thread, and they set timeouts only on parents they fetch, never on the anchor's shared field.
 
 ## Rules
 

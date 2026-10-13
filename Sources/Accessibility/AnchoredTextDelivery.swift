@@ -28,7 +28,7 @@ struct DictationPasteAnchor {
 /// fraction of a second and then falls back.
 @MainActor
 enum AnchoredTextDelivery {
-    private static let messagingTimeout: Float = 0.5
+    nonisolated private static let messagingTimeout: Float = 0.5
 
     // MARK: - Capture
 
@@ -253,12 +253,46 @@ enum AnchoredTextDelivery {
 
     /// The window's frame (Accessibility coordinates) and whether it is on
     /// screen now: not minimized, not hidden, on the current desktop.
-    static func windowState(_ windowID: CGWindowID) -> (frame: CGRect, isOnScreen: Bool)? {
+    nonisolated static func windowState(_ windowID: CGWindowID) -> (frame: CGRect, isOnScreen: Bool)? {
         guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
               let info = list.first,
               let boundsDictionary = info[kCGWindowBounds as String] as? NSDictionary,
               let frame = CGRect(dictionaryRepresentation: boundsDictionary) else { return nil }
         return (frame, (info[kCGWindowIsOnscreen as String] as? Bool) ?? false)
+    }
+
+    // MARK: - Field box
+
+    /// The field's box (`AnchoredPastePolicy.fieldBoxDepth`) and its frame,
+    /// in Accessibility coordinates. Nonisolated: the marker reads it off the
+    /// main thread, so a slow app delays the marker but never a frame. Sets
+    /// a timeout only on the parents it reads; the field's was set at capture.
+    nonisolated static func fieldBox(of field: AXUIElement) -> (element: AXUIElement, frame: CGRect)? {
+        guard let fieldFrame = frame(of: field) else { return nil }
+        var chain = [(element: field, frame: fieldFrame)]
+        let depth = AnchoredPastePolicy.fieldBoxDepth(field: fieldFrame) {
+            guard let parent = element(of: chain[chain.count - 1].element, kAXParentAttribute) else { return nil }
+            AXUIElementSetMessagingTimeout(parent, messagingTimeout)
+            guard string(of: parent, kAXRoleAttribute) != kAXWindowRole, let parentFrame = frame(of: parent) else { return nil }
+            chain.append((parent, parentFrame))
+            return parentFrame
+        }
+        return chain[depth]
+    }
+
+    /// An element's frame, in Accessibility coordinates; nil once it is gone.
+    nonisolated static func frame(of element: AXUIElement) -> CGRect? {
+        var position: AnyObject?
+        var size: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size) == .success,
+              let position, let size,
+              CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero
+        var extent = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(size as! AXValue, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
     }
 
     // MARK: - AX helpers
@@ -368,17 +402,9 @@ enum AnchoredTextDelivery {
                 if let previous { return CGRect(x: previous.maxX, y: previous.minY, width: 1, height: previous.height) }
             }
         }
-        var position: AnyObject?
-        var size: AnyObject?
-        guard AXUIElementCopyAttributeValue(field, kAXPositionAttribute as CFString, &position) == .success,
-              AXUIElementCopyAttributeValue(field, kAXSizeAttribute as CFString, &size) == .success,
-              let position, let size else { return nil }
-        var origin = CGPoint.zero
-        var extent = CGSize.zero
-        AXValueGetValue(position as! AXValue, .cgPoint, &origin)
-        AXValueGetValue(size as! AXValue, .cgSize, &extent)
+        guard let frame = frame(of: field) else { return nil }
         // A tall editor without caret bounds: mark its first line.
-        return CGRect(x: origin.x + 8, y: origin.y + 6, width: 1, height: min(extent.height, 22))
+        return CGRect(x: frame.minX + 8, y: frame.minY + 6, width: 1, height: min(frame.height, 22))
     }
 
     /// A range's bounds; nil when the field has none for it (an error, or the
@@ -421,14 +447,14 @@ enum AnchoredTextDelivery {
         AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value)
     }
 
-    private static func element(of element: AXUIElement, _ attribute: String) -> AXUIElement? {
+    nonisolated private static func element(of element: AXUIElement, _ attribute: String) -> AXUIElement? {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return (value as! AXUIElement)
     }
 
-    private static func string(of element: AXUIElement, _ attribute: String) -> String? {
+    nonisolated private static func string(of element: AXUIElement, _ attribute: String) -> String? {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as? String

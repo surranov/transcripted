@@ -134,6 +134,48 @@ func testAnchoredPastePolicy() {
         assertEqual(emojiChunks.map { if case .text(let t) = $0 { return t } else { return "" } }.joined(), emoji, "nothing lost")
     }
 
+    runSuite("AnchoredPastePolicy takes the text box the user sees, not just the text inside it") {
+        // T3 Code's composer, measured: the text area, then its parents up to
+        // the card (5 up) and the column holding the strip above the composer.
+        let t3Field = CGRect(x: 1587, y: 2245, width: 1024, height: 250)
+        let t3Parents: [CGRect] = [
+            CGRect(x: 1592, y: 2250, width: 1015, height: 240),
+            CGRect(x: 1592, y: 2250, width: 1015, height: 240),
+            CGRect(x: 1573, y: 2230, width: 1053, height: 270),
+            CGRect(x: 1571, y: 2229, width: 1056, height: 329),
+            CGRect(x: 1571, y: 2229, width: 1056, height: 329),
+            CGRect(x: 1571, y: 2188, width: 1056, height: 370),
+            CGRect(x: 1514, y: 1695, width: 1170, height: 887),
+        ]
+        var asked = 0
+        let t3Depth = AnchoredPastePolicy.fieldBoxDepth(field: t3Field) {
+            defer { asked += 1 }
+            return asked < t3Parents.count ? t3Parents[asked] : nil
+        }
+        assertEqual(t3Depth, 5, "T3 Code: the composer card, not the strip above it")
+        assertEqual(asked, 6, "stops at the first parent that isn't the box")
+
+        func depth(_ field: CGRect, _ parents: [CGRect?]) -> Int {
+            var queue = parents[...]
+            return AnchoredPastePolicy.fieldBoxDepth(field: field) { queue.popFirst() ?? nil }
+        }
+        let input = CGRect(x: 100, y: 300, width: 200, height: 24)
+        assertEqual(depth(input, [CGRect(x: 100, y: 256, width: 200, height: 68)]), 0, "a label above the input is not part of its box")
+        assertEqual(depth(input, [CGRect(x: 0, y: 296, width: 300, height: 32)]), 0, "a row reaching far left is not its box")
+        assertEqual(depth(input, [nil, CGRect(x: 96, y: 296, width: 208, height: 32)]), 0, "a parent without a frame ends the climb")
+        assertEqual(depth(input, [CGRect(x: 0, y: 0, width: 0, height: 0)]), 0, "an empty parent is not a box")
+        assertEqual(depth(input, [CGRect(x: 96, y: 296, width: 208, height: 32)]), 1, "a padded wrapper is the box")
+
+        // A long document scrolled down: the text view starts far above its
+        // scroll view, which clips it; the split view beside it is no box.
+        let document = CGRect(x: 0, y: -2000, width: 600, height: 5000)
+        let scroll = CGRect(x: 0, y: 80, width: 600, height: 500)
+        let split = CGRect(x: 0, y: 52, width: 900, height: 548)
+        assertEqual(depth(document, [scroll, split]), 1, "the scroll view showing the document")
+
+        assertEqual(depth(input, Array(repeating: input, count: 40)), AnchoredPastePolicy.maxFieldBoxDepth, "the climb is bounded")
+    }
+
     runSuite("AnchoredPasteContext holds while the document is the same") {
         let captured = AnchoredPasteContext(windowTitle: "Note - Obsidian", documentURL: "t3code://app/#/a/thread-1")
         assertTrue(captured.stillMatches(AnchoredPasteContext(windowTitle: "Note - Obsidian", documentURL: "t3code://app/#/a/thread-1")), "same")

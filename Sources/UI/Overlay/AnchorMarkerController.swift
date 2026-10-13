@@ -3,29 +3,29 @@ import Combine
 import SwiftUI
 
 /// Fork: the Anchored paste marker, drawn over the one window the dictation
-/// is anchored to. An accent "ghost caret" lies over the caret the words will
-/// land at, and a small black flag (the notch island's look: black, accent
-/// glyphs) hangs from its foot with the take's phase: while it listens, seven
-/// level dots that stretch with the voice, the take's time and a stop button;
-/// then the writing ripple, the come-back arrow or the check. The flag hangs
-/// below the caret line, where a composer or the end of the text leaves empty
-/// space, so it doesn't cover the text after the caret or the line above; at
-/// the window's bottom edge it sits beside the caret instead, and it flips
-/// above or to the left only in the window's corners
-/// (`AnchorMarkerLayout.flagSpot`).
+/// is anchored to: a small black flag (the notch island's look: black, accent
+/// glyphs) with the take's phase: while it listens, seven level dots that
+/// stretch with the voice, the take's time and a stop button; then the
+/// writing ripple, the come-back arrow or the check. It sits 3 pt above the
+/// field's box (what the user sees as the text box, not just the text inside
+/// it), so it covers none of the text; a box with no room above takes it
+/// below or inside its top-right corner (`AnchorMarkerPlacement`). It marks
+/// the field, not the caret: caret bounds are often wrong.
+///
+/// The box is read off the main thread about four times a second, and the
+/// flag flies to a new spot: a composer grows when it takes focus (T3 Code
+/// animates it) and as the text wraps. Between reads it follows its window.
 ///
 /// The stop button stops the take like the island's. The panel takes the
 /// mouse only while the pointer is over that button, so a click anywhere else
-/// (the caret under the ghost caret included) reaches the window; a
-/// non-activating panel that never becomes key, it leaves the anchored app
-/// focused.
+/// reaches the window; a non-activating panel that never becomes key, it
+/// leaves the anchored app focused.
 ///
 /// The panel sits one step above the window in the stacking order (re-pinned
 /// every tick, as cua-driver keeps its agent cursor on the window it drives),
 /// so a window in front covers it, and it hides while the window is off
-/// screen (another desktop, minimized, closed). It follows the window when it
-/// moves. The notch island keeps showing the dictation as before; this only
-/// says where the words will go.
+/// screen (another desktop, minimized, closed). The notch island keeps
+/// showing the dictation as before; this only says where the words will go.
 @MainActor
 final class AnchorMarkerController {
     enum Phase: Equatable {
@@ -43,10 +43,24 @@ final class AnchorMarkerController {
     private var panel: NSPanel?
     private var timer: Timer?
     private var windowID: CGWindowID?
-    /// The caret relative to its window's top-left corner, so the marker
-    /// follows the window.
-    private var caretOffset = CGPoint.zero
-    private var caretHeight: CGFloat = 18
+    /// The anchored field, whose box the marker sits above.
+    private var field: AXUIElement?
+    /// The box the last read found, read again directly while it answers.
+    private var boxElement: AXUIElement?
+    /// The box relative to its window's top-left corner, so the marker
+    /// follows the window between reads. Nil until the first read lands.
+    private var boxOffset: CGRect?
+    /// The caret at capture, same coordinates: the box when the field can't
+    /// be read.
+    private var caretOffset: CGRect?
+    private var boxReadInFlight = false
+    private var ticksUntilBoxRead = 0
+    /// Bumped on every show and hide, so a read from an earlier take is
+    /// dropped.
+    private var generation = 0
+    /// The panel frame last set, and the box it was set for.
+    private var placedFrame: NSRect?
+    private var placedBoxOffset: CGRect?
     private var hideTask: Task<Void, Never>?
     private var levelSubscription: AnyCancellable?
     /// The level the dots show, before rounding for the view.
@@ -58,6 +72,10 @@ final class AnchorMarkerController {
     private var frozenElapsed: TimeInterval?
 
     private static let tickInterval: TimeInterval = 1.0 / 15
+    /// About four box reads a second: two Accessibility calls each, off the
+    /// main thread.
+    private static let ticksPerBoxRead = 4
+    private static let flightDuration: TimeInterval = 0.25
 
     var isShowing: Bool { windowID != nil }
 
@@ -69,18 +87,22 @@ final class AnchorMarkerController {
 
     /// `levels`: the dictation meter, for the dots while the take listens.
     func show(for anchor: DictationPasteAnchor, phase: Phase, levels: AnyPublisher<DictationAudioLevel, Never>?) {
-        guard let windowID = anchor.windowID, let caret = anchor.caretRect,
+        guard let windowID = anchor.windowID, let field = anchor.field,
               let frame = anchor.windowFrame ?? AnchoredTextDelivery.windowState(windowID)?.frame else {
             hide()
             return
         }
         hideTask?.cancel()
+        generation += 1
         self.windowID = windowID
-        // The insertion point is the caret rect's leading edge (a zero-width
-        // rect, or the 1 pt rect built after the previous character).
-        caretOffset = CGPoint(x: caret.minX - frame.minX, y: caret.minY - frame.minY)
-        caretHeight = max(12, min(caret.height, 40))
-        model.barHeight = caretHeight + 2 * AnchorMarkerLayout.barOverhang
+        self.field = field
+        boxElement = nil
+        boxOffset = nil
+        boxReadInFlight = false
+        ticksUntilBoxRead = 0
+        placedFrame = nil
+        placedBoxOffset = nil
+        caretOffset = anchor.caretRect.map { $0.offsetBy(dx: -frame.minX, dy: -frame.minY) }
         listeningSince = Date()
         frozenElapsed = nil
         shownLevel = 0
@@ -93,6 +115,8 @@ final class AnchorMarkerController {
         let panel = self.panel ?? makePanel()
         self.panel = panel
         panel.sharingType = NotchIslandPreferences.visibleInScreenSharing() ? .readOnly : .none
+        // Shown once the first box read lands, not where the last take was.
+        panel.orderOut(nil)
         tick()
         timer?.invalidate()
         let timer = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
@@ -126,6 +150,13 @@ final class AnchorMarkerController {
         timer?.invalidate()
         timer = nil
         windowID = nil
+        generation += 1
+        field = nil
+        boxElement = nil
+        boxOffset = nil
+        boxReadInFlight = false
+        placedFrame = nil
+        placedBoxOffset = nil
         levelSubscription = nil
         setIfChanged(\.animates, false)
         setIfChanged(\.stopHovered, false)
@@ -152,38 +183,92 @@ final class AnchorMarkerController {
             if panel.isVisible { panel.orderOut(nil) }
             return
         }
+        // Window and box are in Accessibility coordinates (top-left origin
+        // on the primary display); AppKit's have a bottom-left one.
+        let window = state.frame
+        ticksUntilBoxRead -= 1
+        if ticksUntilBoxRead <= 0 {
+            ticksUntilBoxRead = Self.ticksPerBoxRead
+            readBox(windowID: windowID)
+        }
+        guard let boxOffset else { return }
+
         let elapsed = frozenElapsed ?? Date().timeIntervalSince(listeningSince)
         let timerText = NotchIslandPresentation.timerText(elapsed)
         if model.timerText != timerText {
             model.timerText = timerText
             setIfChanged(\.timerWidth, AnchorMarkerLayout.timerWidth(timerText))
         }
+        let animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        setIfChanged(\.animates, animates)
 
-        // Window and caret are in Accessibility coordinates (top-left origin
-        // on the primary display); AppKit's have a bottom-left one.
         let layout = AnchorMarkerLayout.self
-        let window = state.frame
-        let caretX = window.minX + caretOffset.x
-        let caretTop = window.minY + caretOffset.y
-        let spot = layout.flagSpot(caretX: caretX, caretTop: caretTop, caretHeight: caretHeight, window: window)
-        setIfChanged(\.flagPlacement, spot.placement)
-        setIfChanged(\.flagTrailing, spot.trailing)
-        setIfChanged(\.animates, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-
-        let size = layout.panelSize(barHeight: model.barHeight)
-        let origin = layout.panelOrigin(caretX: caretX, caretTop: caretTop, barHeight: model.barHeight, spot: spot)
-        let frame = NSRect(x: origin.x, y: primary.frame.maxY - origin.y - size.height, width: size.width, height: size.height)
-        if panel.frame != frame { panel.setFrame(frame, display: false) }
+        let spot = AnchorMarkerPlacement.spot(
+            box: boxOffset.offsetBy(dx: window.minX, dy: window.minY),
+            window: window,
+            flagSize: CGSize(width: layout.placedFlagWidth, height: layout.flagHeight)
+        )
+        setIfChanged(\.pinnedRight, spot.pinnedRight)
+        let size = layout.panelSize
+        let left = spot.pinnedRight ? spot.x + layout.inset - size.width : spot.x - layout.inset
+        let top = spot.top - layout.inset
+        let frame = NSRect(x: left, y: primary.frame.maxY - top - size.height, width: size.width, height: size.height)
+        if frame != placedFrame {
+            // A new box reading flies the flag over; a window being dragged
+            // takes it along at once.
+            let flies = animates && panel.isVisible && placedBoxOffset != nil && placedBoxOffset != boxOffset
+            NSAnimationContext.runAnimationGroup { context in
+                // Zero for a jump: unlike a plain setFrame, it also stops a
+                // flight under way.
+                context.duration = flies ? Self.flightDuration : 0
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(frame, display: false)
+            }
+            placedFrame = frame
+            placedBoxOffset = boxOffset
+        }
         panel.order(.above, relativeTo: Int(windowID))
-        updateStopHover(panelFrame: frame, spot: spot)
+        updateStopHover(panelFrame: panel.frame)
+    }
+
+    /// Reads the box off the main thread: the box found last time while it
+    /// answers, else the field's box found again (T3 Code rebuilds its
+    /// composer). One read at a time, so a slow app only delays the marker.
+    /// The window is read right after the box, so a window being dragged
+    /// doesn't skew the offset.
+    private func readBox(windowID: CGWindowID) {
+        guard !boxReadInFlight, let field else { return }
+        boxReadInFlight = true
+        let generation = generation
+        let known = boxElement
+        Task.detached(priority: .utility) { [weak self] in
+            let reading = known.flatMap { element in AnchoredTextDelivery.frame(of: element).map { (element: element, frame: $0) } }
+                ?? AnchoredTextDelivery.fieldBox(of: field)
+            let window = AnchoredTextDelivery.windowState(windowID)?.frame
+            await self?.receiveBox(reading, window: window, generation: generation)
+        }
+    }
+
+    private func receiveBox(_ reading: (element: AXUIElement, frame: CGRect)?, window: CGRect?, generation: Int) {
+        guard generation == self.generation else { return }
+        boxReadInFlight = false
+        guard let reading, reading.frame.height > 0, let window else {
+            boxElement = nil
+            // Nothing to read: the caret captured at the start stands in.
+            if boxOffset == nil { boxOffset = caretOffset }
+            return
+        }
+        boxElement = reading.element
+        boxOffset = reading.frame.offsetBy(dx: -window.minX, dy: -window.minY)
     }
 
     /// The panel takes the mouse only over the stop button. Checked each
     /// tick: with the mouse ignored, the panel gets no tracking events.
-    private func updateStopHover(panelFrame: NSRect, spot: (placement: AnchorFlagPlacement, trailing: Bool)) {
+    /// `panelFrame` is where the panel is now, mid-flight included.
+    private func updateStopHover(panelFrame: NSRect) {
         var hovered = false
         if model.phase == .listening {
-            let button = AnchorMarkerLayout.stopButtonRect(spot: spot, barHeight: model.barHeight, timerWidth: model.timerWidth)
+            let button = AnchorMarkerLayout.stopButtonRect(pinnedRight: model.pinnedRight, timerWidth: model.timerWidth)
             let onScreen = NSRect(x: panelFrame.minX + button.minX, y: panelFrame.maxY - button.maxY, width: button.width, height: button.height)
             hovered = onScreen.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
         }
@@ -198,9 +283,8 @@ final class AnchorMarkerController {
     }
 
     private func makePanel() -> NSPanel {
-        let size = AnchorMarkerLayout.panelSize(barHeight: model.barHeight)
         let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: size),
+            contentRect: NSRect(origin: .zero, size: AnchorMarkerLayout.panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -235,26 +319,10 @@ private final class AnchorMarkerHostingView: NSHostingView<AnchorMarkerView> {
 // from the types, stub `AnchorMarkerController.Phase`, and render
 // `AnchorMarkerView` with `ImageRenderer`.
 
-/// Where the flag hangs from the ghost caret.
-private enum AnchorFlagPlacement: Equatable {
-    /// Under the caret line, where a composer or the end of the text leaves
-    /// empty space.
-    case below
-    /// Right of the caret, on its line: the window's bottom edge leaves no
-    /// room below. A terminal's prompt sits on its last line with the output
-    /// right above, and nothing follows its caret.
-    case beside
-    /// Over the line above: only in the window's bottom-right corner.
-    case above
-}
-
-/// Marker geometry in points. The panel is fixed per show; the flag changes
-/// width inside it. Every part of the flag has a fixed width, so the
-/// controller knows where the stop button is without asking the view.
+/// Marker geometry in points. The panel is fixed; the flag changes width
+/// inside it, from its pinned end. Every part of the flag has a fixed width,
+/// so the controller knows where the stop button is without asking the view.
 private enum AnchorMarkerLayout {
-    static let barWidth: CGFloat = 2.5
-    /// The ghost caret reaches this far past the caret's top and bottom.
-    static let barOverhang: CGFloat = 1
     static let flagHeight: CGFloat = 22
     /// The island's level bars: 2.5 pt wide, a round dot at rest.
     static let dotCount = 7
@@ -269,12 +337,8 @@ private enum AnchorMarkerLayout {
     static let leadingPadding: CGFloat = 8
     /// The stop button sits this close to the flag's round end.
     static let stopTrailingPadding: CGFloat = 3
-    /// Room around the drawing for the bar's glow and the flag's shadow.
+    /// Room around the flag for its shadow.
     static let inset: CGFloat = 5
-    /// How close to the window edge the flag may come before it flips.
-    static let edgeMargin: CGFloat = 2
-    /// Between the ghost caret and a flag beside it.
-    static let besideGap: CGFloat = 2
 
     static var dotsWidth: CGFloat { CGFloat(dotCount) * dotSize + CGFloat(dotCount - 1) * dotGap }
 
@@ -290,9 +354,10 @@ private enum AnchorMarkerLayout {
     static let maxFlagWidth: CGFloat = flagWidth(.listening, timerWidth: timerWidth("0:00:00"))
     /// What the placement makes room for: a timer up to 59:59. Past an hour
     /// the flag grows by two characters and may reach past the window edge
-    /// rather than jump to another side mid-take; sized for hours from the
-    /// start, it would cover the line above more often.
+    /// rather than jump mid-take.
     static let placedFlagWidth: CGFloat = flagWidth(.listening, timerWidth: timerWidth("00:00"))
+
+    static let panelSize = CGSize(width: maxFlagWidth + 2 * inset, height: flagHeight + 2 * inset)
 
     static func flagWidth(_ phase: AnchorMarkerController.Phase, timerWidth: CGFloat) -> CGFloat {
         switch phase {
@@ -304,64 +369,20 @@ private enum AnchorMarkerLayout {
         }
     }
 
-    /// Fits every placement: the flag under or over the bar, or beside it.
-    static func panelSize(barHeight: CGFloat) -> CGSize {
-        CGSize(width: barWidth + besideGap + maxFlagWidth + 2 * inset, height: barHeight + flagHeight + 2 * inset)
-    }
-
-    /// The flag's spot for a caret in its window (Accessibility coordinates,
-    /// top-left origin), and whether it reaches right of the caret.
-    static func flagSpot(caretX: CGFloat, caretTop: CGFloat, caretHeight: CGFloat, window: CGRect) -> (placement: AnchorFlagPlacement, trailing: Bool) {
-        let roomBelow = caretTop + caretHeight + barOverhang + flagHeight <= window.maxY - edgeMargin
-        let roomRight = caretX + barWidth / 2 + placedFlagWidth <= window.maxX - edgeMargin
-        if roomBelow { return (.below, roomRight) }
-        let roomBeside = caretX + barWidth / 2 + besideGap + placedFlagWidth <= window.maxX - edgeMargin
-        return roomBeside ? (.beside, true) : (.above, roomRight)
-    }
-
-    /// The panel's top-left corner, same coordinates. The view pins its
-    /// drawing to the panel's top-leading corner, or top-trailing for a flag
-    /// reaching left.
-    static func panelOrigin(caretX: CGFloat, caretTop: CGFloat, barHeight: CGFloat, spot: (placement: AnchorFlagPlacement, trailing: Bool)) -> CGPoint {
-        let width = panelSize(barHeight: barHeight).width
-        let x = spot.trailing ? caretX - barWidth / 2 - inset : caretX + barWidth / 2 + inset - width
-        let barTop = caretTop - barOverhang
-        switch spot.placement {
-        case .below: return CGPoint(x: x, y: barTop - inset)
-        case .above: return CGPoint(x: x, y: barTop - flagHeight - inset)
-        // Centered on the bar: a flag taller than a small caret overhangs it
-        // evenly.
-        case .beside: return CGPoint(x: x, y: barTop - max(0, flagHeight - barHeight) / 2 - inset)
-        }
-    }
-
     /// The listening flag's stop button in the panel (top-left origin).
-    static func stopButtonRect(spot: (placement: AnchorFlagPlacement, trailing: Bool), barHeight: CGFloat, timerWidth: CGFloat) -> CGRect {
+    static func stopButtonRect(pinnedRight: Bool, timerWidth: CGFloat) -> CGRect {
         let width = flagWidth(.listening, timerWidth: timerWidth)
-        let flagX: CGFloat
-        switch (spot.placement, spot.trailing) {
-        case (.beside, _): flagX = inset + barWidth + besideGap
-        case (_, true): flagX = inset
-        case (_, false): flagX = panelSize(barHeight: barHeight).width - inset - width
-        }
-        let flagY: CGFloat
-        switch spot.placement {
-        case .below: flagY = inset + barHeight
-        case .above: flagY = inset
-        case .beside: flagY = inset + max(0, barHeight - flagHeight) / 2
-        }
-        return CGRect(x: flagX + width - stopTrailingPadding - stopSize, y: flagY + (flagHeight - stopSize) / 2, width: stopSize, height: stopSize)
+        let flagX = pinnedRight ? panelSize.width - inset - width : inset
+        return CGRect(x: flagX + width - stopTrailingPadding - stopSize, y: inset + (flagHeight - stopSize) / 2, width: stopSize, height: stopSize)
     }
 }
 
 @MainActor
 private final class AnchorMarkerModel: ObservableObject {
     @Published var phase: AnchorMarkerController.Phase = .listening
-    @Published var barHeight: CGFloat = 20
-    @Published var flagPlacement = AnchorFlagPlacement.below
-    /// The flag reaches right of the caret; false next to the window's
-    /// right edge.
-    @Published var flagTrailing = true
+    /// The flag hangs from its right end: inside the top-right corner of a
+    /// box that fills the window.
+    @Published var pinnedRight = false
     /// False while the panel is off screen or the user reduces motion: the
     /// marker then draws its still pose and its animation clock stops.
     @Published var animates = true
@@ -381,51 +402,18 @@ private struct AnchorMarkerView: View {
     var body: some View {
         let still = !model.animates || model.phase == .done
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: still)) { context in
-            let time = still ? nil : context.date.timeIntervalSinceReferenceDate
-            switch model.flagPlacement {
-            case .below:
-                VStack(alignment: model.flagTrailing ? .leading : .trailing, spacing: 0) {
-                    ghostCaret(time: time)
-                    flag(time: time)
-                }
-            case .above:
-                VStack(alignment: model.flagTrailing ? .leading : .trailing, spacing: 0) {
-                    flag(time: time)
-                    ghostCaret(time: time)
-                }
-            case .beside:
-                HStack(spacing: AnchorMarkerLayout.besideGap) {
-                    ghostCaret(time: time)
-                    flag(time: time)
-                }
-            }
+            flag(time: still ? nil : context.date.timeIntervalSinceReferenceDate)
         }
         .padding(AnchorMarkerLayout.inset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: model.flagTrailing ? .topLeading : .topTrailing)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: model.pinnedRight ? .topTrailing : .topLeading)
         .animation(model.animates ? .smooth(duration: 0.2) : nil, value: model.phase)
         .accessibilityHidden(true)
-    }
-
-    /// An accent bar over the real caret, with a soft glow. While the paste
-    /// waits it blinks slowly, like a caret asking for the user to come back.
-    private func ghostCaret(time: Double?) -> some View {
-        let opacity: Double
-        if model.phase == .waiting {
-            opacity = time.map { 0.5 + 0.5 * (0.5 + 0.5 * cos(2 * .pi * $0 / 1.2)) } ?? 0.6
-        } else {
-            opacity = 1
-        }
-        return RoundedRectangle(cornerRadius: AnchorMarkerLayout.barWidth / 2, style: .continuous)
-            .fill(accent)
-            .frame(width: AnchorMarkerLayout.barWidth, height: model.barHeight)
-            .shadow(color: accent.opacity(0.45), radius: 3)
-            .opacity(opacity)
     }
 
     /// Fixed-width parts, left to right, matching
     /// `AnchorMarkerLayout.flagWidth`.
     private func flag(time: Double?) -> some View {
-        let shape = UnevenRoundedRectangle(cornerRadii: flagCorners, style: .continuous)
+        let shape = Capsule(style: .continuous)
         let listening = model.phase == .listening
         return HStack(spacing: AnchorMarkerLayout.itemSpacing) {
             switch model.phase {
@@ -447,21 +435,6 @@ private struct AnchorMarkerView: View {
         // Keeps the black flag apart from a dark app background.
         .overlay(shape.strokeBorder(Color.white.opacity(0.2), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
-    }
-
-    /// Round at the far end, nearly square where the flag meets the caret.
-    private var flagCorners: RectangleCornerRadii {
-        let far = AnchorMarkerLayout.flagHeight / 2
-        let near = far * 0.75
-        let joint: CGFloat = 3
-        switch (model.flagPlacement, model.flagTrailing) {
-        case (.below, true): return RectangleCornerRadii(topLeading: joint, bottomLeading: far, bottomTrailing: far, topTrailing: far)
-        case (.below, false): return RectangleCornerRadii(topLeading: far, bottomLeading: far, bottomTrailing: far, topTrailing: joint)
-        case (.above, true): return RectangleCornerRadii(topLeading: far, bottomLeading: joint, bottomTrailing: far, topTrailing: far)
-        case (.above, false): return RectangleCornerRadii(topLeading: far, bottomLeading: far, bottomTrailing: joint, topTrailing: far)
-        // Always trailing: a caret with no room right goes `.above`.
-        case (.beside, _): return RectangleCornerRadii(topLeading: near, bottomLeading: near, bottomTrailing: far, topTrailing: far)
-        }
     }
 
     /// The island's level bars, center-weighted like a meter: dots at rest,

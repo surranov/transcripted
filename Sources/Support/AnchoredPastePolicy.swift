@@ -255,6 +255,37 @@ enum AnchoredPastePolicy {
         return exact.contains(normalized)
     }
 
+    /// How far a parent may reach past the visible field on the left, top or
+    /// right and still be the field's box. Measured on T3 Code: its composer
+    /// card reaches 21 pt past its text area, and the next parent, which adds
+    /// the strip above the composer, reaches 62 pt.
+    static let fieldBoxPadding: CGFloat = 32
+    /// T3 Code's composer card is 5 parents up from its text area.
+    static let maxFieldBoxDepth = 12
+
+    /// How many parents up the field's box is (0: the field itself): what
+    /// the user sees as the text box, for the marker to sit above. The
+    /// focused element is often only the text inside it, or a document
+    /// taller than its scroll view. Climbing from the field, a parent counts
+    /// while it reaches at most `fieldBoxPadding` past the visible field on
+    /// the left, top and right (its bottom may hold a toolbar); a parent
+    /// inside the field, like a scroll view, clips it. `nextParentFrame`
+    /// gives the next parent's frame up, or nil past the last one; the
+    /// window must not count, since its title bar is part of no box.
+    static func fieldBoxDepth(field: CGRect, nextParentFrame: () -> CGRect?) -> Int {
+        var visible = field
+        var depth = 0
+        while depth < maxFieldBoxDepth, let parent = nextParentFrame(),
+              parent.width > 0, parent.height > 0, parent.intersects(visible),
+              visible.minX - parent.minX <= fieldBoxPadding,
+              visible.minY - parent.minY <= fieldBoxPadding,
+              parent.maxX - visible.maxX <= fieldBoxPadding {
+            visible = visible.intersection(parent)
+            depth += 1
+        }
+        return depth
+    }
+
     /// `text` split for keystrokes: runs of at most `keystrokeChunkLength`
     /// UTF-16 units, with each line break as its own Return.
     static func keystrokeChunks(_ text: String) -> [AnchoredKeystrokeChunk] {

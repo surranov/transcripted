@@ -710,6 +710,7 @@ APP_SOURCES=(
     "Sources/UI/Overlay/NotchIslandPanel.swift"
     "Sources/UI/Overlay/NotchIslandDropSwap.swift"
     "Sources/UI/Overlay/DictationOverlayPlacementPolicy.swift"
+    "Sources/UI/Overlay/AnchorMarkerPlacement.swift"
     "Sources/UI/Overlay/DictationMeterPolicy.swift"
     "Sources/UI/Overlay/MeetingPromptPriority.swift"
     "Sources/UI/Overlay/DictationEscapeCancelPolicy.swift"
