@@ -9,7 +9,7 @@ A local LLM pass over finished speech, the fork's addition (`surranov/transcript
 
 Pieces:
 
-- Model: Gemma 4 E2B **instruction-tuned**, Q4_0 from `ggml-org/gemma-4-E2B-it-GGUF`, pinned by commit and SHA-256 in `TranscriptLLMModel.swift`. Downloaded once, at launch, into `<app support>/models/transcript-llm/`. Writing's model is the base E2B (autocomplete), which doesn't follow instructions; the two never share a file.
+- Model: Gemma 4 E4B **instruction-tuned**, Google's QAT Q4_0 from `google/gemma-4-E4B-it-qat-q4_0-gguf`, pinned by commit and SHA-256 in `TranscriptLLMModel.swift`. Downloaded once, at launch, into `<app support>/models/transcript-llm/`. Writing's model is the base E2B (autocomplete), which doesn't follow instructions; the two never share a file.
 - Engine: its own `llama-server` child through Writing's `LlamaServerProcessHost` with the `.chat` launch profile (`Sources/TranscriptedWriting/Runtime/LlamaLaunchProfile.swift`): port 17893, two slots of 16,384 tokens (slot 0 dictation, slot 1 meetings, pinned per request with `id_slot`), Jinja chat template, thinking off, per-launch API key, Writing's restart policy and orphan reaping. Writing's helper (17891) is untouched.
 - Prompts: `TranscriptLLMPromptPreference` (`Sources/Support/`), `.dictation` and `.meeting`, 30,000-character cap sized against one slot's context. An empty prompt turns its pass off; there's no other toggle.
 
