@@ -185,7 +185,7 @@ extension DictationSessionController {
         // Fork: a background (anchored) delivery presses send its own way.
         if let anchored = await performAnchoredSendIfNeeded() { return anchored }
         let decision = autoSendRequestDecision
-        // Fork (Anchored Enter): the anchored field holding the words stands
+        // Fork (Anchored paste): the anchored field holding the words stands
         // in for a confirmed paste (Electron apps only report a likely one).
         guard decision.expected,
               pasteOutcome.allowsAutoSend
@@ -196,7 +196,7 @@ extension DictationSessionController {
         // the user is; asked only if that's the anchored box, the one a
         // confirmed send presses in (`DictationAutoSendPolicy.confirmedSend`).
         if decision.awaitsConfirmation {
-            if pasteAnchor != nil, let blocker = anchoredEnterBlocker() { return .failed(blocker) }
+            if decision.requiresAnchoredField, let blocker = anchoredFieldBlocker() { return .failed(blocker) }
             return .awaitingConfirmation
         }
 
@@ -212,7 +212,7 @@ extension DictationSessionController {
             sessionID: sessionID, currentSessionID: currentDictationSessionID,
             isDictating: activeTakeIsLive, cancelled: Task.isCancelled
         ) else { return .disabled }
-        if decision.requiresAnchoredField, let blocker = anchoredEnterBlocker() { return .failed(blocker) }
+        if decision.requiresAnchoredField, let blocker = anchoredFieldBlocker() { return .failed(blocker) }
         return autoSender.send(decision.key, target: sessionPasteTarget)
     }
 }

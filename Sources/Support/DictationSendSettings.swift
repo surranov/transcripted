@@ -167,6 +167,19 @@ enum DictationSendSettings {
 
     // MARK: - Carrying the old settings over
 
+    /// Where the settings before Default and the overrides were stored. Read
+    /// once by `migrateIfNeeded`; nothing writes them any more.
+    enum LegacyKeys {
+        /// Press send after pasting.
+        static let pressSendAfterPasting = "dictationAutoEnterEnabled"
+        /// Its app list (bundle ids).
+        static let apps = "dictationAutoEnterAllowedBundleIDs"
+        /// Press Enter there (Anchored Enter), which needed Anchored paste.
+        static let pressEnterThere = "dictationAnchoredPasteEnterEnabled"
+        /// When to send (`DictationAutoSendMode`).
+        static let mode = "dictationAutoEnterMode"
+    }
+
     /// The settings as stored before Default and the overrides.
     struct Legacy: Equatable {
         var pressSendAfterPasting: Bool
@@ -203,16 +216,20 @@ enum DictationSendSettings {
     }
 
     /// Carries the old settings over once, the first time Default is read.
-    /// The old keys stay where they were; nothing reads them after this.
+    /// The old keys stay where they were, so an older build still reads them.
     static func migrateIfNeeded(userDefaults: UserDefaults = .standard) {
         guard userDefaults.object(forKey: defaultBehaviorKey) == nil else { return }
+        let apps = (userDefaults.stringArray(forKey: LegacyKeys.apps) ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
         let migrated = migrated(from: Legacy(
-            pressSendAfterPasting: DictationAutoSendPreferences.isEnabled(userDefaults: userDefaults),
+            pressSendAfterPasting: userDefaults.bool(forKey: LegacyKeys.pressSendAfterPasting),
             sendKey: DictationAutoSendPreferences.sendKey(userDefaults: userDefaults),
-            apps: DictationAutoSendPreferences.allowedBundleIDs(userDefaults: userDefaults),
+            apps: Set(apps),
             anchoredPaste: AnchoredPastePreferences.isEnabled(userDefaults: userDefaults),
-            pressEnterThere: userDefaults.bool(forKey: AnchoredPastePreferences.enterEnabledKey),
-            mode: DictationAutoSendPreferences.mode(userDefaults: userDefaults)
+            pressEnterThere: userDefaults.bool(forKey: LegacyKeys.pressEnterThere),
+            // An unknown value was read as Always.
+            mode: userDefaults.string(forKey: LegacyKeys.mode).flatMap(DictationAutoSendMode.init(rawValue:)) ?? .always
         ))
         userDefaults.set(migrated.defaultBehavior.rawValue, forKey: defaultBehaviorKey)
         userDefaults.set(migrated.overrides.mapValues(\.rawValue), forKey: overridesKey)

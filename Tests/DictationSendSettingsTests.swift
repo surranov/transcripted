@@ -5,6 +5,19 @@ import Foundation
 // toggles carried over so every take decides as before, except where the
 // one select means to differ.
 
+/// A take's decision with Anchored paste off, for the paste-outcome rules.
+func sendDecision(
+    _ behavior: DictationSendBehavior,
+    isOverride: Bool = false,
+    text: String = "ship it",
+    duration: TimeInterval = 2
+) -> DictationAutoSendRequestDecision {
+    DictationSendSettings.decision(
+        behavior: behavior, isOverride: isOverride, key: .enter, text: text, duration: duration,
+        hasAnchor: false, anchoredPasteEnabled: false, startedWithDictateAndSendKey: false
+    )
+}
+
 func testDictationSendSettings() {
     let slack = "com.tinyspeck.slackmacgap"
     let notes = "md.obsidian"
@@ -155,10 +168,10 @@ func testDictationSendSettings() {
     runSuite("DictationSendSettings stores Default and the overrides, carried over once") {
         let defaults = freshDefaults("store")
         defaults.set(true, forKey: AnchoredPastePreferences.enabledKey)
-        defaults.set(true, forKey: AnchoredPastePreferences.enterEnabledKey)
+        defaults.set(true, forKey: DictationSendSettings.LegacyKeys.pressEnterThere)
         assertEqual(DictationSendSettings.defaultBehavior(userDefaults: defaults), .send, "Press Enter there carried over")
         DictationSendSettings.setDefaultBehavior(.afterConfirm, userDefaults: defaults)
-        defaults.set(false, forKey: AnchoredPastePreferences.enterEnabledKey)
+        defaults.set(false, forKey: DictationSendSettings.LegacyKeys.pressEnterThere)
         assertEqual(DictationSendSettings.defaultBehavior(userDefaults: defaults), .afterConfirm, "carried over only once")
 
         DictationSendSettings.setOverride(.dontSend, for: slack, userDefaults: defaults)
@@ -178,10 +191,11 @@ func testDictationSendSettings() {
 
     runSuite("DictationSendSettings carries the old app list and key over") {
         let defaults = freshDefaults("carry")
-        DictationAutoSendPreferences.setEnabled(true, userDefaults: defaults)
+        defaults.set(true, forKey: DictationSendSettings.LegacyKeys.pressSendAfterPasting)
         DictationAutoSendPreferences.setSendKey(.commandEnter, userDefaults: defaults)
-        DictationAutoSendPreferences.setAllowedBundleIDs([slack], userDefaults: defaults)
-        assertEqual(DictationSendSettings.overrides(userDefaults: defaults), [slack: .send], "the listed app sends")
+        defaults.set([" \(slack) ", ""], forKey: DictationSendSettings.LegacyKeys.apps)
+        defaults.set("telepathy", forKey: DictationSendSettings.LegacyKeys.mode)
+        assertEqual(DictationSendSettings.overrides(userDefaults: defaults), [slack: .send], "the listed app sends, an unknown When to send read as Always")
         assertEqual(DictationSendSettings.defaultBehavior(userDefaults: defaults), .dontSend, "every other app doesn't")
         assertEqual(DictationAutoSendPreferences.sendKey(userDefaults: defaults), .commandEnter, "with its key")
     }

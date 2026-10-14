@@ -16,33 +16,6 @@ func testDictationAutoSendPreferences() {
         )
     }
 
-    runSuite("Anchored Enter expects Enter for an anchored take in any app") {
-        func decision(
-            perApp: DictationAutoSendRequestDecision = DictationAutoSendRequestDecision(expected: false, key: .enter, blockReason: .appNotAllowed),
-            on: Bool = true, text: String = "ship it", duration: TimeInterval = 2
-        ) -> DictationAutoSendRequestDecision {
-            DictationAutoSendPolicy.anchoredEnterDecision(perApp: perApp, pressesEnter: on, text: text, duration: duration)
-        }
-        let anchored = decision()
-        assertTrue(anchored.expected, "an app never chosen for Press send after pasting still gets Enter")
-        assertEqual(anchored.key, .enter, "Anchored Enter presses Enter")
-        assertTrue(anchored.requiresAnchoredField, "and only into the anchored field")
-        assertTrue(decision(perApp: .init(expected: false, key: .enter, blockReason: .featureOff)).expected, "Press send after pasting may be off entirely")
-
-        let chosen = DictationAutoSendRequestDecision(expected: true, key: .commandEnter, blockReason: .none)
-        assertEqual(decision(perApp: chosen), chosen, "a chosen app keeps its own key and rules")
-
-        let off = decision(on: false)
-        assertFalse(off.expected, "off: only the per-app choice counts")
-        assertEqual(off.blockReason, .appNotAllowed, "and its reason is kept")
-        assertFalse(off.requiresAnchoredField)
-
-        assertEqual(decision(text: "  \n").blockReason, .emptyText, "no words, no Enter")
-        assertFalse(decision(text: "  \n").expected)
-        assertEqual(decision(duration: 0.1).blockReason, .durationTooShort, "an accidental tap sends nothing")
-        assertFalse(decision(duration: 0.1).expected)
-    }
-
     runSuite("Dictate & send key mode: only a take started with it presses send") {
         let perApp = DictationAutoSendRequestDecision(expected: true, key: .commandEnter, blockReason: .none)
         let anchored = DictationAutoSendRequestDecision(expected: true, key: .enter, blockReason: .none, requiresAnchoredField: true)
@@ -173,43 +146,13 @@ func testDictationAutoSendPreferences() {
         assertEqual(held.blockReason, .pasteUnverified, "without that proof Enter is held, as before")
     }
 
-    runSuite("AnchoredPastePreferences: Press Enter there needs Anchored paste") {
-        let suiteName = "AnchoredEnterTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        assertFalse(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "off by default")
-        AnchoredPastePreferences.setPressesEnter(true, userDefaults: defaults)
-        assertFalse(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "nothing to press Enter in without Anchored paste")
-        AnchoredPastePreferences.setEnabled(true, userDefaults: defaults)
-        assertTrue(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "both on")
-        AnchoredPastePreferences.setPressesEnter(false, userDefaults: defaults)
-        assertFalse(AnchoredPastePreferences.pressesEnter(userDefaults: defaults), "Anchored paste alone only pastes")
-    }
-
-    runSuite("DictationAutoSendPreferences defaults to disabled Enter") {
+    runSuite("DictationAutoSendPreferences send key: Enter unless chosen") {
         let (defaults, suiteName) = makeAutoSendDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        assertFalse(DictationAutoSendPreferences.isEnabled(userDefaults: defaults), "auto enter should default off")
         assertEqual(DictationAutoSendPreferences.sendKey(userDefaults: defaults), .enter, "send key should default to Enter")
-        assertEqual(DictationAutoSendPreferences.allowedBundleIDs(userDefaults: defaults), [], "allowed app list should default empty")
-    }
-
-    runSuite("DictationAutoSendPreferences persists enabled state and send key") {
-        let (defaults, suiteName) = makeAutoSendDefaults()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        DictationAutoSendPreferences.setEnabled(true, userDefaults: defaults)
         DictationAutoSendPreferences.setSendKey(.commandEnter, userDefaults: defaults)
-        DictationAutoSendPreferences.setAllowedBundleIDs(["com.example.Chat", "com.example.Notes"], userDefaults: defaults)
-
-        assertTrue(DictationAutoSendPreferences.isEnabled(userDefaults: defaults), "auto enter should read explicit enabled state")
         assertEqual(DictationAutoSendPreferences.sendKey(userDefaults: defaults), .commandEnter, "send key should read explicit Cmd+Enter")
-        assertEqual(
-            DictationAutoSendPreferences.allowedBundleIDs(userDefaults: defaults),
-            ["com.example.Chat", "com.example.Notes"],
-            "allowed app list should persist bundle IDs"
-        )
     }
 
     runSuite("DictationAutoSendPreferences falls back from unknown send key") {
@@ -219,19 +162,6 @@ func testDictationAutoSendPreferences() {
         defaults.set("space_laser", forKey: "dictationAutoEnterKey")
 
         assertEqual(DictationAutoSendPreferences.sendKey(userDefaults: defaults), .enter, "unknown send key should fall back to Enter")
-    }
-
-    runSuite("DictationAutoSendPreferences mode: always unless chosen") {
-        let (defaults, suiteName) = makeAutoSendDefaults()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        assertEqual(DictationAutoSendPreferences.mode(userDefaults: defaults), .always, "nothing stored keeps sending on every take")
-        for mode in DictationAutoSendMode.allCases {
-            DictationAutoSendPreferences.setMode(mode, userDefaults: defaults)
-            assertEqual(DictationAutoSendPreferences.mode(userDefaults: defaults), mode, "\(mode) reads back")
-        }
-        defaults.set("telepathy", forKey: "dictationAutoEnterMode")
-        assertEqual(DictationAutoSendPreferences.mode(userDefaults: defaults), .always, "a mode this build doesn't know falls back to always")
     }
 
     runSuite("DictationAutoSendPreferences confirm key and wait: Enter for 5 s unless chosen") {
@@ -293,42 +223,6 @@ func testDictationAutoSendPreferences() {
         )
     }
 
-    runSuite("DictationAutoSendPolicy explains why Auto Enter was or was not expected") {
-        let expected = DictationAutoSendPolicy.requestDecision(
-            isEnabled: true,
-            key: .commandEnter,
-            text: "Send this",
-            duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-            sourceBundleID: "com.example.Chat",
-            allowedBundleIDs: ["com.example.Chat"]
-        )
-        assertEqual(
-            expected,
-            DictationAutoSendRequestDecision(expected: true, key: .commandEnter, blockReason: .none),
-            "selected apps should expose an expected Command+Enter decision without app identity telemetry"
-        )
-
-        let featureOff = DictationAutoSendPolicy.requestDecision(
-            isEnabled: false,
-            key: .commandEnter,
-            text: "Send this",
-            duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-            sourceBundleID: "com.example.Chat",
-            allowedBundleIDs: ["com.example.Chat"]
-        )
-        assertEqual(featureOff.blockReason, .featureOff, "disabled Auto Enter should have a coarse block reason")
-
-        let appNotAllowed = DictationAutoSendPolicy.requestDecision(
-            isEnabled: true,
-            key: .enter,
-            text: "Send this",
-            duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-            sourceBundleID: "com.example.Notes",
-            allowedBundleIDs: ["com.example.Chat"]
-        )
-        assertEqual(appNotAllowed.blockReason, .appNotAllowed, "unselected apps should have a coarse block reason")
-    }
-
     runSuite("DictationAutoSendTelemetry distinguishes success, paste blocks, and send failures") {
         let request = DictationAutoSendRequestDecision(expected: true, key: .commandEnter, blockReason: .none)
 
@@ -387,114 +281,71 @@ func testDictationAutoSendPreferences() {
     runSuite("DictationAutoSendPolicy sends only after an eligible paste dispatch with text") {
         assertTrue(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .pasted,
-                text: "Send this",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: "com.example.Chat",
-                allowedBundleIDs: ["com.example.Chat"]
+                decision: sendDecision(.send, isOverride: false, text: "Send this", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration),
+                pasteOutcome: .pasted
             ),
             "enabled pasted dictation with text should send"
         )
 
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: false,
-                pasteOutcome: .pasted,
-                text: "Send this",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: "com.example.Chat",
-                allowedBundleIDs: ["com.example.Chat"]
+                decision: sendDecision(.dontSend, isOverride: false, text: "Send this", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration),
+                pasteOutcome: .pasted
             ),
-            "disabled preference should not send"
+            "Default set to Don't send should not send"
         )
 
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .likelyPasted,
-                text: "Send this",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: "com.example.Chat",
-                allowedBundleIDs: ["com.example.Chat"]
+                decision: sendDecision(.send, isOverride: false, text: "Send this", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration),
+                pasteOutcome: .likelyPasted
             ),
             "an unattributed clipboard read must not authorize Auto Enter"
         )
 
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
+                decision: sendDecision(.send, isOverride: false, text: "Send this", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration),
                 pasteOutcome: .copied(
                     "Paste dispatched without a target read",
                     reason: .pasteNotConfirmed
-                ),
-                text: "Send this",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: "com.example.Chat",
-                allowedBundleIDs: ["com.example.Chat"]
+                )
             ),
             "an unconfirmed dispatch without target-read evidence should not send"
         )
 
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .copied("Focus changed", reason: .focusChanged),
-                text: "Send this",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: "com.example.Chat",
-                allowedBundleIDs: ["com.example.Chat"]
+                decision: sendDecision(.send, isOverride: false, text: "Send this", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration),
+                pasteOutcome: .copied("Focus changed", reason: .focusChanged)
             ),
             "a true copied-only fallback should not send"
         )
 
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .pasted,
-                text: "   \n",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: "com.example.Chat",
-                allowedBundleIDs: ["com.example.Chat"]
+                decision: sendDecision(.send, isOverride: false, text: "   \n", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration),
+                pasteOutcome: .pasted
             ),
             "empty transcript should not send"
         )
 
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .pasted,
-                text: "Too fast",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration - 0.01,
-                sourceBundleID: "com.example.Chat",
-                allowedBundleIDs: ["com.example.Chat"]
+                decision: sendDecision(.send, isOverride: false, text: "Too fast", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration - 0.01),
+                pasteOutcome: .pasted
             ),
             "very short accidental taps should not send"
         )
 
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .pasted,
-                text: "Send this",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: "com.example.Notes",
-                allowedBundleIDs: ["com.example.Chat"]
+                decision: sendDecision(.dontSend, isOverride: true, text: "Send this", duration: TranscriptedConstants.dictationAutoEnterMinimumDuration),
+                pasteOutcome: .pasted
             ),
-            "unselected apps should not send"
+            "an app set to Don't send should not send"
         )
 
-        assertFalse(
-            DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .pasted,
-                text: "Send this",
-                duration: TranscriptedConstants.dictationAutoEnterMinimumDuration,
-                sourceBundleID: nil,
-                allowedBundleIDs: ["com.example.Chat"]
-            ),
-            "unknown source apps should not send"
-        )
     }
 }
 

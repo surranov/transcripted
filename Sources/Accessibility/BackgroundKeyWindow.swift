@@ -3,7 +3,7 @@ import Foundation
 
 /// Fork: makes a window key inside its own app without activating the app or
 /// raising the window, so keystrokes addressed to the app's process
-/// (`BackgroundKeystrokes`) reach it: Anchored Enter
+/// (`BackgroundKeystrokes`) reach it: a send into the anchored box
 /// (`AnchoredSendMethod.keyWindowReturn`). An inactive Chromium or Electron
 /// window drops such keystrokes until it is key; a native window takes them
 /// either way.

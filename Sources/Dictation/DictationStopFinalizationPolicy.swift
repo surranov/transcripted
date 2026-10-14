@@ -131,7 +131,7 @@ enum DictationDeliveryPresentation: Equatable {
             case .sent:
                 return .success(title: autoSend.confirmationTitle ?? "Pasted")
             case .awaitingConfirmation:
-                // Only once the anchored field shows the words, like Anchored Enter.
+                // Only once the anchored field shows the words, like any send into it.
                 return .awaitingSendConfirmation
             case .failed(let failure):
                 return .error(failure.message)

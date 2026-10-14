@@ -1,11 +1,11 @@
 import Foundation
 
 // Pins how the send settings before "Send after dictation" was one select
-// decide whether a take presses send, the way the session composes them
-// (`DictationSessionController.autoSendDecision` with `withAnchoredEnter`):
+// decided whether a take presses send, the way the session composed them:
 // Press send after pasting with its app list and key, then Press Enter there
-// (Anchored Enter) for an anchored take, then When to send. The settings
-// moving into one select keep these decisions; see the migration tests.
+// (Anchored Enter) for an anchored take, then When to send. The code is gone
+// from the app; its decisions are kept here, frozen, as the reference the
+// carry-over is checked against (DictationSendSettingsTests).
 
 /// The send settings as they were stored before the one select.
 struct LegacySendSettings {
@@ -15,6 +15,48 @@ struct LegacySendSettings {
     var anchoredPaste = false
     var pressEnterThere = false
     var mode: DictationAutoSendMode = .always
+}
+
+/// Press send after pasting's own decision, frozen as it was
+/// (`DictationAutoSendPolicy.requestDecision` before the one select).
+private func legacyRequestDecision(
+    isEnabled: Bool, key: DictationAutoSendKey, text: String, duration: TimeInterval,
+    sourceBundleID: String?, allowedBundleIDs: Set<String>
+) -> DictationAutoSendRequestDecision {
+    let blockReason: DictationAutoSendBlockReason
+    if !isEnabled {
+        blockReason = .featureOff
+    } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        blockReason = .emptyText
+    } else if duration < TranscriptedConstants.dictationAutoEnterMinimumDuration {
+        blockReason = .durationTooShort
+    } else if sourceBundleID == nil {
+        blockReason = .sourceAppUnknown
+    } else if let sourceBundleID, !allowedBundleIDs.contains(sourceBundleID) {
+        blockReason = .appNotAllowed
+    } else {
+        blockReason = .none
+    }
+    return DictationAutoSendRequestDecision(expected: blockReason == .none, key: key, blockReason: blockReason)
+}
+
+/// Press Enter there on top, frozen as it was
+/// (`DictationAutoSendPolicy.anchoredEnterDecision`).
+private func legacyAnchoredEnterDecision(
+    perApp: DictationAutoSendRequestDecision, pressesEnter: Bool, text: String, duration: TimeInterval
+) -> DictationAutoSendRequestDecision {
+    guard pressesEnter, !perApp.expected else { return perApp }
+    let blockReason: DictationAutoSendBlockReason
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        blockReason = .emptyText
+    } else if duration < TranscriptedConstants.dictationAutoEnterMinimumDuration {
+        blockReason = .durationTooShort
+    } else {
+        blockReason = .none
+    }
+    return DictationAutoSendRequestDecision(
+        expected: blockReason == .none, key: .enter, blockReason: blockReason, requiresAnchoredField: true
+    )
 }
 
 /// The decision those settings made for one take, composed as the session
@@ -27,7 +69,7 @@ func legacySendDecision(
     text: String = "ship it",
     duration: TimeInterval = 2
 ) -> DictationAutoSendRequestDecision {
-    var decision = DictationAutoSendPolicy.requestDecision(
+    var decision = legacyRequestDecision(
         isEnabled: settings.pressSendAfterPasting,
         key: settings.sendKey,
         text: text,
@@ -36,7 +78,7 @@ func legacySendDecision(
         allowedBundleIDs: settings.apps
     )
     if hasAnchor {
-        decision = DictationAutoSendPolicy.anchoredEnterDecision(
+        decision = legacyAnchoredEnterDecision(
             perApp: decision,
             pressesEnter: settings.anchoredPaste && settings.pressEnterThere,
             text: text,

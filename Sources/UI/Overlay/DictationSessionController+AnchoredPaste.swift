@@ -180,10 +180,10 @@ extension DictationSessionController {
         )
     }
 
-    /// Why Anchored Enter can't press Enter where the regular paste went:
-    /// the anchored field (or, for an anchor without one, its window) no
-    /// longer has focus, so Enter would land elsewhere. Nil when it can.
-    func anchoredEnterBlocker() -> DictationAutoSendFailure? {
+    /// Why send can't go into the anchored box after the regular paste: the
+    /// anchored field (or, for an anchor without one, its window) no longer
+    /// has focus, so send would land elsewhere. Nil when it can.
+    func anchoredFieldBlocker() -> DictationAutoSendFailure? {
         guard let anchor = pasteAnchor else { return .anchoredFieldLeft }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == anchor.pid else { return .targetChanged }
         if anchor.field != nil { return AnchoredTextDelivery.anchoredFieldIsFocused(anchor) ? nil : .anchoredFieldLeft }
@@ -191,8 +191,8 @@ extension DictationSessionController {
         return nil
     }
 
-    /// Whether the anchored field holds `text`: the proof Anchored Enter
-    /// takes for a likely paste (Electron apps report nothing better).
+    /// Whether the anchored field holds `text`: the proof a send into the
+    /// anchored box takes for a likely paste (Electron apps report nothing better).
     func pasteAnchorHolds(_ text: String) -> Bool {
         guard let anchor = pasteAnchor else { return false }
         return AnchoredTextDelivery.fieldContains(text, anchor: anchor)
@@ -385,8 +385,8 @@ extension DictationSessionController {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: TranscriptedConstants.dictationAutoEnterDelay)
                 guard let self else { return }
-                // Anchored Enter goes only into the anchored field: the user
-                // may be back in its window but in another box.
+                // Send goes only into the anchored field: the user may be
+                // back in its window but in another box.
                 let sent: DictationAutoSendOutcome
                 if pending.autoSend.requiresAnchoredField, pending.anchor.field != nil,
                    !AnchoredTextDelivery.anchoredFieldIsFocused(pending.anchor) {

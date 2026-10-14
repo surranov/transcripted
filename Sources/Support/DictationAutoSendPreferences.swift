@@ -36,9 +36,8 @@ enum DictationAutoSendKey: String, CaseIterable, Identifiable {
     }
 }
 
-/// When a take that may press send (an app chosen for Press send after
-/// pasting, or Anchored Enter) actually presses it. The app list and the
-/// toggles say where; this says when.
+/// When a take whose behavior sends (`DictationSendBehavior`) presses it:
+/// the When to send part of that behavior.
 enum DictationAutoSendMode: String, CaseIterable, Identifiable {
     /// Every such take presses send, as before this setting existed.
     case always
@@ -151,9 +150,9 @@ struct DictationAutoSendRequestDecision: Equatable {
     let expected: Bool
     let key: DictationAutoSendKey
     let blockReason: DictationAutoSendBlockReason
-    /// Fork (Anchored Enter): the take expects Enter only because it is
-    /// anchored, so Enter goes only into the anchored field, never into
-    /// wherever the regular paste followed the user.
+    /// Fork: Anchored paste is on, so send goes only into the box the take
+    /// started in, never into wherever the regular paste followed the user
+    /// (`DictationSendSettings.decision`).
     var requiresAnchoredField = false
     /// Fork (`DictationAutoSendMode.confirmAfterPaste`): send waits for the
     /// user's confirm after the words land instead of being pressed at once.
@@ -174,10 +173,7 @@ struct DictationAutoSendRequestDecision: Equatable {
 }
 
 enum DictationAutoSendPreferences {
-    private static let enabledKey = "dictationAutoEnterEnabled"
     private static let keyKey = "dictationAutoEnterKey"
-    private static let allowedBundleIDsKey = "dictationAutoEnterAllowedBundleIDs"
-    private static let modeKey = "dictationAutoEnterMode"
     private static let confirmKeyKey = "dictationAutoEnterConfirmKey"
     private static let confirmSecondsKey = "dictationAutoEnterConfirmSeconds"
 
@@ -185,14 +181,6 @@ enum DictationAutoSendPreferences {
     /// Settings; the default is 5 s.
     static let confirmSecondsChoices = [3, 5, 10, 15, 30]
     static let defaultConfirmSeconds = 5
-
-    static func isEnabled(userDefaults: UserDefaults = .standard) -> Bool {
-        userDefaults.bool(forKey: enabledKey)
-    }
-
-    static func setEnabled(_ enabled: Bool, userDefaults: UserDefaults = .standard) {
-        userDefaults.set(enabled, forKey: enabledKey)
-    }
 
     static func sendKey(userDefaults: UserDefaults = .standard) -> DictationAutoSendKey {
         guard let rawValue = userDefaults.string(forKey: keyKey),
@@ -205,23 +193,6 @@ enum DictationAutoSendPreferences {
 
     static func setSendKey(_ key: DictationAutoSendKey, userDefaults: UserDefaults = .standard) {
         userDefaults.set(key.rawValue, forKey: keyKey)
-    }
-
-    /// Nothing stored (everyone before this setting) or a value this build
-    /// doesn't know reads as `.always`, the behavior before the setting.
-    static func mode(userDefaults: UserDefaults = .standard) -> DictationAutoSendMode {
-        guard let rawValue = userDefaults.string(forKey: modeKey),
-              let mode = DictationAutoSendMode(rawValue: rawValue) else {
-            return .always
-        }
-        return mode
-    }
-
-    /// The event tap catches the Dictate & send key only in its mode, so a
-    /// change rebuilds the tap's bindings (`.hotkeysDidChange`).
-    static func setMode(_ mode: DictationAutoSendMode, userDefaults: UserDefaults = .standard) {
-        userDefaults.set(mode.rawValue, forKey: modeKey)
-        NotificationCenter.default.post(name: .hotkeysDidChange, object: nil)
     }
 
     static func confirmKey(userDefaults: UserDefaults = .standard) -> DictationSendConfirmKey {
@@ -244,81 +215,9 @@ enum DictationAutoSendPreferences {
         guard confirmSecondsChoices.contains(seconds) else { return }
         userDefaults.set(seconds, forKey: confirmSecondsKey)
     }
-
-    static func allowedBundleIDs(userDefaults: UserDefaults = .standard) -> Set<String> {
-        let rawValues = userDefaults.stringArray(forKey: allowedBundleIDsKey) ?? []
-        return Set(rawValues.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
-    }
-
-    static func setAllowedBundleIDs(_ bundleIDs: Set<String>, userDefaults: UserDefaults = .standard) {
-        let normalized = bundleIDs
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .sorted()
-        userDefaults.set(normalized, forKey: allowedBundleIDsKey)
-    }
 }
 
 enum DictationAutoSendPolicy {
-    static func requestDecision(
-        isEnabled: Bool,
-        key: DictationAutoSendKey,
-        text: String,
-        duration: TimeInterval,
-        sourceBundleID: String?,
-        allowedBundleIDs: Set<String>
-    ) -> DictationAutoSendRequestDecision {
-        let blockReason: DictationAutoSendBlockReason
-        if !isEnabled {
-            blockReason = .featureOff
-        } else if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            blockReason = .emptyText
-        } else if duration < TranscriptedConstants.dictationAutoEnterMinimumDuration {
-            blockReason = .durationTooShort
-        } else if sourceBundleID == nil {
-            blockReason = .sourceAppUnknown
-        } else if let sourceBundleID, !allowedBundleIDs.contains(sourceBundleID) {
-            blockReason = .appNotAllowed
-        } else {
-            blockReason = .none
-        }
-
-        return DictationAutoSendRequestDecision(
-            expected: blockReason == .none,
-            key: key,
-            blockReason: blockReason
-        )
-    }
-
-    /// Fork (Anchored Enter, `AnchoredPastePreferences.pressesEnter`): an
-    /// anchored take expects Enter in any app. An app chosen for Press send
-    /// after pasting keeps its own decision and key.
-    static func anchoredEnterDecision(
-        perApp: DictationAutoSendRequestDecision,
-        pressesEnter: Bool,
-        text: String,
-        duration: TimeInterval
-    ) -> DictationAutoSendRequestDecision {
-        guard pressesEnter, !perApp.expected else { return perApp }
-        let blockReason: DictationAutoSendBlockReason
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            blockReason = .emptyText
-        } else if duration < TranscriptedConstants.dictationAutoEnterMinimumDuration {
-            blockReason = .durationTooShort
-        } else {
-            blockReason = .none
-        }
-        return DictationAutoSendRequestDecision(
-            expected: blockReason == .none,
-            key: .enter,
-            blockReason: blockReason,
-            requiresAnchoredField: true
-        )
-    }
-
-    /// `DictationAutoSendMode`: the app list and the toggles said where send
-    /// may be pressed; the mode says when. Applied last, to whichever decision
-    /// (per-app or Anchored Enter) expected send.
     static func applyingMode(
         _ decision: DictationAutoSendRequestDecision,
         mode: DictationAutoSendMode,
@@ -407,39 +306,10 @@ enum DictationAutoSendPolicy {
         return quote
     }
 
-    static func isRequested(
-        isEnabled: Bool,
-        text: String,
-        duration: TimeInterval,
-        sourceBundleID: String?,
-        allowedBundleIDs: Set<String>
-    ) -> Bool {
-        requestDecision(
-            isEnabled: isEnabled,
-            key: .enter,
-            text: text,
-            duration: duration,
-            sourceBundleID: sourceBundleID,
-            allowedBundleIDs: allowedBundleIDs
-        ).expected
-    }
-
-    static func shouldSend(
-        isEnabled: Bool,
-        pasteOutcome: TextPasteOutcome,
-        text: String,
-        duration: TimeInterval,
-        sourceBundleID: String?,
-        allowedBundleIDs: Set<String>
-    ) -> Bool {
-        guard pasteOutcome.allowsAutoSend else { return false }
-        return isRequested(
-            isEnabled: isEnabled,
-            text: text,
-            duration: duration,
-            sourceBundleID: sourceBundleID,
-            allowedBundleIDs: allowedBundleIDs
-        )
+    /// Send goes only after a confirmed paste of a take whose decision
+    /// expects it (`DictationSendSettings.decision`).
+    static func shouldSend(decision: DictationAutoSendRequestDecision, pasteOutcome: TextPasteOutcome) -> Bool {
+        pasteOutcome.allowsAutoSend && decision.expected
     }
 }
 
@@ -502,8 +372,8 @@ enum DictationAutoSendFailure: Equatable {
     /// window is minimized, its app wouldn't focus the field, or the field
     /// didn't take the key.
     case backgroundSendUnavailable(appName: String)
-    /// Fork (Anchored Enter): after the regular paste the field the take
-    /// started in no longer has focus, so Enter would land elsewhere.
+    /// Fork (Anchored paste): after the regular paste the field the take
+    /// started in no longer has focus, so send would land elsewhere.
     case anchoredFieldLeft
     /// Fork (After I confirm): a send confirmed while the box is in the
     /// background, and the box no longer holds the take's words.
@@ -586,8 +456,8 @@ struct DictationAutoSendTelemetry: Equatable {
         if !request.expected {
             blockReason = request.blockReason
         } else if case .sent = sendOutcome {
-            // Anchored Enter may press Enter after a likely paste, once the
-            // anchored field shows the words.
+            // A send into the anchored box may follow a likely paste, once
+            // that box shows the words.
             blockReason = .none
         } else if let pasteBlockReason = pasteOutcome.autoSendBlockReason {
             blockReason = pasteBlockReason

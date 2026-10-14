@@ -21,12 +21,8 @@ func testDictationSessionCap() {
         // Control: a normal pasted delivery with everything satisfied DOES send.
         assertTrue(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .pasted,
-                text: "ship the release notes",
-                duration: satisfiedDuration,
-                sourceBundleID: "com.example.editor",
-                allowedBundleIDs: allowed
+                decision: sendDecision(.send, isOverride: false, text: "ship the release notes", duration: satisfiedDuration),
+                pasteOutcome: .pasted
             ),
             "a pasted delivery in an allowed app should auto-send (control)"
         )
@@ -34,12 +30,8 @@ func testDictationSessionCap() {
         // The cap delivery must NOT send, with otherwise-identical inputs.
         assertFalse(
             DictationAutoSendPolicy.shouldSend(
-                isEnabled: true,
-                pasteOutcome: .failed("saved without paste", reason: .unknown),
-                text: "ship the release notes",
-                duration: satisfiedDuration,
-                sourceBundleID: "com.example.editor",
-                allowedBundleIDs: allowed
+                decision: sendDecision(.send, isOverride: false, text: "ship the release notes", duration: satisfiedDuration),
+                pasteOutcome: .failed("saved without paste", reason: .unknown)
             ),
             "a session-cap save must never auto-send into the focused app"
         )
