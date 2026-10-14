@@ -244,6 +244,7 @@ final class TranscriptLLMController: DictationTextRefiner {
         guard isStarted, !isStopped, let runtime = runtime(for: .dictation) else { return .unchanged(.notReady) }
         let host = runtime.host
         let slot = runtime.engine.slot(of: .dictation)
+        let model = runtime.engine.model
         dictationsInFlight += 1
         defer { dictationsInFlight -= 1 }
         guard await waitUntilEngineReady(runtime) else {
@@ -255,7 +256,9 @@ final class TranscriptLLMController: DictationTextRefiner {
         let started = CFAbsoluteTimeGetCurrent()
         let chunks = DictationRefinementChunking.chunks(of: text)
         if chunks.count > 1 {
-            return await refineInPieces(text, chunks: chunks, prompt: prompt, host: host, slot: slot, started: started)
+            return await refineInPieces(
+                text, chunks: chunks, prompt: prompt, host: host, slot: slot, model: model, started: started
+            )
         }
         let outcome = await Self.complete(
             host: host,
@@ -272,7 +275,7 @@ final class TranscriptLLMController: DictationTextRefiner {
                 return .unchanged(.rejected)
             }
             log("TRANSCRIPT LLM | refined \(text.count) → \(accepted.count) chars in \(elapsed)s")
-            return .refined(accepted)
+            return .refined(accepted, model: model)
         case .answer(.truncated):
             log("TRANSCRIPT LLM | answer cut off at the token limit (\(elapsed)s); keeping the recognized text")
             return .unchanged(.failed)
@@ -302,6 +305,7 @@ final class TranscriptLLMController: DictationTextRefiner {
         prompt: String,
         host: LlamaServerProcessHost,
         slot: Int,
+        model: TranscriptLLMModelChoice,
         started: CFAbsoluteTime
     ) async -> DictationTextRefinement {
         var pieces: [String] = []
@@ -340,7 +344,7 @@ final class TranscriptLLMController: DictationTextRefiner {
         }
         let refined = DictationRefinementChunking.join(pieces, of: chunks)
         log("TRANSCRIPT LLM | refined \(text.count) → \(refined.count) chars in \(chunks.count) pieces (\(kept) kept as recognized) in \(elapsed)s")
-        return .refined(refined)
+        return .refined(refined, model: model)
     }
 
     // MARK: - Lifecycle

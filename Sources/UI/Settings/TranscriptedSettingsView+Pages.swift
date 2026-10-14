@@ -481,7 +481,7 @@ extension TranscriptedSettingsView {
                 trackSettingsAction("load_more_dictations", page: navigation.selectedPage)
                 homeViewModel.loadMoreDictations()
             },
-            onCopyDictation: { entry in handleCopyDictation(entry) },
+            onCopyDictation: { entry, text in handleCopyDictation(entry, text: text) },
             dictationRowMenuItems: { entry in dictationRowMenuItems(for: entry) },
             onDeleteDictation: { entry in deleteDictationWithUndo(entry) },
             transcribeAgainUnavailableReason: savedMeetingRetranscriptionUnavailableReason,
@@ -489,7 +489,9 @@ extension TranscriptedSettingsView {
             transcribeSamples: { [sttRouter] samples in
                 try await sttRouter.transcribeSavedDictation(samples: samples)
             },
-            refineText: { [transcriptLLM] text in await transcriptLLM.refine(text).text(original: text) },
+            // Transcribe again runs the dictation model (`transcribeSavedDictation`).
+            recognitionModel: { [sttRouter] in sttRouter.selectedModel.rawValue },
+            refineText: { [transcriptLLM] text in await transcriptLLM.refine(text) },
             onTranscribeAgainFailure: { message, retry in
                 presentHomeActionFailure(
                     title: "Could not transcribe dictation again",
@@ -540,10 +542,12 @@ extension TranscriptedSettingsView {
                         }
                     },
                     finalize: {
-                        // The delete is permanent now, so its kept audio goes too.
+                        // The delete is permanent now, so its kept audio and
+                        // text versions go too.
                         Task { @MainActor in
                             await Task.detached(priority: .utility) {
                                 _ = DictationAudioArchive.deleteKeptAudio(for: entry)
+                                DictationTextVersionStore.delete(for: entry)
                             }.value
                             refreshRecentCaptures(force: true)
                         }

@@ -68,7 +68,7 @@ func testDictationTextRefinementPolicy() {
     }
 
     runSuite("DictationTextRefinement pastes the original on every skip") {
-        assertEqual(DictationTextRefinement.refined("B").text(original: "A"), "B", "a refined answer is delivered")
+        assertEqual(DictationTextRefinement.refined("B", model: .gemma4E2B).text(original: "A"), "B", "a refined answer is delivered")
         for skip in [DictationTextRefinementSkip.noPrompt, .notReady, .failed, .rejected, .cancelled] {
             assertEqual(DictationTextRefinement.unchanged(skip).text(original: "A"), "A", "\(skip.rawValue) keeps the transcript")
         }

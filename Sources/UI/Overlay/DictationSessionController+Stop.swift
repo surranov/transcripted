@@ -192,6 +192,9 @@ extension DictationSessionController {
         streamingTask?.cancel()
         let taskSessionID = currentDictationSessionID
         let taskRecordingModelLease = appState.sttRouter.recordingModelLease
+        // The model that transcribes this take: its lease, which outlives a
+        // model switch made while it records.
+        let recognitionModel = taskRecordingModelLease?.model ?? appState.sttRouter.selectedModel
         let checkpointSignal = DictationStoppedAudioCheckpointSignal()
         stoppedAudioCheckpointSignal = checkpointSignal
         // Fork: the dictation queue. The take may hand the controller to the
@@ -406,7 +409,14 @@ extension DictationSessionController {
                 self.setActiveTakeCanHandOff(true)
                 // Fork: the local transcript LLM pass (Sources/TranscriptLLM). It
                 // never costs the take: a skip, a failure or Esc keeps the transcript.
-                let text = await self.refineDictationText(transcribedText, appState: appState, sessionID: taskSessionID)
+                let refinement = await self.refineDictationText(transcribedText, appState: appState, sessionID: taskSessionID)
+                let text = refinement.text(original: transcribedText)
+                // Fork: the Dictations page shows these as version tabs.
+                let textVersions = DictationTextVersion.take(
+                    recognized: transcribedText,
+                    recognitionModel: recognitionModel.rawValue,
+                    refinement: refinement
+                )
                 guard DictationSessionCompletionPolicy.canPublish(
                     sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
                     isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
@@ -425,7 +435,8 @@ extension DictationSessionController {
                         appState: appState,
                         overlayController: overlayController,
                         sessionID: taskSessionID,
-                        reason: pasteDeclined ? .escapeAfterStop : .sessionCap
+                        reason: pasteDeclined ? .escapeAfterStop : .sessionCap,
+                        versions: textVersions
                     )
                     return
                 }
@@ -457,7 +468,8 @@ extension DictationSessionController {
                         appState: appState,
                         overlayController: overlayController,
                         sessionID: taskSessionID,
-                        reason: .anchoredDeferred(appName: appName)
+                        reason: .anchoredDeferred(appName: appName),
+                        versions: textVersions
                     )
                     return
                 case .notAnchored:
@@ -489,7 +501,8 @@ extension DictationSessionController {
                         return self.startPersistingDictationTranscript(
                             text: text,
                             delivery: pasteOutcome.delivery,
-                            recovery: recovery
+                            recovery: recovery,
+                            versions: textVersions
                         )
                     },
                     finishSaving: { saveTask in
@@ -499,7 +512,8 @@ extension DictationSessionController {
                     },
                     saveSynchronously: {
                         self.persistDictationTranscript(
-                            text: text, delivery: pasteOutcome.delivery, recovery: recovery, context: saveContext
+                            text: text, delivery: pasteOutcome.delivery, recovery: recovery, context: saveContext,
+                            versions: textVersions
                         )
                     },
                     performAutoEnter: {

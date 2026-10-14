@@ -230,6 +230,40 @@ func testDictationEntryTextRewrite() async {
         assertFalse(saved?.text.hasPrefix("Um") ?? true, "the filler should be gone")
     }
 
+    await runSuite("Transcribe again keeps the replaced text and the run's texts as versions") {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("dictation-versions-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("Dictations_2026-04-07.md")
+        try? dayFile.write(to: url, atomically: true, encoding: .utf8)
+        guard let entry = DictationTranscriptStore.recentSavedDictations(limit: 10, directory: root)
+            .first(where: { $0.entryID == "dictation-20260407-110200-000-bbbb" }) else {
+            assertTrue(false, "fixture entry should parse")
+            return
+        }
+        do {
+            _ = try await DictationRetranscription.run(
+                entry: entry, audioURL: root.appendingPathComponent("audio.m4a"), cleanupEnabled: false,
+                loadSamples: { _ in [0.1, 0.2] },
+                transcribe: { _ in "we should merge it tonight" },
+                recognitionModel: "breeze-asr-25",
+                refine: { text in .refined("We should merge it tonight.", model: .gemma4E4B) }
+            )
+        } catch {
+            assertTrue(false, "a heard take should save: \(error)")
+        }
+        let saved = DictationTranscriptStore.recentSavedDictations(limit: 10, directory: root)
+            .first(where: { $0.entryID == "dictation-20260407-110200-000-bbbb" })
+        assertEqual(saved?.text, "We should merge it tonight.", "the model's answer is the new text")
+        let versions = saved.map { DictationTextVersionStore.load(for: $0) } ?? []
+        assertEqual(versions.map(\.stage), [.earlier, .recognized, .refined], "the old text, then what this run made")
+        assertEqual(versions.first?.text, entry.text, "the replaced text isn't lost")
+        assertEqual(versions.dropFirst().map(\.model), ["breeze-asr-25", "gemma-4-e4b-it-qat-q4_0"], "labeled with both models")
+        let otherEntry = DictationTextVersionStore.load(entryID: "dictation-20260407-091500-000-aaaa", in: root)
+        assertEqual(otherEntry, [], "other entries in the day file get nothing")
+    }
+
     await runSuite("Transcribe again refuses entries without an Entry ID") {
         let legacy = SavedDictationEntry(
             url: URL(fileURLWithPath: "/nonexistent/Dictations_2020-01-01.md"),

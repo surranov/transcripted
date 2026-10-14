@@ -44,6 +44,14 @@ Don't keep, 7 days, 30 days (default), Forever); pruning runs at launch and
 when the setting changes, and only touches regular files with those names,
 never symlinks.
 
+Fork: each entry's text versions (what recognition heard, each model's
+answer, and on Transcribe again the text it replaced) live in
+`<capture-library>/dictations/versions/<entry id>.json`, 0600, written by
+`DictationTextVersionStore` (`Sources/Dictation/DictationTextVersions.swift`).
+Move and Copy carry them like kept audio (the versions of entries in a day file
+that stays behind stay with it), and they're deleted with their entry once the
+undo window closes. The format is in `docs/capture-format.md`.
+
 Until the transcript saves, a take's audio stays in the private recovery folder
 `~/Library/Application Support/Transcripted/state/dictation-audio-recovery/`
 (app state, not the library). After a successful save it moves into

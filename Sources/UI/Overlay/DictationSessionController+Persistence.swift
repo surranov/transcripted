@@ -13,13 +13,16 @@ extension DictationSessionController {
         appState: TranscriptedAppState,
         overlayController: FloatingOverlayController,
         sessionID: UUID,
-        reason: DictationSaveWithoutPasteReason = .sessionCap
+        reason: DictationSaveWithoutPasteReason = .sessionCap,
+        versions: [DictationTextVersion] = []
     ) async {
         lastCompletedText = text
         let recovery = stoppedAudioRecovery
         let saveContext = dictationSaveContext(text: text)
         let delivery = DictationSessionCapSavePolicy.delivery
-        let saveTask = startPersistingDictationTranscript(text: text, delivery: delivery, recovery: recovery)
+        let saveTask = startPersistingDictationTranscript(
+            text: text, delivery: delivery, recovery: recovery, versions: versions
+        )
         let saveResult = await saveTask.value
         publishDictationTranscriptPersistence(saveResult, delivery: delivery, context: saveContext)
         guard DictationSessionCompletionPolicy.canPublish(
@@ -125,12 +128,16 @@ extension DictationSessionController {
 
     /// The synchronous save: writes the transcript, retires (or keeps) the
     /// take's audio, then publishes. Same keep rule as the async save.
+    /// Fork: `versions` (the take's recognized text and the LLM's answer) go
+    /// next to the entry once it's saved; failing to write them never fails
+    /// the save.
     @discardableResult
     func persistDictationTranscript(
         text: String,
         delivery: DictationDelivery,
         recovery: DictationStoppedAudioRecovery?,
-        context: [String: String]
+        context: [String: String],
+        versions: [DictationTextVersion] = []
     ) -> DictationTranscriptPersistenceResult {
         let sourceAppName = sessionSourceApp?.localizedName ?? "Unknown"
         let sourceBundleID = sessionSourceApp?.bundleIdentifier
@@ -138,10 +145,12 @@ extension DictationSessionController {
             recovery: recovery,
             keepWindow: AudioStoragePreferences.dictationAudioKeepWindow()
         ) { audioRelativePath in
-            try DictationTranscriptWriter.save(
+            let saved = try DictationTranscriptWriter.save(
                 text: text, sourceAppName: sourceAppName, sourceBundleID: sourceBundleID,
                 delivery: delivery, audioRelativePath: audioRelativePath
             )
+            DictationTextVersionStore.record(versions, for: saved)
+            return saved
         }
         publishDictationTranscriptPersistence(result, delivery: delivery, context: context)
         return result
@@ -159,10 +168,20 @@ extension DictationSessionController {
         stoppedAudioRecovery = nil
     }
 
+    /// `DictationSessionPipelineHost`'s save (Paste Anyway): no versions.
     func startPersistingDictationTranscript(
         text: String,
         delivery: DictationDelivery,
         recovery: DictationStoppedAudioRecovery?
+    ) -> Task<DictationTranscriptPersistenceResult, Never> {
+        startPersistingDictationTranscript(text: text, delivery: delivery, recovery: recovery, versions: [])
+    }
+
+    func startPersistingDictationTranscript(
+        text: String,
+        delivery: DictationDelivery,
+        recovery: DictationStoppedAudioRecovery?,
+        versions: [DictationTextVersion]
     ) -> Task<DictationTranscriptPersistenceResult, Never> {
         let sourceAppName = sessionSourceApp?.localizedName ?? "Unknown"
         let sourceBundleID = sessionSourceApp?.bundleIdentifier
@@ -174,13 +193,15 @@ extension DictationSessionController {
                 recovery: recovery,
                 keepWindow: keepWindow
             ) { audioRelativePath in
-                try DictationTranscriptWriter.save(
+                let saved = try DictationTranscriptWriter.save(
                     text: text,
                     sourceAppName: sourceAppName,
                     sourceBundleID: sourceBundleID,
                     delivery: delivery,
                     audioRelativePath: audioRelativePath
                 )
+                DictationTextVersionStore.record(versions, for: saved)
+                return saved
             }
         }
     }

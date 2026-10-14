@@ -27,12 +27,16 @@ enum DictationLeftoverRecovery {
         var pending: () -> [DictationStoppedAudioRecovery]
         var loadSamples: (URL) async throws -> [Float]
         var transcribe: ([Float]) async throws -> String
+        /// Fork: the model `transcribe` runs, for the text versions' label.
+        var recognitionModel: () async -> String? = { nil }
         /// The live take's text cleanup (filler cleanup when it's on).
         var clean: (String) -> String
-        /// The transcript LLM pass; returns its input when it can't help.
-        var refine: (String) async -> String
-        /// Saves the entry and retires the checkpoint; true when saved.
-        var save: (DictationStoppedAudioRecovery, String) async -> Bool
+        /// The transcript LLM pass; anything but `.refined` keeps the
+        /// recognized text.
+        var refine: (String) async -> DictationTextRefinement
+        /// Saves the entry with its text versions (fork) and retires the
+        /// checkpoint; true when saved.
+        var save: (DictationStoppedAudioRecovery, String, [DictationTextVersion]) async -> Bool
     }
 
     struct Summary: Equatable {
@@ -54,12 +58,17 @@ enum DictationLeftoverRecovery {
                     summary.failed += 1
                     continue
                 }
+                let recognitionModel = await steps.recognitionModel()
                 let text = steps.clean(try await steps.transcribe(samples))
                 guard !text.isEmpty else {
                     summary.noWords += 1
                     continue
                 }
-                if await steps.save(recovery, await steps.refine(text)) {
+                let refinement = await steps.refine(text)
+                let versions = DictationTextVersion.take(
+                    recognized: text, recognitionModel: recognitionModel, refinement: refinement
+                )
+                if await steps.save(recovery, refinement.text(original: text), versions) {
                     summary.recovered += 1
                 } else {
                     summary.failed += 1
@@ -81,15 +90,15 @@ enum DictationLeftoverRecovery {
         attempts: Int = 36,
         delay: Duration = .seconds(5),
         refine: (String) async -> DictationTextRefinement
-    ) async -> String {
+    ) async -> DictationTextRefinement {
         for attempt in 1...max(1, attempts) {
             let refinement = await refine(text)
             guard refinement == .unchanged(.notReady), attempt < attempts, !Task.isCancelled else {
-                return refinement.text(original: text)
+                return refinement
             }
             try? await Task.sleep(for: delay)
         }
-        return text
+        return .unchanged(.notReady)
     }
 
     /// The checkpoints launch should try, oldest first so the day files read

@@ -10,6 +10,8 @@ import TranscriptedCore
 struct SavedDictationTranscript: Sendable {
     let url: URL
     let title: String
+    /// The section's `Entry ID:`; empty from callers that don't write one.
+    var entryID = ""
 }
 
 enum DictationDelivery: String, Sendable {
@@ -157,7 +159,7 @@ enum DictationTranscriptWriter {
 
         FileManager.default.restrictFileToOwnerOnly(at: url)
 
-        return SavedDictationTranscript(url: url, title: title)
+        return SavedDictationTranscript(url: url, title: title, entryID: entryID)
     }
 
     static func dailyFileURL(for date: Date, in directory: URL) -> URL {

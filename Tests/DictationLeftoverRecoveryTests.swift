@@ -7,6 +7,7 @@ import Foundation
 
 private struct RecoveryProbe {
     var saved: [(UUID, String)] = []
+    var versions: [[DictationTextVersion]] = []
 }
 
 private func recovery(_ id: UUID = UUID(), minutesAgo: Double) -> DictationStoppedAudioRecovery {
@@ -28,16 +29,22 @@ func testDictationLeftoverRecovery() async {
             pending: { [first, second] },
             loadSamples: { _ in [0.1, 0.2] },
             transcribe: { _ in "  привет мир  " },
+            recognitionModel: { "parakeet-tdt-v3" },
             clean: { $0.trimmingCharacters(in: .whitespaces) },
-            refine: { "\($0)!" },
-            save: { recovery, text in
+            refine: { .refined("\($0)!", model: .gemma4E2B) },
+            save: { recovery, text, versions in
                 probe.saved.append((recovery.sessionID, text))
+                probe.versions.append(versions)
                 return true
             }
         ))
         assertEqual(summary, DictationLeftoverRecovery.Summary(recovered: 2, noWords: 0, failed: 0), "both takes recovered")
         assertEqual(probe.saved.map(\.0), [first.sessionID, second.sessionID], "takes are saved in the order given")
         assertEqual(probe.saved.first?.1, "привет мир!", "the saved text is cleaned, then refined")
+        let versions = probe.versions.first ?? []
+        assertEqual(versions.map(\.stage), [.recognized, .refined], "the take keeps what it heard and the model's answer")
+        assertEqual(versions.map(\.text), ["привет мир", "привет мир!"], "the recognized version is the cleaned text")
+        assertEqual(versions.map(\.model), ["parakeet-tdt-v3", "gemma-4-e2b-it-q4_0"], "each version names its model")
     }
 
     await runSuite("DictationLeftoverRecovery keeps takes it can't recover and goes on") {
@@ -55,8 +62,8 @@ func testDictationLeftoverRecovery() async {
             },
             transcribe: { _ in "" },
             clean: { $0 },
-            refine: { $0 },
-            save: { _, _ in true }
+            refine: { _ in .unchanged(.noPrompt) },
+            save: { _, _, _ in true }
         ))
         // `transcribe` above returns nothing for every take; run a second pass
         // where only some fail, to see the rest still saved.
@@ -69,8 +76,8 @@ func testDictationLeftoverRecovery() async {
             loadSamples: { _ in [0.5] },
             transcribe: { _ in "слова" },
             clean: { $0 },
-            refine: { $0 },
-            save: { recovery, _ in
+            refine: { _ in .unchanged(.noPrompt) },
+            save: { recovery, _, _ in
                 if recovery.sessionID == unsaved.sessionID { return false }
                 savedIDs.append(recovery.sessionID)
                 return true
@@ -85,8 +92,8 @@ func testDictationLeftoverRecovery() async {
             loadSamples: { _ in [0.5] },
             transcribe: { _ in throw FakeFailure.busy },
             clean: { $0 },
-            refine: { $0 },
-            save: { _, _ in true }
+            refine: { _ in .unchanged(.noPrompt) },
+            save: { _, _, _ in true }
         ))
         assertEqual(throwing.failed, 2, "a busy or failing model leaves every take for the next launch")
     }
@@ -95,9 +102,9 @@ func testDictationLeftoverRecovery() async {
         var calls = 0
         let refined = await DictationLeftoverRecovery.refineWhenReady("текст", attempts: 5, delay: .milliseconds(1)) { text in
             calls += 1
-            return calls < 3 ? .unchanged(.notReady) : .refined(text + "!")
+            return calls < 3 ? .unchanged(.notReady) : .refined(text + "!", model: .gemma4E2B)
         }
-        assertEqual(refined, "текст!", "the take gets the pass once the model is up")
+        assertEqual(refined.text(original: "текст"), "текст!", "the take gets the pass once the model is up")
         assertEqual(calls, 3, "asked again only while not ready")
 
         calls = 0
@@ -105,7 +112,7 @@ func testDictationLeftoverRecovery() async {
             calls += 1
             return .unchanged(.notReady)
         }
-        assertEqual(neverReady, "текст", "a model that never comes up leaves the recognized text")
+        assertEqual(neverReady.text(original: "текст"), "текст", "a model that never comes up leaves the recognized text")
         assertEqual(calls, 4, "and the wait is bounded")
 
         calls = 0
@@ -113,7 +120,7 @@ func testDictationLeftoverRecovery() async {
             calls += 1
             return .unchanged(.noPrompt)
         }
-        assertEqual(off, "текст", "a pass turned off is final")
+        assertEqual(off.text(original: "текст"), "текст", "a pass turned off is final")
         assertEqual(calls, 1, "and isn't asked again")
     }
 

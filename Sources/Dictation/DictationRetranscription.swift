@@ -38,13 +38,18 @@ enum DictationRetranscription {
     /// a re-transcription doesn't replace a refined entry with raw text), and
     /// rewrites the entry. Returns the rewrite result; the day file is
     /// untouched when this throws.
+    ///
+    /// Fork: the run's texts are added to the entry's versions
+    /// (`DictationTextVersionStore`), labeled with `recognitionModel` and the
+    /// LLM's model, so the text it replaces stays one tab away.
     static func run(
         entry: SavedDictationEntry,
         audioURL: URL,
         cleanupEnabled: Bool,
         loadSamples: @escaping @Sendable (URL) throws -> [Float] = loadSamples16k,
         transcribe: ([Float]) async throws -> String,
-        refine: (String) async -> String = { $0 }
+        recognitionModel: String? = nil,
+        refine: (String) async -> DictationTextRefinement = { _ in .unchanged(.noPrompt) }
     ) async throws -> DictationEntryTextRewrite.Result {
         guard let entryID = entry.entryID, !entryID.isEmpty else { throw Failure.missingEntryID }
         let samples: [Float]
@@ -60,17 +65,29 @@ enum DictationRetranscription {
         let raw = try await transcribe(samples)
         let cleaned = cleanedText(raw, cleanupEnabled: cleanupEnabled)
         guard !cleaned.isEmpty else { throw Failure.noWords }
-        let text = await refine(cleaned)
+        let refinement = await refine(cleaned)
+        let text = refinement.text(original: cleaned)
+        let versions = DictationTextVersion.take(
+            recognized: cleaned, recognitionModel: recognitionModel, refinement: refinement
+        )
 
         let url = entry.url
         let createdAt = entry.createdAt
+        let previousText = entry.text
         return try await Task.detached(priority: .userInitiated) {
-            try DictationTranscriptStore.replaceEntryText(
+            let result = try DictationTranscriptStore.replaceEntryText(
                 entryID: entryID,
                 in: url,
                 with: text,
                 createdAt: createdAt
             )
+            DictationTextVersionStore.recordRetranscription(
+                versions,
+                replacing: DictationTextVersion(stage: .earlier, model: nil, text: previousText, createdAt: createdAt),
+                entryID: entryID,
+                in: url.deletingLastPathComponent()
+            )
+            return result
         }.value
     }
 

@@ -12,12 +12,14 @@ protocol DictationTextRefiner: AnyObject {
 }
 
 enum DictationTextRefinement: Equatable, Sendable {
-    case refined(String)
+    /// The accepted answer and the model that wrote it (fork: the Dictations
+    /// page labels each saved version with its model).
+    case refined(String, model: TranscriptLLMModelChoice)
     case unchanged(DictationTextRefinementSkip)
 
     /// The text to deliver: the refined text, or the original on any skip.
     func text(original: String) -> String {
-        if case let .refined(text) = self { return text }
+        if case let .refined(text, _) = self { return text }
         return original
     }
 }

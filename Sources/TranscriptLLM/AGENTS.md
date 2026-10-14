@@ -23,6 +23,7 @@ Pieces:
 
 ## Rules
 
+- **A dictation answer names its model** (`DictationTextRefinement.refined(_:model:)`), the model of the helper that wrote it, so the saved versions label each text (`Sources/Dictation/DictationTextVersions.swift`).
 - **The pass never costs a dictation or a meeting.** Every outcome other than an accepted answer keeps the recognized text. An answer cut off at the token limit (`finish_reason` other than `stop`) or far off the original's length (`DictationTextRefinementPolicy`) is rejected.
 - **A long dictation goes in pieces** (`DictationRefinementChunking`, past 3,000 characters), like a meeting goes per utterance: a rejected piece keeps its recognized text, the others are still refined, and the system prompt stays cached in the slot between them. The take length cap is a two-hour backstop (`TranscriptedConstants.dictationSessionMaxDuration`), so a single request could otherwise outgrow the 16k-token slot after about 40 minutes of speech.
 - **Meetings are rewritten once, at the end, after a backup**, and only where the transcript still holds the text the model saw. Jobs and their progress are on disk (`state/meeting-llm/`), so a quit, crash or unready model resumes the job instead of losing it.

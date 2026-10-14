@@ -442,6 +442,7 @@ APP_SOURCES=(
     "Sources/Support/AnchoredPastePolicy.swift"
     "Sources/Support/AnchoredPastePreferences.swift"
     "Sources/Dictation/DictationTextRefiner.swift"
+    "Sources/Dictation/DictationTextVersions.swift"
     "Sources/Dictation/DictationRefinementChunking.swift"
     "Sources/Dictation/DictationDeliveryOrder.swift"
     "Sources/Support/TranscriptLLMPromptPreferences.swift"

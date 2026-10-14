@@ -34,6 +34,7 @@
 - Capture library default: `~/Library/Application Support/Transcripted/captures/`. Dictation root: `<capture-library>/dictations/`, one `Dictations_YYYY-MM-DD.md` per day, many timestamped sections.
 - Each section has: generated title, source app name and bundle id, delivery outcome, timestamp, word and character counts, the `Audio:` relative path when audio is kept, and the text.
 - Kept audio: `<capture-library>/dictations/audio/<uuid>.m4a` (`.wav` until compressed). It may have aged out, so resolve through `DictationAudioArchive.resolveURL` and treat nil as normal.
+- Text versions (fork): `<capture-library>/dictations/versions/<entry id>.json`. Optional; a missing file just means no version tabs.
 - Stopped-audio recovery: `~/Library/Application Support/Transcripted/state/dictation-audio-recovery/`.
 
 ## Recovery behavior
@@ -53,6 +54,7 @@ A saved recording is offered only while its own take's message is on screen, nev
 - `DictationStoppedAudioRecovery.swift`: private recovery WAV plus metadata, written right after stop and kept until the transcript saves or the take is discarded (Esc before the stop is admitted, no speech). Esc after an admitted stop and a short failed take keep it (fork). Also `saveTranscriptAndRetire` and `retire(_:afterSaving:keptAudioRelativePath:)` (a failed move into the audio archive keeps the WAV), and `purgeLeftovers`.
 - `DictationLeftoverRecovery.swift` (fork): launch-time recovery of checkpoints from earlier runs (see above).
 - `DictationRecordingSpool.swift` (fork): the take's checkpoint WAV written while it records, and `DictationRecordingSpoolPump`, the loop that feeds it. One lock covers writes and `end`, so nothing lands after the stop takes the file over. Driven by `DictationSessionController+RecordingSpool.swift`.
+- `DictationTextVersions.swift` (fork): `DictationTextVersion` and `DictationTextVersionStore`, the texts a saved entry went through (recognized, each model's answer, the text Transcribe again replaced) in `dictations/versions/<entry id>.json`. Every save path writes them after the day file (live take, session cap, Esc, anchored deferral, launch recovery) and Transcribe again adds to them; a failed write never fails the save. The Dictations page shows them as tabs. Format: `docs/capture-format.md`.
 - `DictationTextRefiner.swift` (fork): the protocol the dictation pipeline uses for the transcript LLM pass (`Sources/TranscriptLLM/`), and `DictationTextRefinementPolicy`, which rejects an answer far off the transcript's length (a passage of 400+ characters must keep 70% of it).
 - `DictationDeliveryOrder.swift` (fork): the dictation queue's paste order; a take pastes once every earlier take has pasted or ended.
 - `DictationRefinementChunking.swift` (fork): a take over 3,000 characters (about five minutes of speech) goes to the LLM in even pieces of whole sentences, each checked on its own and joined back with the original whitespace.

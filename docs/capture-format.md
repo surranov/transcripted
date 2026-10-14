@@ -354,6 +354,34 @@ Details:
 - The dictated text follows after a blank line and runs to the next `## `
   heading or end of file.
 
+### Text versions (fork)
+
+The day file holds only the text that was delivered. What came before it is in
+`<capture-library>/dictations/versions/<entry id>.json`, one file per entry,
+named by the section's `Entry ID` (only `[A-Za-z0-9-]`, so it is never a path):
+
+```json
+{
+  "entryID" : "dictation-20261014-101500-123-8c…",
+  "formatVersion" : 1,
+  "versions" : [
+    { "createdAt" : "2026-10-14T07:15:02Z", "model" : "parakeet-tdt-v3", "stage" : "recognized", "text" : "ну давай созвонимся" },
+    { "createdAt" : "2026-10-14T07:15:02Z", "model" : "gemma-4-e2b-it-q4_0", "stage" : "refined", "text" : "Давай созвонимся." }
+  ]
+}
+```
+
+- `stage`: `recognized` (speech recognition's text after the take's cleanup,
+  what the transcript LLM was given), `refined` (the LLM's accepted answer),
+  `earlier` (the entry's text from before versions were kept, saved when
+  Transcribe again first replaces it; no `model`).
+- `model`: the recognizer's `TranscriptionModelChoice` id or the LLM's
+  `TranscriptLLMModelChoice` id, kept raw so a retired model still reads back.
+- Oldest first; a version repeating an existing one (same stage, model and
+  text) isn't added again; at most 8, the oldest dropped first.
+- Optional. A missing or unreadable file means no versions; the day file stays
+  the record of the dictation.
+
 ## Writing day files
 
 The main Transcripted app (never the keyboard) appends settled typed text into

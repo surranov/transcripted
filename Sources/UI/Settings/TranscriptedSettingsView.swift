@@ -293,12 +293,14 @@ struct TranscriptedSettingsView: View {
         }
     }
 
-    func handleCopyDictation(_ entry: SavedDictationEntry) {
+    /// `text` is the version the card shows (fork); the entry's saved text
+    /// otherwise.
+    func handleCopyDictation(_ entry: SavedDictationEntry, text: String? = nil) {
         trackSettingsAction("copy_dictation", page: .home)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         let copied = ProductUsageTelemetry.copy(kind: .dictation, surface: .dictations, artifactDate: entry.createdAt) {
-            pasteboard.setString(entry.text, forType: .string)
+            pasteboard.setString(text ?? entry.text, forType: .string)
         }
         if copied { flashCopied(rowID: entry.id) }
     }

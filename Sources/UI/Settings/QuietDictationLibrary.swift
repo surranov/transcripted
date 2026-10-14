@@ -8,6 +8,8 @@ import SwiftUI
 // on top carries play, time, length, words, app, and any delivery problem
 // (`DictationPlaybackBar.swift`); the dictated text sits below in italics,
 // clamped to four lines with Show more. Copy and ⋯ fade in on hover.
+// Fork: an expanded card whose entry kept its text versions shows a switch
+// between them (`DictationVersionPicker`): the original and each model's.
 
 /// Stable `CaptureUndoManager` ids for dictation entries. The prefix keeps
 /// dictation offers distinguishable from meeting offers (whose ids are raw
@@ -62,7 +64,9 @@ struct QuietDictationCard: View {
     @ObservedObject var playback: DictationPlaybackController
     let menuItems: [HomeRowMenuItem]
     let onTogglePlayback: () -> Void
-    let onCopy: () -> Void
+    /// Copies the text the card shows: the saved text, or the version picked
+    /// on an expanded card.
+    let onCopy: (String) -> Void
     let onLoadAudioInfo: () async -> Void
     let onShowMore: () -> Void
 
@@ -71,9 +75,23 @@ struct QuietDictationCard: View {
     @State private var isExpanded = false
     @State private var clampedHeight: CGFloat = 0
     @State private var fullHeight: CGFloat = 0
+    /// Fork: the entry's text versions, read off the main thread.
+    @State private var versions: [DictationTextVersion] = []
+    /// The picked version tab; nil shows the saved text's tab.
+    @State private var pickedVersionID: Int?
 
+    private var versionLayout: DictationVersionTabs.Layout? {
+        DictationVersionTabs.layout(versions: versions, savedText: entry.text)
+    }
+
+    /// What the card shows: the saved text, or the picked version while the
+    /// card is expanded.
     private var text: String {
-        entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isExpanded, let layout = versionLayout,
+           let tab = layout.tabs.first(where: { $0.id == (pickedVersionID ?? layout.savedTabID) }) {
+            return tab.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var isLong: Bool {
@@ -103,15 +121,28 @@ struct QuietDictationCard: View {
                 menuItems: menuItems,
                 playback: playback,
                 onTogglePlayback: onTogglePlayback,
-                onCopy: onCopy
+                onCopy: { onCopy(text) }
             )
+
+            if isExpanded, let layout = versionLayout {
+                DictationVersionPicker(
+                    tabs: layout.tabs,
+                    selection: Binding(
+                        get: { pickedVersionID ?? layout.savedTabID },
+                        set: { pickedVersionID = $0 }
+                    )
+                )
+                .padding(.top, 10)
+            }
 
             if !text.isEmpty {
                 bodyText
                     .padding(.top, 8)
             }
 
-            if isLong || isExpanded {
+            // Versions are only shown expanded, so a short text with versions
+            // gets the toggle too.
+            if isLong || isExpanded || versionLayout != nil {
                 showMoreButton
                     .padding(.top, 6)
             }
@@ -134,9 +165,17 @@ struct QuietDictationCard: View {
         .task(id: entry.id) {
             await onLoadAudioInfo()
         }
+        // Transcribe again changes the text and adds versions: read them again.
+        .task(id: VersionsKey(entryID: entry.id, text: entry.text)) {
+            let entry = entry
+            versions = await Task.detached(priority: .utility) {
+                DictationTextVersionStore.load(for: entry)
+            }.value
+            pickedVersionID = nil
+        }
         .accessibilityElement(children: .contain)
         // The hover-only buttons, reachable from the card itself too.
-        .accessibilityAction(named: Text("Copy"), onCopy)
+        .accessibilityAction(named: Text("Copy")) { onCopy(text) }
         .modifier(DictationMenuAccessibilityActions(items: menuItems))
         .accessibilityIdentifier("transcripted.dictations.row")
     }
@@ -176,6 +215,8 @@ struct QuietDictationCard: View {
             let expanding = !isExpanded
             withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
                 isExpanded = expanding
+                // A card opens on its saved text again.
+                if !expanding { pickedVersionID = nil }
             }
             if expanding { onShowMore() }
         } label: {
@@ -191,6 +232,12 @@ struct QuietDictationCard: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("transcripted.dictations.row.showMore")
     }
+}
+
+/// Reloads a card's versions when its entry or saved text changes.
+private struct VersionsKey: Equatable {
+    let entryID: String
+    let text: String
 }
 
 /// Each ⋯ menu item as a named VoiceOver action on the card.

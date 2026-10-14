@@ -14,7 +14,8 @@ struct DictationsSettingsPage: View {
     let homeCopiedRowID: String?
     let onStartDictation: () -> Void
     let onLoadMoreDictations: () -> Void
-    let onCopyDictation: (SavedDictationEntry) -> Void
+    /// Copies the given text of the entry (the version shown on its card).
+    let onCopyDictation: (SavedDictationEntry, String) -> Void
     let dictationRowMenuItems: (SavedDictationEntry) -> [HomeRowMenuItem]
     /// Deletes a single dictation entry reversibly and stages the undo offer
     /// with `CaptureUndoManager.shared` (the shell owns the disk mutation).
@@ -25,8 +26,10 @@ struct DictationsSettingsPage: View {
     var transcribeAgainUnavailableReason: String? = nil
     /// Local STT over 16 kHz mono samples. nil hides Transcribe again.
     var transcribeSamples: (([Float]) async throws -> String)? = nil
+    /// Fork: the model `transcribeSamples` runs now, for the version's label.
+    var recognitionModel: () -> String? = { nil }
     /// Fork: the transcript LLM pass over the re-transcribed text.
-    var refineText: (String) async -> String = { $0 }
+    var refineText: (String) async -> DictationTextRefinement = { _ in .unchanged(.noPrompt) }
     /// Shows a Transcribe again failure; the closure retries.
     var onTranscribeAgainFailure: ((String, @escaping () -> Void) -> Void)? = nil
 
@@ -116,7 +119,7 @@ struct DictationsSettingsPage: View {
                 playback: playback,
                 menuItems: menuItems(for: entry),
                 onTogglePlayback: { togglePlayback(entry) },
-                onCopy: { onCopyDictation(entry) },
+                onCopy: { text in onCopyDictation(entry, text) },
                 onLoadAudioInfo: { await audioInfo.load(entry) },
                 onShowMore: {
                     ProductUsageTelemetry.trackResult(kind: .dictation, action: .preview, surface: .dictations,
@@ -158,6 +161,7 @@ struct DictationsSettingsPage: View {
             entry: entry,
             audioURL: url,
             transcribe: transcribeSamples,
+            recognitionModel: recognitionModel(),
             refine: refineText,
             onFailure: { message in
                 onTranscribeAgainFailure?(message, { startTranscribeAgain(entry) })

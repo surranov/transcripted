@@ -477,4 +477,34 @@ func testCaptureLibraryMigrationPlanner() {
             "Moved 1 item to the new folder. The old copies are in the Trash. 1 item changed during the move, so the newest version is still in /Old. 1 item couldn't go to the Trash and is still in /Old. 1 item stayed in /Old because the new folder already had a file with the same name."
         )
     }
+
+    runSuite("makePlan - text versions follow their entries; a staying day file keeps its entries' versions") {
+        let source = makeLibraryRoot("versions-source")
+        let destination = makeLibraryRoot("versions-destination")
+        defer {
+            try? fileManager.removeItem(at: source)
+            try? fileManager.removeItem(at: destination)
+        }
+        let sourceDictations = source.appendingPathComponent("dictations", isDirectory: true)
+        let destinationDictations = destination.appendingPathComponent("dictations", isDirectory: true)
+        writeFile("## 9:00 AM - moving\n\nEntry ID: `dictation-moving`\n\ntext", at: sourceDictations
+            .appendingPathComponent("Dictations_2026-10-13.md"))
+        writeFile("## 9:00 AM - staying\n\nEntry ID: `dictation-staying`\n\ntext", at: sourceDictations
+            .appendingPathComponent("Dictations_2026-10-14.md"))
+        // The new folder already has that day: its day file stays behind.
+        writeFile("## 8:00 AM - theirs\n\nEntry ID: `dictation-theirs`\n\ntext", at: destinationDictations
+            .appendingPathComponent("Dictations_2026-10-14.md"))
+        writeFile("{}", at: sourceDictations.appendingPathComponent("versions/dictation-moving.json"))
+        writeFile("{}", at: sourceDictations.appendingPathComponent("versions/dictation-staying.json"))
+
+        let plan = planner.makePlan(from: source, to: destination)
+        let versionItems = plan.itemsToCopy.filter { $0.kind == .dictationTextVersions }
+        assertEqual(versionItems.map(\.sourceURL.lastPathComponent), ["dictation-moving.json"],
+                    "only the versions of entries that move are copied")
+        assertEqual(
+            versionItems.first?.destinationURL.path,
+            destinationDictations.appendingPathComponent("versions/dictation-moving.json").path,
+            "into the new library's versions folder"
+        )
+    }
 }

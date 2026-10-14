@@ -65,20 +65,22 @@ extension DictationSessionController {
                 guard await Self.waitUntilVoiceModelIsFree(sttRouter) else { throw CancellationError() }
                 return try await sttRouter.transcribeSavedDictation(samples: samples)
             },
+            // `transcribeSavedDictation` runs the dictation model.
+            recognitionModel: { sttRouter.selectedModel.rawValue },
             clean: { raw in
                 DictationRetranscription.cleanedText(raw, cleanupEnabled: DictationCleanupPreferences.isEnabled())
             },
             refine: { text in
                 await DictationLeftoverRecovery.refineWhenReady(text) { await refiner.refine($0) }
             },
-            save: { recovery, text in
+            save: { recovery, text, versions in
                 let keepWindow = AudioStoragePreferences.dictationAudioKeepWindow()
                 let result = await Task.detached(priority: .utility) {
                     DictationStoppedAudioRecoveryStore.saveTranscriptAndRetire(
                         recovery: recovery,
                         keepWindow: keepWindow
                     ) { audioRelativePath in
-                        try DictationTranscriptWriter.save(
+                        let saved = try DictationTranscriptWriter.save(
                             text: text,
                             sourceAppName: DictationLeftoverRecovery.sourceAppName,
                             sourceBundleID: nil,
@@ -86,6 +88,8 @@ extension DictationSessionController {
                             createdAt: recovery.createdAt,
                             audioRelativePath: audioRelativePath
                         )
+                        DictationTextVersionStore.record(versions, for: saved)
+                        return saved
                     }
                 }.value
                 return result.saved != nil

@@ -171,3 +171,67 @@ enum DictationRowMenuIdentifier {
     static let reveal = "transcripted.dictations.row.reveal"
     static let transcribeAgain = "transcripted.dictations.row.transcribeAgain"
 }
+
+/// The version tabs an expanded Dictations card shows (fork): the original
+/// recognized text and each model's version of it, labeled with the model.
+/// Collapsed cards show the saved text only.
+enum DictationVersionTabs {
+    struct Tab: Equatable, Identifiable {
+        let id: Int
+        let title: String
+        let text: String
+    }
+
+    struct Layout: Equatable {
+        let tabs: [Tab]
+        /// The tab holding the entry's saved text, selected when the card opens.
+        let savedTabID: Int
+    }
+
+    /// The saved text when no version matches it (the day file was edited
+    /// by hand).
+    static let savedTitle = "Saved"
+    /// A version from before versions were kept (`.earlier`).
+    static let earlierTitle = "Earlier"
+
+    /// Tabs in the order the texts were made, or nil when there's nothing to
+    /// choose between (fewer than two texts). A title that repeats (two runs
+    /// on one model) gets a number: "Gemma 4 E2B", "Gemma 4 E2B 2".
+    static func layout(versions: [DictationTextVersion], savedText: String) -> Layout? {
+        var tabs: [Tab] = []
+        var seenTitles: [String: Int] = [:]
+        for version in versions {
+            let base = title(for: version)
+            let count = (seenTitles[base] ?? 0) + 1
+            seenTitles[base] = count
+            tabs.append(Tab(id: tabs.count, title: count == 1 ? base : "\(base) \(count)", text: version.text))
+        }
+        let saved = savedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedTabID: Int
+        if let match = tabs.last(where: { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == saved }) {
+            savedTabID = match.id
+        } else if !saved.isEmpty {
+            tabs.append(Tab(id: tabs.count, title: savedTitle, text: saved))
+            savedTabID = tabs.count - 1
+        } else {
+            return nil
+        }
+        guard tabs.count >= 2 else { return nil }
+        return Layout(tabs: tabs, savedTabID: savedTabID)
+    }
+
+    /// "Original · Parakeet V3" for what recognition heard, the LLM's name
+    /// for its answer. A model the app no longer offers shows its raw id.
+    static func title(for version: DictationTextVersion) -> String {
+        switch version.stage {
+        case .recognized:
+            guard let model = version.model else { return "Original" }
+            return "Original · \(TranscriptionModelChoice(rawValue: model)?.shortTitle ?? model)"
+        case .refined:
+            guard let model = version.model else { return "Processed" }
+            return TranscriptLLMModelChoice(rawValue: model)?.title ?? model
+        case .earlier:
+            return earlierTitle
+        }
+    }
+}

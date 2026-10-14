@@ -11,6 +11,9 @@ struct CaptureLibraryMigrationItem: Equatable {
         case dictationTranscript
         /// A kept take's audio, `dictations/audio/<uuid>.m4a|.wav`.
         case dictationAudioFile
+        /// Fork: an entry's text versions, `dictations/versions/<entry id>.json`
+        /// (`DictationTextVersionStore`).
+        case dictationTextVersions
         case writingTranscript
     }
 
@@ -153,6 +156,19 @@ struct CaptureLibraryMigrationPlanner {
         for audioFile in keptDictationAudioFiles(in: audioDirectory(in: dictationsDirectory(in: source)))
         where !stayingAudioNames.contains(audioFile.deletingPathExtension().lastPathComponent.lowercased()) {
             plan(.dictationAudioFile, from: audioFile, into: destinationDictationAudio)
+        }
+
+        // Text versions follow their entries the way kept audio does: those of
+        // entries in a day file that stays behind stay too.
+        let stayingEntryIDs = Set(
+            skippedExisting
+                .filter { $0.kind == .dictationTranscript }
+                .flatMap { entryIDs(in: $0.sourceURL) }
+        )
+        let destinationTextVersions = textVersionsDirectory(in: destinationDictations)
+        for versionsFile in textVersionFiles(in: textVersionsDirectory(in: dictationsDirectory(in: source)))
+        where !stayingEntryIDs.contains(versionsFile.deletingPathExtension().lastPathComponent) {
+            plan(.dictationTextVersions, from: versionsFile, into: destinationTextVersions)
         }
 
         // Writing day files follow the dictation rules exactly: same collision
@@ -334,6 +350,28 @@ struct CaptureLibraryMigrationPlanner {
                 .trimmingCharacters(in: CharacterSet(charactersIn: "` "))
             let name = (value as NSString).lastPathComponent
             return (name as NSString).deletingPathExtension.lowercased()
+        }
+    }
+
+    /// `dictations/versions`; the name is `DictationTextVersionStore.folderName`,
+    /// which Support can't name.
+    private func textVersionsDirectory(in dictations: URL) -> URL {
+        dictations.appendingPathComponent("versions", isDirectory: true)
+    }
+
+    private func textVersionFiles(in directory: URL) -> [URL] {
+        directoryContents(of: directory)
+            .filter { $0.pathExtension.lowercased() == "json" && !isDirectory($0) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// The `Entry ID:` values in a day file.
+    private func entryIDs(in dayFile: URL) -> [String] {
+        guard let content = try? String(contentsOf: dayFile, encoding: .utf8) else { return [] }
+        return content.components(separatedBy: "\n").compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("Entry ID:") else { return nil }
+            return trimmed.dropFirst("Entry ID:".count).trimmingCharacters(in: CharacterSet(charactersIn: "` "))
         }
     }
 

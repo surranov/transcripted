@@ -4,11 +4,12 @@
 import AppKit
 
 extension DictationSessionController {
-    /// The text to deliver after the local transcript LLM pass
-    /// (`Sources/TranscriptLLM/`, reached only through `DictationTextRefiner`).
+    /// The local transcript LLM pass (`Sources/TranscriptLLM/`, reached only
+    /// through `DictationTextRefiner`); `text(original:)` on the result is the
+    /// text to deliver.
     ///
     /// Never costs the take: a skip, a failure, a rejected answer or Esc all
-    /// return `text` unchanged. The pass runs in its own task so Esc can stop
+    /// deliver `text` unchanged. The pass runs in its own task so Esc can stop
     /// waiting on it (`keepStoppedTakeWithoutPasting`) without cancelling the
     /// stop task, which still has to save the take. Cancelling the stop task
     /// itself (a newer session, Quit) cancels the pass too.
@@ -16,22 +17,21 @@ extension DictationSessionController {
         _ text: String,
         appState: TranscriptedAppState,
         sessionID: UUID
-    ) async -> String {
+    ) async -> DictationTextRefinement {
         // Esc during transcription already declined the paste: save the
         // transcript now rather than wait on the model.
-        guard pasteDeclinedSessionID != sessionID, !Task.isCancelled else { return text }
+        guard pasteDeclinedSessionID != sessionID, !Task.isCancelled else { return .unchanged(.cancelled) }
         let refiner: any DictationTextRefiner = appState.transcriptLLM
         let task = Task { @MainActor in await refiner.refine(text) }
         transcriptRefinementTask = task
         defer {
             if transcriptRefinementTask == task { transcriptRefinementTask = nil }
         }
-        let refinement = await withTaskCancellationHandler {
+        return await withTaskCancellationHandler {
             await task.value
         } onCancel: {
             task.cancel()
         }
-        return refinement.text(original: text)
     }
 
     /// Esc after the stop was admitted. The audio is already a WAV checkpoint
