@@ -133,6 +133,9 @@ enum DictationAutoSendBlockReason: String, Equatable {
     /// Send waits for a confirm (`DictationAutoSendMode.confirmAfterPaste`),
     /// which needs Anchored paste to know where to press it, and that's off.
     case confirmNeedsAnchoredPaste = "confirm_needs_anchored_paste"
+    /// Anchored paste is on, so send goes only into the box the take started
+    /// in, and this take has none (its field couldn't be read at the start).
+    case noAnchoredBox = "no_anchored_box"
     case accessibilityMissing = "accessibility_missing"
     case eventCreationFailed = "event_creation_failed"
     case targetChanged = "target_changed"
