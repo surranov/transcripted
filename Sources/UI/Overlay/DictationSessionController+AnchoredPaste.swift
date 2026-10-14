@@ -22,13 +22,16 @@ struct DeferredAnchoredPaste {
     /// (`AnchoredInsertion.unconfirmed`): the field's value before it, to
     /// tell on return whether the words arrived after all.
     let unconfirmedValueBefore: String?
+    /// The chat the take was dictated into (`ChatThreadPolicy`): Enter after
+    /// the paste goes only while it is still open.
+    let chatThread: ChatThread?
 }
 
 extension DeferredAnchoredPaste {
     func withoutUnconfirmedWrite() -> DeferredAnchoredPaste {
         DeferredAnchoredPaste(
             text: text, anchor: anchor, autoSend: autoSend, takeSequence: takeSequence,
-            deadline: deadline, unconfirmedValueBefore: nil
+            deadline: deadline, unconfirmedValueBefore: nil, chatThread: chatThread
         )
     }
 }
@@ -96,13 +99,16 @@ extension DictationSessionController {
             await capture.value
         }
         guard let anchor = pasteAnchor else { return .notAnchored }
+        let chatThread = await chatThreadAtStart()
         let route = AnchoredTextDelivery.route(for: anchor, text: text)
         appState?.logger.log("DICTATION | anchored paste route: \(route.rawValue)")
         switch route {
         case .normalPaste:
             return .notAnchored
         case .terminalKeystrokes:
-            guard await AnchoredTextDelivery.typeIntoTerminal(text, anchor: anchor) else { return deferOrPasteHere(text, anchor) }
+            guard await AnchoredTextDelivery.typeIntoTerminal(text, anchor: anchor) else {
+                return deferOrPasteHere(text, anchor, chatThread: chatThread)
+            }
             prepareAnchoredSend(route: route, anchor: anchor, text: text)
             updateAnchorMarker(.done)
             return .delivered(.pasted)
@@ -114,13 +120,13 @@ extension DictationSessionController {
                 return .delivered(.pasted)
             case let .unconfirmed(valueBefore):
                 appState?.logger.log("DICTATION | anchored field took the words off screen, unconfirmed until the user is back")
-                return deferOrPasteHere(text, anchor, unconfirmedValueBefore: valueBefore)
+                return deferOrPasteHere(text, anchor, chatThread: chatThread, unconfirmedValueBefore: valueBefore)
             case .notTaken:
                 appState?.logger.log("DICTATION | anchored field didn't take the words")
-                return deferOrPasteHere(text, anchor)
+                return deferOrPasteHere(text, anchor, chatThread: chatThread)
             }
         case .deferred:
-            return deferOrPasteHere(text, anchor)
+            return deferOrPasteHere(text, anchor, chatThread: chatThread)
         }
     }
 
@@ -134,8 +140,13 @@ extension DictationSessionController {
         if autoSendRequestDecision.awaitsConfirmation { return .awaitingConfirmation }
         // Let the target take the words in (a React form re-renders) first.
         try? await Task.sleep(nanoseconds: 150_000_000)
+        if let chatChanged = await chatChangedBlocker(sendIn: send.anchor.pid, window: send.anchor.window) {
+            appState?.logger.log("DICTATION | anchored send skipped: \(send.anchor.appName) shows another chat now")
+            return .failed(chatChanged)
+        }
         let outcome = await AnchoredTextDelivery.pressSend(autoSendRequestDecision.key, route: send.route, anchor: send.anchor)
         appState?.logger.log("DICTATION | anchored send: \(outcome.diagnosticName)")
+        if case .sent = outcome { followNewChat(await chatThreadAtStart(), afterSendIn: send.anchor.pid) }
         return outcome
     }
 
@@ -218,6 +229,7 @@ extension DictationSessionController {
     private func deferOrPasteHere(
         _ text: String,
         _ anchor: DictationPasteAnchor,
+        chatThread: ChatThread?,
         unconfirmedValueBefore: String? = nil
     ) -> AnchoredDeliveryResult {
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == anchor.pid { return .notAnchored }
@@ -227,7 +239,8 @@ extension DictationSessionController {
             autoSend: autoSendDecision(for: text, bundleID: anchor.bundleID),
             takeSequence: DictationTakeScope.take?.sequence ?? Int.max,
             deadline: Date().addingTimeInterval(AnchoredPastePolicy.deferredPasteLifetime),
-            unconfirmedValueBefore: unconfirmedValueBefore
+            unconfirmedValueBefore: unconfirmedValueBefore,
+            chatThread: chatThread
         ))
         updateAnchorMarker(.waiting)
         startDeferredAnchoredPasteWatch()
@@ -314,6 +327,7 @@ extension DictationSessionController {
                 key: pending.autoSend.key,
                 anchor: pending.anchor,
                 text: pending.text,
+                chatThread: pending.chatThread,
                 order: pending.takeSequence,
                 // In place of its "Pastes when you're back" unless a take runs.
                 takeOwnsIsland: !isDictating
@@ -321,14 +335,20 @@ extension DictationSessionController {
             return
         }
         Task { @MainActor [weak self] in
+            guard let self else { return }
+            if await self.chatChanged(pending.chatThread, in: pending.anchor.pid) {
+                self.showDeferredSendResult(pasteOutcome: .pasted, sendOutcome: .failed(.chatChanged))
+                return
+            }
             var outcome = await AnchoredTextDelivery.pressSend(pending.autoSend.key, route: .accessibilityInsert, anchor: pending.anchor)
             // No send button: Return, only into the anchored field itself.
             if case .failed = outcome, AnchoredTextDelivery.anchoredFieldIsFocused(pending.anchor) {
                 let target = DictationPasteTarget(processIdentifier: pending.anchor.pid, bundleIdentifier: pending.anchor.bundleID)
-                outcome = self?.autoSender.send(pending.autoSend.key, target: target) ?? outcome
+                outcome = self.autoSender.send(pending.autoSend.key, target: target)
             }
-            self?.appState?.logger.log("DICTATION | deferred anchored send: \(outcome.diagnosticName)")
-            self?.showDeferredSendResult(pasteOutcome: .pasted, sendOutcome: outcome)
+            self.appState?.logger.log("DICTATION | deferred anchored send: \(outcome.diagnosticName)")
+            if case .sent = outcome { self.followNewChat(pending.chatThread, afterSendIn: pending.anchor.pid) }
+            self.showDeferredSendResult(pasteOutcome: .pasted, sendOutcome: outcome)
         }
     }
 
@@ -356,7 +376,42 @@ extension DictationSessionController {
         }
     }
 
+    /// The user is back where a deferred paste goes. In a chat the thread is
+    /// read first, off the main actor: back in the app but in another thread
+    /// (the anchored context can miss that when the field wasn't exposed at
+    /// the start), the words go on the clipboard with "Not pasted".
     private func deliverDeferredAnchoredPaste(_ pending: DeferredAnchoredPaste) {
+        guard let chatThread = pending.chatThread else {
+            pasteDeferredAnchoredPaste(pending)
+            return
+        }
+        deferredAnchoredPasteSettling = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let changed = await self.chatChanged(chatThread, in: pending.anchor.pid)
+            self.deferredAnchoredPasteSettling = false
+            if self.isDictating {
+                // A new take started meanwhile: keep the words for later.
+                self.deferredAnchoredPastes.insert(pending.withoutUnconfirmedWrite(), at: 0)
+                self.startDeferredAnchoredPasteWatch()
+            } else if changed {
+                self.anchorMarker.hide()
+                guard let overlayController = self.overlayController else { return }
+                switch self.copyForChangedChat(pending.text, thread: chatThread) {
+                case .copied(let message, reason: let reason):
+                    self.showNotPasted(pending.text, message: message, hint: reason.notPastedHint, overlayController: overlayController)
+                case .failed(let message, reason: _):
+                    overlayController.showError(message)
+                case .pasted, .likelyPasted:
+                    break
+                }
+            } else {
+                self.pasteDeferredAnchoredPaste(pending)
+            }
+        }
+    }
+
+    private func pasteDeferredAnchoredPaste(_ pending: DeferredAnchoredPaste) {
         let target = DictationPasteTarget(processIdentifier: pending.anchor.pid, bundleIdentifier: pending.anchor.bundleID)
         let outcome = textPaster.paste(pending.text, target: target)
         appState?.logger.log("DICTATION | deferred anchored paste: \(outcome.diagnosticName)")
@@ -376,6 +431,7 @@ extension DictationSessionController {
                     key: pending.autoSend.key,
                     anchor: pending.anchor,
                     text: pending.text,
+                    chatThread: pending.chatThread,
                     order: pending.takeSequence,
                     // In place of its "Pastes when you're back" unless a take runs.
                     takeOwnsIsland: !isDictating
@@ -388,13 +444,16 @@ extension DictationSessionController {
                 // Send goes only into the anchored field: the user may be
                 // back in its window but in another box.
                 let sent: DictationAutoSendOutcome
-                if pending.autoSend.requiresAnchoredField, pending.anchor.field != nil,
+                if await self.chatChanged(pending.chatThread, in: pending.anchor.pid) {
+                    sent = .failed(.chatChanged)
+                } else if pending.autoSend.requiresAnchoredField, pending.anchor.field != nil,
                    !AnchoredTextDelivery.anchoredFieldIsFocused(pending.anchor) {
                     sent = .failed(.anchoredFieldLeft)
                 } else {
                     sent = self.autoSender.send(pending.autoSend.key, target: target)
                 }
                 self.appState?.logger.log("DICTATION | deferred anchored send: \(sent.diagnosticName)")
+                if case .sent = sent { self.followNewChat(pending.chatThread, afterSendIn: pending.anchor.pid) }
                 self.showDeferredSendResult(pasteOutcome: outcome, sendOutcome: sent)
             }
         case .copied, .failed:

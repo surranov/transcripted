@@ -30,12 +30,14 @@ extension DictationSessionController {
         _ text: String,
         message: String,
         unconfirmed: Bool = false,
+        hint: String? = nil,
         overlayController: FloatingOverlayController
     ) {
         overlayController.showNotPastedNotice(
             text,
             fallbackMessage: message,
-            unconfirmed: unconfirmed
+            unconfirmed: unconfirmed,
+            hint: hint
         ) { [weak self, weak overlayController] in
             guard let self, let overlayController else { return }
             let frontmost = NSWorkspace.shared.frontmostApplication
@@ -143,7 +145,8 @@ extension DictationSessionController {
             EventReporter.shared.capture(level: .warning, engine: "overlay", event: "dictation_paste_not_confirmed",
                 message: "Paste-back was dispatched but the target did not confirm reading the borrowed clipboard", context: context)
             appState?.logger.log("DICTATION | paste not confirmed, keeping text on clipboard")
-        case nil:
+        case .chatChanged, nil:
+            // The chat thread guard copies before any paste and logs itself.
             break
         }
     }
@@ -208,11 +211,19 @@ extension DictationSessionController {
         if pasteOutcome.requiresClipboardReadinessBeforeAutoSend {
             await textPaster.waitForClipboardReadyForAutoEnter()
         }
+        // Fork: Enter goes to the app in front; never into another thread of
+        // the chat the take was dictated into (`+ChatThreadGuard.swift`).
+        let chatChanged = await chatChangedBlocker(sendIn: NSWorkspace.shared.frontmostApplication?.processIdentifier)
         guard DictationSessionCompletionPolicy.canPublish(
             sessionID: sessionID, currentSessionID: currentDictationSessionID,
             isDictating: activeTakeIsLive, cancelled: Task.isCancelled
         ) else { return .disabled }
+        if let chatChanged { return .failed(chatChanged) }
         if decision.requiresAnchoredField, let blocker = anchoredFieldBlocker() { return .failed(blocker) }
-        return autoSender.send(decision.key, target: sessionPasteTarget)
+        let outcome = autoSender.send(decision.key, target: sessionPasteTarget)
+        if case .sent = outcome {
+            followNewChat(await chatThreadAtStart(), afterSendIn: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        }
+        return outcome
     }
 }

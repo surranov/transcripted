@@ -241,6 +241,14 @@ class DictationSessionController: ObservableObject {
     var sendConfirmationTimeout: Task<Void, Never>?
     var sendConfirmationRetry: Task<Void, Never>?
     @Published var sendConfirmationArm: DictationSendConfirmationArm?
+    /// Fork: the chat thread guard (`DictationSessionController+ChatThreadGuard.swift`).
+    /// The moves are shared by every take, so a queued take sees an earlier one's.
+    var chatThreadMoves: [ChatThreadMove] = []
+    private var storedChatThreadCapture: Task<ChatThread?, Never>?
+    var chatThreadCapture: Task<ChatThread?, Never>? {
+        get { if let take = DictationTakeScope.handedOff { return take.chatThreadCapture }; return storedChatThreadCapture }
+        set { if let take = DictationTakeScope.handedOff { take.chatThreadCapture = newValue } else { storedChatThreadCapture = newValue } }
+    }
     /// Fork: the dictation queue (`DictationSessionController+HandOff.swift`).
     var finishingTake: DictationFinishingTake?
     var handedOffTakes: [DictationFinishingTake] = []
@@ -362,6 +370,7 @@ class DictationSessionController: ObservableObject {
         stoppedAudioCheckpointSignal = nil
         beginRecordingSpool(sessionID: currentDictationSessionID)
         beginPasteAnchor(sourceApp: sourceApp)
+        beginChatThreadCapture(sourceApp: sourceApp)
         sessionSourceApp = sourceApp
         sessionPasteTarget = DictationPasteTarget.capture(sourceApp: sourceApp)
         sessionAnchorRect = anchorRect

@@ -394,17 +394,17 @@ class FloatingOverlayController {
         showMessage(message, tone: .notice)
     }
 
-    /// A dictation that didn't paste (no text box, or focus moved). The
-    /// island shows the words, a Paste button, and a ring that runs down to
-    /// the close; pressing ⌘V elsewhere steps it aside. Without an island
-    /// (tests) it falls back to the plain clipboard notice.
-    /// `unconfirmed` is for a paste that may well have landed (the target
-    /// read the clipboard too late to prove it): the island says "Maybe
-    /// pasted" so the Paste button doesn't read as the fix and double it.
+    /// A dictation that didn't paste (no text box, focus moved, another chat):
+    /// the island shows the words, `hint`, a Paste button and a ring running
+    /// down to the close; ⌘V elsewhere steps it aside. No island (tests): the
+    /// plain clipboard notice. `unconfirmed`: the paste may well have landed
+    /// (the target read the clipboard too late to prove it), so the island
+    /// says "Maybe pasted" and Paste doesn't read as the fix and double it.
     func showNotPastedNotice(
         _ text: String,
         fallbackMessage: String,
         unconfirmed: Bool = false,
+        hint: String? = nil,
         paste: @escaping () -> Void
     ) {
         guard isIslandMode else {
@@ -414,7 +414,7 @@ class FloatingOverlayController {
         showMessage(unconfirmed ? "Maybe pasted" : "Not pasted", tone: .notice, notPasted: NotPastedNotice(
             text: text,
             actionTitle: "Paste",
-            hint: unconfirmed ? "If the words aren\u{2019}t there, paste them again." : nil,
+            hint: unconfirmed ? "If the words aren\u{2019}t there, paste them again." : hint,
             watchesForManualPaste: true,
             action: paste
         ))

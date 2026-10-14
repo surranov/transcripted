@@ -116,7 +116,7 @@ final class ClipboardRestoringTextPaster {
     /// paste it waits the longer fallback delay) would otherwise be snapshotted
     /// by this paste as if it were the user's clipboard, and the user's real
     /// clipboard would be lost when that restore then sees a changed clipboard.
-    private func restoreOtherPastersPendingClipboards() {
+    func restoreOtherPastersPendingClipboards() {
         for paster in Self.livePasters() where paster !== self && paster.activePasteCount == 0 {
             paster.restorePendingClipboard()
         }

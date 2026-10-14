@@ -342,7 +342,7 @@ extension TextPasteOutcome {
             return .accessibilityMissing
         case .copied(_, reason: .pasteEventCreationFailed):
             return .eventCreationFailed
-        case .copied(_, reason: .focusChanged):
+        case .copied(_, reason: .focusChanged), .copied(_, reason: .chatChanged):
             return .targetChanged
         case .copied(_, reason: .pasteNotConfirmed):
             return .pasteNotConfirmed
@@ -378,6 +378,9 @@ enum DictationAutoSendFailure: Equatable {
     /// Fork (After I confirm): a send confirmed while the box is in the
     /// background, and the box no longer holds the take's words.
     case boxChanged(appName: String)
+    /// Fork (chat thread guard, `ChatThreadPolicy`): the AI chat the take was
+    /// dictated into now shows another thread, so send would go there.
+    case chatChanged
 
     /// Shown after the text did paste. Settings calls this feature "Press
     /// send after pasting", and the key may be Return or ⌘Return, so the copy
@@ -396,6 +399,8 @@ enum DictationAutoSendFailure: Equatable {
             return "Pasted, but didn't press Enter: you've left the box you started in."
         case .boxChanged(let appName):
             return "Didn't press send: the box in \(appName) no longer holds your words."
+        case .chatChanged:
+            return "Pasted, but didn't press send: you switched to another chat."
         }
     }
 
@@ -403,7 +408,7 @@ enum DictationAutoSendFailure: Equatable {
         switch self {
         case .accessibilityMissing:
             return .accessibilityMissing
-        case .targetChanged, .anchoredFieldLeft, .boxChanged:
+        case .targetChanged, .anchoredFieldLeft, .boxChanged, .chatChanged:
             return .targetChanged
         case .eventCreationFailed, .backgroundSendUnavailable:
             return .eventCreationFailed

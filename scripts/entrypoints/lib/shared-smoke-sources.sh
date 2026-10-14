@@ -82,6 +82,7 @@ SHARED_PASTEBACK_SUPPORT_SOURCES=(
     "Sources/Support/ClipboardRestoringTextPaster.swift"
     "Sources/Support/ClipboardRestoringTextPaster+Pasteboard.swift"
     "Sources/Support/ClipboardRestoringTextPaster+SavedClipboard.swift"
+    "Sources/Support/ClipboardRestoringTextPaster+ChatChanged.swift"
     "Sources/Support/ClipboardPasteOutcome.swift"
     "Sources/Support/ClipboardPasteConfirmationWait.swift"
     "Sources/Support/ClipboardPasteTarget.swift"

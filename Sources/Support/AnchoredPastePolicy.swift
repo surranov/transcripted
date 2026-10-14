@@ -18,7 +18,10 @@ import Foundation
 ///   inside its app: `AnchoredSendMethod.keyWindowReturn`.)
 /// - Apps can reuse one field for several documents (T3 keeps one composer
 ///   for every thread), so a field is trusted only while its window title and
-///   page URL still match what they were when the dictation started.
+///   page URL still match what they were when the dictation started. Codex
+///   keeps both fixed for every thread and titles its page after the open
+///   one, so there the page title counts too (2026-10-14,
+///   `ChatThreadPolicy.titleNamedThreadBundleIDs`).
 /// This file holds the decisions; `AnchoredTextDelivery` does the AX and
 /// keyboard work.
 enum AnchoredPasteRoute: String, Equatable {
@@ -66,12 +69,16 @@ enum AnchoredInsertion: Equatable {
 struct AnchoredPasteContext: Equatable {
     let windowTitle: String?
     let documentURL: String?
+    /// The page's title, only in an app where it, not the address, names the
+    /// document (Codex: `ChatThreadPolicy.titleNamedThreadBundleIDs`).
+    var pageTitle: String? = nil
 
-    /// Both captured values must still hold. A value that couldn't be read
+    /// Every captured value must still hold. A value that couldn't be read
     /// at capture time isn't compared.
     func stillMatches(_ current: AnchoredPasteContext) -> Bool {
         if let windowTitle, windowTitle != current.windowTitle { return false }
         if let documentURL, documentURL != current.documentURL { return false }
+        if let pageTitle, pageTitle != current.pageTitle { return false }
         return true
     }
 }
@@ -151,10 +158,11 @@ enum AnchoredPastePolicy {
     ) -> AnchoredPasteRoute {
         if anchorAppIsFrontmost {
             // Still in the field, or moved to another document in the same
-            // app on purpose (another thread, note or tab): the regular
-            // paste goes where the user is, as before this feature. Only a
-            // move within the same document (to a search box, say) keeps the
-            // anchored field.
+            // app on purpose (another note or tab): the regular paste goes
+            // where the user is, as before this feature. In an AI chat the
+            // chat thread guard then keeps the words out of another thread
+            // (`ChatThreadPolicy`). Only a move within the same document (to
+            // a search box, say) keeps the anchored field.
             if focusIsAnchorField || !hasField || !fieldAlive || !contextMatches || isTerminal { return .normalPaste }
             return .accessibilityInsert
         }

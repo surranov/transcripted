@@ -531,12 +531,18 @@ extension DictationSessionController {
                     )
                     return
                 case .notAnchored:
-                    pasteOutcome = self.pasteWithClipboardRestore(
-                        text,
-                        followCurrentFocus: DictationPostStopModelWaitPolicy.pasteFollowsCurrentFocus(
-                            modelWaitSeconds: modelWaitSeconds
+                    // Fork: never into another thread of the chat the take
+                    // was dictated into (`+ChatThreadGuard.swift`).
+                    if let copiedInstead = await self.pasteOutcomeIfChatChanged(text) {
+                        pasteOutcome = copiedInstead
+                    } else {
+                        pasteOutcome = self.pasteWithClipboardRestore(
+                            text,
+                            followCurrentFocus: DictationPostStopModelWaitPolicy.pasteFollowsCurrentFocus(
+                                modelWaitSeconds: modelWaitSeconds
+                            )
                         )
-                    )
+                    }
                     self.finishPasteAnchorAfterRegularPaste(pasteOutcome)
                 }
                 stopTiming.pastedAt = CFAbsoluteTimeGetCurrent()
@@ -551,7 +557,10 @@ extension DictationSessionController {
                     sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
                     isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
                 ) else { return }
-                stopTiming.pasteBreakdown = self.textPaster.lastPasteTiming
+                // Fork: a take kept out of another chat ran no paste; the
+                // paster's last timing and confirmation are another take's.
+                let pasteRan = pasteOutcome.copyReason != .chatChanged
+                stopTiming.pasteBreakdown = pasteRan ? self.textPaster.lastPasteTiming : nil
                 // Capture ownership before suspending. The writer may outlive cancellation.
                 let recovery = self.stoppedAudioRecovery
                 let saveContext = self.dictationSaveContext(text: text)
@@ -591,6 +600,9 @@ extension DictationSessionController {
                 )
                 let autoSendOutcome = finalization.autoEnterOutcome
                 let saveResult = finalization.saveResult
+                // Fork: a send left to the user's confirm keeps to its chat
+                // thread; read before the publish check, not after it.
+                let chatThread = await self.chatThreadAtStart()
                 guard DictationSessionCompletionPolicy.canPublish(
                     sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
                     isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
@@ -658,11 +670,16 @@ extension DictationSessionController {
                             key: self.autoSendRequestDecision.key,
                             anchor: self.pasteAnchor,
                             text: text,
+                            chatThread: chatThread,
                             order: take.sequence,
                             takeOwnsIsland: false
                         )
                     case .notPasted(let message, let unconfirmed):
-                        self.queueHandedOffNotice(.init(text: text, message: message, kind: .notPasted(unconfirmed: unconfirmed)))
+                        self.queueHandedOffNotice(.init(
+                            text: text,
+                            message: message,
+                            kind: .notPasted(unconfirmed: unconfirmed, hint: pasteOutcome.copyReason?.notPastedHint)
+                        ))
                     case .clipboardBusy(let message):
                         self.queueHandedOffNotice(.init(text: text, message: message, kind: .clipboardBusy))
                     case .error(let message):
@@ -677,6 +694,7 @@ extension DictationSessionController {
                             key: self.autoSendRequestDecision.key,
                             anchor: self.pasteAnchor,
                             text: text,
+                            chatThread: chatThread,
                             order: take.sequence,
                             takeOwnsIsland: true
                         )
@@ -690,6 +708,7 @@ extension DictationSessionController {
                             text,
                             message: message,
                             unconfirmed: unconfirmed,
+                            hint: pasteOutcome.copyReason?.notPastedHint,
                             overlayController: overlayController
                         )
                     case .clipboardBusy(let message):
@@ -706,6 +725,7 @@ extension DictationSessionController {
                         key: self.autoSendRequestDecision.key,
                         anchor: self.pasteAnchor,
                         text: text,
+                        chatThread: chatThread,
                         order: take.sequence,
                         takeOwnsIsland: false
                     )
@@ -723,7 +743,7 @@ extension DictationSessionController {
                 )
                 let targetConfirmationMode = DictationTargetConfirmationMode.resolve(
                     outcome: pasteOutcome,
-                    diagnostic: self.textPaster.lastConfirmationDiagnostic
+                    diagnostic: pasteRan ? self.textPaster.lastConfirmationDiagnostic : nil
                 )
                 var dictationCompletedExtra: [String: String] = [
                     "auto_send": autoSendOutcome.diagnosticName,

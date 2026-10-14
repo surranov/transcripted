@@ -70,7 +70,7 @@ enum AnchoredTextDelivery {
             field: field,
             window: window,
             windowID: windowID,
-            context: context(field: field, window: window, isTerminal: isTerminal),
+            context: context(field: field, window: window, isTerminal: isTerminal, bundleID: app.bundleIdentifier),
             selection: selection,
             textBefore: textBefore,
             textAfter: textAfter,
@@ -117,7 +117,7 @@ enum AnchoredTextDelivery {
     }
 
     static func currentContext(of anchor: DictationPasteAnchor) -> AnchoredPasteContext {
-        context(field: anchor.field, window: anchor.window, isTerminal: anchor.isTerminal)
+        context(field: anchor.field, window: anchor.window, isTerminal: anchor.isTerminal, bundleID: anchor.bundleID)
     }
 
     // MARK: - Deliver
@@ -386,29 +386,34 @@ enum AnchoredTextDelivery {
         return focused
     }
 
-    private static func context(field: AXUIElement?, window: AXUIElement?, isTerminal: Bool) -> AnchoredPasteContext {
-        AnchoredPasteContext(
+    private static func context(field: AXUIElement?, window: AXUIElement?, isTerminal: Bool, bundleID: String?) -> AnchoredPasteContext {
+        let page = field.flatMap(enclosingWebArea(of:))
+        let pageTitleNamesDocument = bundleID.map(ChatThreadPolicy.titleNamedThreadBundleIDs.contains) ?? false
+        return AnchoredPasteContext(
             // A terminal's title follows the running command.
             windowTitle: isTerminal ? nil : window.flatMap { string(of: $0, kAXTitleAttribute) },
-            documentURL: field.flatMap(enclosingDocumentURL(of:)) ?? window.flatMap { string(of: $0, kAXDocumentAttribute) }
+            documentURL: page.flatMap(documentURL(of:)) ?? window.flatMap { string(of: $0, kAXDocumentAttribute) },
+            pageTitle: pageTitleNamesDocument ? page.flatMap { string(of: $0, kAXTitleAttribute) } : nil
         )
     }
 
-    /// The URL of the web page holding `element` (Chromium/Electron expose it
-    /// on the enclosing `AXWebArea`): a T3 thread, a Chrome tab.
-    private static func enclosingDocumentURL(of element: AXUIElement) -> String? {
+    /// The web page holding `element` (Chromium/Electron's `AXWebArea`): a
+    /// T3 or Codex thread, a Chrome tab.
+    private static func enclosingWebArea(of element: AXUIElement) -> AXUIElement? {
         var current: AXUIElement? = element
         for _ in 0..<40 {
             guard let node = current else { return nil }
-            if string(of: node, kAXRoleAttribute) == "AXWebArea" {
-                var url: AnyObject?
-                guard AXUIElementCopyAttributeValue(node, kAXURLAttribute as CFString, &url) == .success, let url else { return nil }
-                if let url = url as? URL { return url.absoluteString }
-                return url as? String
-            }
+            if string(of: node, kAXRoleAttribute) == "AXWebArea" { return node }
             current = self.element(of: node, kAXParentAttribute)
         }
         return nil
+    }
+
+    private static func documentURL(of webArea: AXUIElement) -> String? {
+        var url: AnyObject?
+        guard AXUIElementCopyAttributeValue(webArea, kAXURLAttribute as CFString, &url) == .success, let url else { return nil }
+        if let url = url as? URL { return url.absoluteString }
+        return url as? String
     }
 
     /// A send button close to `field`: the nearest ancestor whose subtree has

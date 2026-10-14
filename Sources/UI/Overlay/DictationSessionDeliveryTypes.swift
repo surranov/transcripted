@@ -90,6 +90,8 @@ extension TextPasteCopyReason {
             return "focus_changed"
         case .pasteNotConfirmed:
             return "paste_not_confirmed"
+        case .chatChanged:
+            return "chat_changed"
         }
     }
 }

@@ -24,6 +24,9 @@ struct PendingSendConfirmation {
     /// The box read the words back when they landed, so reading empty later
     /// means they were sent or cleared, not that the app hides its value.
     let boxWasReadable: Bool
+    /// The AI chat the take was dictated into (`ChatThreadPolicy`): a
+    /// confirmed send goes only while its app still shows that thread.
+    let chatThread: ChatThread?
 }
 
 extension DictationSessionController {
@@ -41,6 +44,7 @@ extension DictationSessionController {
         key: DictationAutoSendKey,
         anchor: DictationPasteAnchor?,
         text: String,
+        chatThread: ChatThread?,
         order: Int,
         takeOwnsIsland: Bool
     ) {
@@ -53,7 +57,8 @@ extension DictationSessionController {
             key: key,
             anchor: anchor,
             text: text,
-            boxWasReadable: AnchoredTextDelivery.fieldContains(text, anchor: anchor)
+            boxWasReadable: AnchoredTextDelivery.fieldContains(text, anchor: anchor),
+            chatThread: chatThread
         ), order: order)
         guard takeOwnsIsland else {
             showNextSendConfirmationWhenIslandIsFree()
@@ -211,6 +216,11 @@ extension DictationSessionController {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         let anchor = pending.anchor
+        // Fork: never into another thread of the chat the take was dictated
+        // into; the anchored window is where the send goes (`+ChatThreadGuard.swift`).
+        if await chatChanged(pending.chatThread, in: anchor.pid, window: anchor.window) {
+            return .failed(.chatChanged)
+        }
         let path = DictationAutoSendPolicy.confirmedSend(
             anchorAppIsFrontmost: NSWorkspace.shared.frontmostApplication?.processIdentifier == anchor.pid,
             anchorIsFocused: anchor.field != nil
@@ -223,14 +233,18 @@ extension DictationSessionController {
         switch path {
         case .frontmost:
             let target = DictationPasteTarget(processIdentifier: anchor.pid, bundleIdentifier: anchor.bundleID)
-            return autoSender.send(pending.key, target: target)
+            let outcome = autoSender.send(pending.key, target: target)
+            if case .sent = outcome { followNewChat(pending.chatThread, afterSendIn: anchor.pid) }
+            return outcome
         case .background(let route):
             // Sent unseen, so only the take's own words: the box may hold
             // something else by now (another draft, words edited away).
             if pending.boxWasReadable, !AnchoredTextDelivery.fieldContains(pending.text, anchor: anchor) {
                 return .failed(.boxChanged(appName: anchor.appName))
             }
-            return await AnchoredTextDelivery.pressSend(pending.key, route: route, anchor: anchor)
+            let outcome = await AnchoredTextDelivery.pressSend(pending.key, route: route, anchor: anchor)
+            if case .sent = outcome { followNewChat(pending.chatThread, afterSendIn: anchor.pid) }
+            return outcome
         case .unavailable(let failure):
             return .failed(failure)
         }

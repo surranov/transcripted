@@ -55,6 +55,7 @@ final class DictationFinishingTake {
     var pasteAnchorTask: Task<Void, Never>?
     var anchoredSend: (route: AnchoredPasteRoute, anchor: DictationPasteAnchor)?
     var autoSendRequestDecision = DictationAutoSendRequestDecision.notEvaluated
+    var chatThreadCapture: Task<ChatThread?, Never>?
     var processingTask: Task<Void, Never>?
 
     init(sessionID: UUID, sequence: Int) {
@@ -90,7 +91,7 @@ enum DictationHandedOffEscapePolicy {
 /// A handed-off take that didn't paste, shown once the island is free.
 struct HandedOffTakeNotice {
     enum Kind {
-        case notPasted(unconfirmed: Bool)
+        case notPasted(unconfirmed: Bool, hint: String?)
         case clipboardBusy
         case error
         /// An empty take's message, with its button when it has one (Paste
@@ -161,6 +162,7 @@ extension DictationSessionController {
         take.pasteAnchorTask = pasteAnchorTask
         take.anchoredSend = anchoredSend
         take.autoSendRequestDecision = autoSendRequestDecision
+        take.chatThreadCapture = chatThreadCapture
         take.processingTask = streamingTask
         take.markHandedOff()
 
@@ -171,6 +173,7 @@ extension DictationSessionController {
         transcriptRefinementTask = nil
         anchoredSend = nil
         pasteAnchorTask = nil
+        chatThreadCapture = nil
         finishingTake = nil
         handedOffTakes.append(take)
         take.onChange = { [weak self] in self?.handedOffTakesChanged() }
@@ -346,8 +349,8 @@ extension DictationSessionController {
         }
         let notice = pendingHandedOffNotices.removeFirst()
         switch notice.kind {
-        case .notPasted(let unconfirmed):
-            showNotPasted(notice.text, message: notice.message, unconfirmed: unconfirmed, overlayController: overlayController)
+        case .notPasted(let unconfirmed, let hint):
+            showNotPasted(notice.text, message: notice.message, unconfirmed: unconfirmed, hint: hint, overlayController: overlayController)
         case .clipboardBusy:
             showClipboardBusy(notice.text, message: notice.message, overlayController: overlayController)
         case .error:

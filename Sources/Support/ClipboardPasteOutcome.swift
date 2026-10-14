@@ -10,12 +10,26 @@ enum TextPasteCopyReason: Equatable {
     case pasteEventCreationFailed
     case focusChanged
     case pasteNotConfirmed
+    /// Fork (chat thread guard, `ChatThreadPolicy`): the AI chat the take was
+    /// dictated into now shows another thread, so it wasn't pasted there.
+    case chatChanged
+
+    /// A line under "Not pasted" on the island, when the reason isn't plain.
+    var notPastedHint: String? {
+        switch self {
+        case .chatChanged:
+            return "You switched to another chat. Paste it where it goes."
+        case .accessibilityMissing, .pasteEventCreationFailed, .focusChanged, .pasteNotConfirmed:
+            return nil
+        }
+    }
 }
 
 enum TextPasteFailureReason: String, Equatable {
     case cancelled = "cancelled"
     case clipboardSnapshotIncomplete = "clipboard_snapshot_incomplete"
     case focusChangeClipboardWriteFailed = "focus_change_clipboard_write_failed"
+    case chatChangeClipboardWriteFailed = "chat_change_clipboard_write_failed"
     case accessibilityFallbackClipboardWriteFailed = "accessibility_fallback_clipboard_write_failed"
     case temporaryClipboardWriteFailed = "temporary_clipboard_write_failed"
     case pasteDispatchClipboardRecoveryFailed = "paste_dispatch_clipboard_recovery_failed"

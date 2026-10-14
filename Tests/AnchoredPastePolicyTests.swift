@@ -46,6 +46,22 @@ func testAnchoredPastePolicy() {
         assertTrue(AnchoredPastePolicy.hasLineBreaks("one\ntwo") && AnchoredPastePolicy.hasLineBreaks("a\r\nb") && !AnchoredPastePolicy.hasLineBreaks("one line"), "any newline counts")
     }
 
+    runSuite("Anchored paste keeps to the document: Codex's page title tells its threads apart") {
+        let threadA = AnchoredPasteContext(windowTitle: "ChatGPT", documentURL: "app://-/index.html", pageTitle: "Thread A")
+        let threadB = AnchoredPasteContext(windowTitle: "ChatGPT", documentURL: "app://-/index.html", pageTitle: "Thread B")
+        assertFalse(threadA.stillMatches(threadB), "same window and address, another Codex thread")
+        assertTrue(threadA.stillMatches(threadA), "the same thread")
+        let untitled = AnchoredPasteContext(windowTitle: "T3 Code", documentURL: "t3code://app/#/p/t")
+        assertTrue(
+            untitled.stillMatches(AnchoredPasteContext(windowTitle: "T3 Code", documentURL: "t3code://app/#/p/t", pageTitle: "Anything")),
+            "a page title not captured (any app but Codex) isn't compared"
+        )
+        assertFalse(
+            untitled.stillMatches(AnchoredPasteContext(windowTitle: "T3 Code", documentURL: "t3code://app/#/p/other")),
+            "T3 Code's threads differ by address"
+        )
+    }
+
     runSuite("AnchoredPastePolicy finds where the words go") {
         assertEqual(
             AnchoredPastePolicy.insertionRange(current: "\n", capturedSelection: NSRange(location: 0, length: 0), textBefore: "", textAfter: ""),
