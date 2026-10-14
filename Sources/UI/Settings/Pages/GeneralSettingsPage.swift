@@ -76,8 +76,6 @@ struct GeneralSettingsPage<
 
                 AnchoredPasteRow()
 
-                AnchoredEnterRow()
-
                 GeneralToggleRow(
                     title: "Clean up pasted text",
                     isOn: $dictationCleanupEnabled,

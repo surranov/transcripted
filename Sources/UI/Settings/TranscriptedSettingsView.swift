@@ -47,7 +47,6 @@ struct TranscriptedSettingsView: View {
     @State var preferredTranscriptionModel = TranscriptionModelPreferences.preferredModel()
     @State var showClearCorrectionsConfirm = false
     @State var uiSoundsEnabled = UISoundPreferences.isEnabled()
-    @State var autoEnterEnabled = DictationAutoSendPreferences.isEnabled()
     @State var keepRecommendedMicrophoneActive = DictationPersistentInputPreferences.isEnabled()
     @State var preferredDictationInputUID = DictationPersistentInputPreferences.preferredDeviceUID()
     // The Mac mic recorder switch is set outside the app, so this is read
@@ -55,8 +54,6 @@ struct TranscriptedSettingsView: View {
     @State var pinnedMicrophoneRecorderOn = PinnedMicrophoneCapturePreferences.isEnabled()
     @State var microphoneChoice = MicrophoneChoicePreferences.choice()
     @State var availableDictationInputs = (try? CoreAudioInputDeviceLookup.availableInputDevices()) ?? []
-    @State var autoEnterKey = DictationAutoSendPreferences.sendKey()
-    @State var autoEnterAllowedBundleIDs = DictationAutoSendPreferences.allowedBundleIDs()
     @State var autoEnterAppCandidates: [AutoEnterAppCandidate] = []
     @State var crashReportingEnabled = CrashReportingPreferences.isEnabled()
     @State var anonymousAnalyticsEnabled = AnalyticsPreferences.isEnabled()

@@ -383,20 +383,6 @@ extension TranscriptedSettingsView {
         availableDictationInputs = (try? CoreAudioInputDeviceLookup.availableInputDevices()) ?? []
     }
 
-    func setAutoEnterApp(
-        _ bundleID: String,
-        isAllowed: Bool,
-        page: TranscriptedSettingsPage = .general
-    ) {
-        if isAllowed {
-            autoEnterAllowedBundleIDs.insert(bundleID)
-        } else {
-            autoEnterAllowedBundleIDs.remove(bundleID)
-        }
-        trackSettingsToggle("auto_send_app_allowed", enabled: isAllowed, page: page)
-        DictationAutoSendPreferences.setAllowedBundleIDs(autoEnterAllowedBundleIDs)
-    }
-
     func pageShowsAutoEnterSettings(_ page: TranscriptedSettingsPage) -> Bool {
         page == .general
     }
@@ -406,33 +392,32 @@ extension TranscriptedSettingsView {
     }
 
     func refreshAutoEnterPreferences(includeCandidates: Bool) {
-        autoEnterEnabled = DictationAutoSendPreferences.isEnabled()
-        autoEnterKey = DictationAutoSendPreferences.sendKey()
-        autoEnterAllowedBundleIDs = DictationAutoSendPreferences.allowedBundleIDs()
         if includeCandidates {
             refreshAutoEnterAppCandidates()
         }
     }
 
-    func chooseAutoEnterApp(page: TranscriptedSettingsPage = .general) {
+    /// Opens the app picker for Per-app overrides; the chosen app's bundle
+    /// id, nil when cancelled.
+    func chooseAutoEnterApp() -> String? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.applicationBundle]
         panel.prompt = "Add"
-        panel.message = "Choose an app where Transcripted may send after dictation."
+        panel.message = "Choose an app to give its own send behavior."
         panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
 
         guard panel.runModal() == .OK,
               let url = panel.url,
               let bundle = Bundle(url: url),
               let bundleID = bundle.bundleIdentifier else {
-            return
+            return nil
         }
 
-        setAutoEnterApp(bundleID, isAllowed: true, page: page)
         refreshAutoEnterAppCandidates()
+        return bundleID
     }
 
     func autoEnterDisplayName(for bundleID: String) -> String {

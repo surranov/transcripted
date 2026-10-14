@@ -168,10 +168,10 @@ enum PhysicalDictationTriggerPreferences {
     static func dictateAndSendKeyGuards(
         newKeyIsDictationKey: Bool,
         recorded: Bool,
-        mode: DictationAutoSendMode
+        inUse: Bool
     ) -> Bool {
         if !recorded, newKeyIsDictationKey { return false }
-        return recorded || mode == .dictateAndSendKey
+        return recorded || inUse
     }
 
     static func saveDictateAndSend(_ binding: PhysicalDictationTriggerBinding, userDefaults: UserDefaults = .standard) {

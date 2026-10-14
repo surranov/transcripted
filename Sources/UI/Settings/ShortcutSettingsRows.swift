@@ -66,7 +66,7 @@ enum ShortcutRecordingTarget: CaseIterable {
         return PhysicalDictationTriggerPreferences.dictateAndSendKeyGuards(
             newKeyIsDictationKey: target == .dictation,
             recorded: PhysicalDictationTriggerPreferences.hasRecordedDictateAndSend(),
-            mode: DictationAutoSendPreferences.mode()
+            inUse: DictationSendSettings.usesDictateAndSendKey()
         )
     }
 }

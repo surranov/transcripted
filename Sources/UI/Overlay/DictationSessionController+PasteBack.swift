@@ -60,8 +60,7 @@ extension DictationSessionController {
         } else {
             appState?.logger.log("DICTATION | long model wait, keeping the original paste target")
         }
-        // Fork: an anchored take may expect Enter in any app (Anchored Enter),
-        // and the mode may hold it (Dictate & send key).
+        // Fork: the app's own behavior or Default (`DictationSendSettings`).
         autoSendRequestDecision = autoSendDecision(for: text, bundleID: sessionSourceApp?.bundleIdentifier)
         let sessionID = currentDictationSessionID
         let trigger = currentDictationTrigger

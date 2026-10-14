@@ -417,14 +417,14 @@ func testPhysicalDictationTriggerPreferences() {
     }
 
     runSuite("Dictate & send key blocks another shortcut's key only while it can fire") {
-        func guards(dictation: Bool, recorded: Bool, _ mode: DictationAutoSendMode) -> Bool {
-            PhysicalDictationTriggerPreferences.dictateAndSendKeyGuards(newKeyIsDictationKey: dictation, recorded: recorded, mode: mode)
+        func guards(dictation: Bool, recorded: Bool, inUse: Bool) -> Bool {
+            PhysicalDictationTriggerPreferences.dictateAndSendKeyGuards(newKeyIsDictationKey: dictation, recorded: recorded, inUse: inUse)
         }
-        assertFalse(guards(dictation: false, recorded: false, .always), "never set up: nobody is blocked by it")
-        assertTrue(guards(dictation: false, recorded: false, .dictateAndSendKey), "live: meetings can't take it")
-        assertFalse(guards(dictation: true, recorded: false, .dictateAndSendKey), "a default one moves with the dictation key")
-        assertTrue(guards(dictation: true, recorded: true, .always), "a recorded one stays, so switching the mode back can't bring a clash")
-        assertTrue(guards(dictation: false, recorded: true, .confirmAfterPaste))
+        assertFalse(guards(dictation: false, recorded: false, inUse: false), "never set up: nobody is blocked by it")
+        assertTrue(guards(dictation: false, recorded: false, inUse: true), "live: meetings can't take it")
+        assertFalse(guards(dictation: true, recorded: false, inUse: true), "a default one moves with the dictation key")
+        assertTrue(guards(dictation: true, recorded: true, inUse: false), "a recorded one stays, so choosing it again later can't bring a clash")
+        assertTrue(guards(dictation: false, recorded: true, inUse: false))
     }
 
     runSuite("Dictate & send key default never collides with the dictation key") {

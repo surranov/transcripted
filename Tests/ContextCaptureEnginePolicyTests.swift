@@ -242,10 +242,17 @@ func testContextCaptureEnginePolicy() {
         assertEqual(
             PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults).map(\.startsDictateAndSend),
             [false, false],
-            "Always: no extra key is caught"
+            "nothing sends with it: no extra key is caught"
         )
 
-        DictationAutoSendPreferences.setMode(.dictateAndSendKey, userDefaults: defaults)
+        DictationSendSettings.setOverride(.withDictateAndSendKey, for: "com.tinyspeck.slackmacgap", userDefaults: defaults)
+        assertEqual(
+            PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults).last?.startsDictateAndSend,
+            true,
+            "one app sending with it is enough"
+        )
+        DictationSendSettings.setOverride(nil, for: "com.tinyspeck.slackmacgap", userDefaults: defaults)
+        DictationSendSettings.setDefaultBehavior(.withDictateAndSendKey, userDefaults: defaults)
         let bindings = PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults)
         assertEqual(bindings.map(\.action), [.dictationPushToTalk, .meeting, .dictationPushToTalk], "last, so the other keys win a stale clash")
         assertEqual(bindings.last?.startsDictateAndSend, true)

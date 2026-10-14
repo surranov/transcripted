@@ -54,7 +54,7 @@ Dictation queue (fork, `DictationSessionController+HandOff.swift`):
 - The hover lists everything as cards, newest first, meeting last (`NotchIslandDrop.activities`, `NotchIslandDropView+Activities.swift`): the take being spoken (Cancel, Insert), a take being written or finishing behind (Don't paste), the meeting (Stop). An "esc" key marks the card Esc acts on.
 - Esc acts on the newest take still spoken or finishing: the take on the island first (the overlay's monitor, as before), else, with none there, the newest take finishing behind it that isn't pasting or declined (`declineNewestHandedOffTakePaste`, its own monitor while such takes exist): it won't paste and is saved. Each Esc takes the next one back. Esc never reaches a meeting; only Stop on its card, the menu or the hotkey stops it. Declined sessions are `pasteDeclinedSessionIDs` and are checked again after a take's turn wait.
 - Quit doesn't wait for handed-off takes; their stopped audio stays on disk and launch recovery saves them.
-- When to send (`DictationAutoSendMode`) holds per take: a handed-off take keeps whether it started with the Dictate & send key (`startedWithDictateAndSendKey`) and its own send decision, anchor and paste target, so each take presses send, or asks to, in its own box. With After I confirm, every take gets its own prompt, asked in turn (`+SendConfirmation`).
+- The send behavior (`DictationSendSettings`, the app's own or Default) holds per take: a handed-off take keeps whether it started with the Dictate & send key (`startedWithDictateAndSendKey`) and its own send decision, anchor and paste target, so each take presses send, or asks to, in its own box. With After I confirm, every take gets its own prompt, asked in turn (`+SendConfirmation`).
 
 ## Tests
 

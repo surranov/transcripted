@@ -308,99 +308,15 @@ extension TranscriptedSettingsView {
     }
 
     private var generalAutoSendEditor: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            GeneralToggleRow(
-                title: "Press send after pasting",
-                isOn: persistedSettingsBinding(
-                    $autoEnterEnabled,
-                    persist: { DictationAutoSendPreferences.setEnabled($0) },
-                    track: { trackSettingsToggle("auto_send", enabled: $0, page: .general) }
-                ),
-                help: autoEnterEnabled ? "Sends \(autoEnterKey.title) after pasting in chosen apps." : "Dictation only pastes text.",
-                info: GeneralInfo(
-                    title: "Press send after pasting",
-                    message: "After pasting your dictation, Transcripted presses the send key for you — only in the apps you choose below."
-                ),
-                automationIdentifier: "transcripted.settings.general.auto-send"
-            )
-
-            SettingsControlRow(title: "Send key") {
-                Picker("Send key", selection: persistedSettingsBinding(
-                    $autoEnterKey,
-                    persist: { DictationAutoSendPreferences.setSendKey($0) },
-                    track: { _ in trackSettingsAction("change_auto_send_key", page: .general) }
-                )) {
-                    ForEach(DictationAutoSendKey.allCases) { key in
-                        Text(key.title).tag(key)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .fixedSize()
-                .disabled(!autoEnterEnabled)
-            }
-
-            AutoSendModeSettingsRows(
-                pressSendAfterPastingEnabled: autoEnterEnabled,
-                dictationShortcutsEnabled: dictationShortcutsEnabled,
-                recorder: shortcutRecorder,
-                onTrackAction: { trackSettingsAction($0, page: .general) }
-            )
-
-            // One list backs one preference: every app Transcripted knows
-            // about — allowed apps plus currently running candidates — with a
-            // toggle each. "Add" stays as the only way to allow an app that
-            // isn't running right now.
-            SettingsControlRow(
-                title: "Apps",
-                info: GeneralInfo(
-                    title: "Apps",
-                    message: "Auto-send only happens in these apps. Toggle a running app below, or use Add to allow one that isn't open right now."
-                ),
-                // Same as `!mergedAutoSendApps.isEmpty` without building the
-                // list (and its app-name lookups) a second time per render.
-                showsDivider: !(autoEnterAllowedBundleIDs.isEmpty && autoEnterAppCandidates.isEmpty)
-            ) {
-                HStack(spacing: 8) {
-                    SettingsInlineActionButton(title: "Refresh") {
-                        trackSettingsAction("refresh_auto_send_apps", page: .general)
-                        refreshAutoEnterAppCandidates()
-                    }
-                    SettingsInlineActionButton(title: "Add…", symbolName: "plus") {
-                        trackSettingsAction("add_auto_send_app", page: .general)
-                        chooseAutoEnterApp(page: .general)
-                    }
-                }
-            }
-            .disabled(!autoEnterEnabled)
-
-            let apps = mergedAutoSendApps
-            ForEach(Array(apps.enumerated()), id: \.element.bundleID) { index, app in
-                GeneralToggleRow(
-                    title: app.name,
-                    isOn: Binding(
-                        get: { autoEnterAllowedBundleIDs.contains(app.bundleID) },
-                        set: { isAllowed in
-                            setAutoEnterApp(app.bundleID, isAllowed: isAllowed, page: .general)
-                        }
-                    ),
-                    help: "Allow Transcripted to send \(autoEnterKey.title) after pasting into \(app.name).",
-                    showsDivider: index < apps.count - 1
-                )
-                .disabled(!autoEnterEnabled)
-            }
-        }
-    }
-
-    /// Union of the persisted allow-list and the currently running app
-    /// candidates, so allowed-but-not-running apps stay visible and running
-    /// apps can be allowed with one toggle.
-    private var mergedAutoSendApps: [(bundleID: String, name: String)] {
-        var ids = Set(autoEnterAllowedBundleIDs)
-        ids.formUnion(autoEnterAppCandidates.map(\.bundleID))
-        return ids
-            .map { (bundleID: $0, name: autoEnterDisplayName(for: $0)) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        SendAfterDictationSettingsRows(
+            runningApps: autoEnterAppCandidates.map { .init(bundleID: $0.bundleID, name: $0.name) },
+            displayName: { autoEnterDisplayName(for: $0) },
+            dictationShortcutsEnabled: dictationShortcutsEnabled,
+            recorder: shortcutRecorder,
+            onRefreshApps: { refreshAutoEnterAppCandidates() },
+            onChooseApp: { chooseAutoEnterApp() },
+            onTrackAction: { trackSettingsAction($0, page: .general) }
+        )
     }
 
     private var generalPermissionsEditor: some View {

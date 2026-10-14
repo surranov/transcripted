@@ -376,9 +376,10 @@ extension PhysicalShortcutMatcher {
         bindings.insert(PhysicalShortcutBinding(action: dictationAction, binding: dictationKey), at: 0)
 
         // The Dictate & send key works like the dictation key, only while
-        // send waits for it. Last, so on a stale clash the dictation and
-        // meeting keys keep winning (the recorder refuses new clashes).
-        if DictationAutoSendPreferences.mode(userDefaults: userDefaults) == .dictateAndSendKey {
+        // Default or some app sends with it. Last, so on a stale clash the
+        // dictation and meeting keys keep winning (the recorder refuses new
+        // clashes).
+        if DictationSendSettings.usesDictateAndSendKey(userDefaults: userDefaults) {
             let sendKey = PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: userDefaults)
             if !bindings.contains(where: { $0.binding == sendKey }) {
                 bindings.append(PhysicalShortcutBinding(action: dictationAction, binding: sendKey, startsDictateAndSend: true))

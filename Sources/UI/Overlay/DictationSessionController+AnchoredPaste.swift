@@ -7,9 +7,9 @@ import AppKit
 /// picks the route: the regular paste when the user is still there, typing
 /// into a terminal or an Accessibility insertion in the background, or a
 /// deferred paste that runs once the user is back in that window. The words
-/// are saved to Dictations on every route. With Anchored Enter on
-/// (`AnchoredPastePreferences.pressesEnter`) every route ends with Enter in
-/// that field, or a notice on the island saying it couldn't be pressed.
+/// are saved to Dictations on every route. A take that sends
+/// (`DictationSendSettings`) ends every route with send in that field, or a
+/// notice on the island saying it couldn't be pressed.
 struct DeferredAnchoredPaste {
     let text: String
     let anchor: DictationPasteAnchor
@@ -159,34 +159,24 @@ extension DictationSessionController {
         }
     }
 
-    /// Whether this take presses send after its words land: Press send after
-    /// pasting for `bundleID`, Anchored Enter on top, then the mode
-    /// (`DictationAutoSendMode`) on whichever expected it.
+    /// Whether this take presses send after its words land: `bundleID`'s
+    /// own behavior, else Default (`DictationSendSettings`). With Anchored
+    /// paste on, send goes only into the box the take started in.
     func autoSendDecision(for text: String, bundleID: String?) -> DictationAutoSendRequestDecision {
-        DictationAutoSendPolicy.applyingMode(
-            withAnchoredEnter(DictationAutoSendPolicy.requestDecision(
-                isEnabled: DictationAutoSendPreferences.isEnabled(),
-                key: DictationAutoSendPreferences.sendKey(),
-                text: text,
-                duration: CFAbsoluteTimeGetCurrent() - sessionStartTime,
-                sourceBundleID: bundleID,
-                allowedBundleIDs: DictationAutoSendPreferences.allowedBundleIDs()
-            ), text: text),
-            mode: DictationAutoSendPreferences.mode(),
-            startedWithDictateAndSendKey: currentDictationStartedWithDictateAndSendKey,
-            anchoredPasteEnabled: AnchoredPastePreferences.isEnabled()
+        let resolved = DictationSendSettings.behavior(
+            for: bundleID,
+            defaultBehavior: DictationSendSettings.defaultBehavior(),
+            overrides: DictationSendSettings.overrides()
         )
-    }
-
-    /// Anchored Enter: a take with an anchor expects Enter even in an app not
-    /// chosen for Press send after pasting (`anchoredEnterDecision`).
-    func withAnchoredEnter(_ decision: DictationAutoSendRequestDecision, text: String) -> DictationAutoSendRequestDecision {
-        guard pasteAnchor != nil else { return decision }
-        return DictationAutoSendPolicy.anchoredEnterDecision(
-            perApp: decision,
-            pressesEnter: AnchoredPastePreferences.pressesEnter(),
+        return DictationSendSettings.decision(
+            behavior: resolved.behavior,
+            isOverride: resolved.isOverride,
+            key: DictationAutoSendPreferences.sendKey(),
             text: text,
-            duration: CFAbsoluteTimeGetCurrent() - sessionStartTime
+            duration: CFAbsoluteTimeGetCurrent() - sessionStartTime,
+            hasAnchor: pasteAnchor != nil,
+            anchoredPasteEnabled: AnchoredPastePreferences.isEnabled(),
+            startedWithDictateAndSendKey: currentDictationStartedWithDictateAndSendKey
         )
     }
 
