@@ -14,6 +14,9 @@ struct DeferredAnchoredPaste {
     let text: String
     let anchor: DictationPasteAnchor
     let autoSend: DictationAutoSendRequestDecision
+    /// The take's place in the dictation queue, so a send it asks for waits
+    /// in take order (`askToSend`).
+    let takeSequence: Int
     let deadline: Date
     /// Set when a background write went unconfirmed
     /// (`AnchoredInsertion.unconfirmed`): the field's value before it, to
@@ -23,7 +26,10 @@ struct DeferredAnchoredPaste {
 
 extension DeferredAnchoredPaste {
     func withoutUnconfirmedWrite() -> DeferredAnchoredPaste {
-        DeferredAnchoredPaste(text: text, anchor: anchor, autoSend: autoSend, deadline: deadline, unconfirmedValueBefore: nil)
+        DeferredAnchoredPaste(
+            text: text, anchor: anchor, autoSend: autoSend, takeSequence: takeSequence,
+            deadline: deadline, unconfirmedValueBefore: nil
+        )
     }
 }
 
@@ -124,6 +130,8 @@ extension DictationSessionController {
         guard let send = anchoredSend else { return nil }
         anchoredSend = nil
         guard autoSendRequestDecision.expected else { return .disabled }
+        // Fork: the user confirms first; the anchor says where it goes then.
+        if autoSendRequestDecision.awaitsConfirmation { return .awaitingConfirmation }
         // Let the target take the words in (a React form re-renders) first.
         try? await Task.sleep(nanoseconds: 150_000_000)
         let outcome = await AnchoredTextDelivery.pressSend(autoSendRequestDecision.key, route: send.route, anchor: send.anchor)
@@ -149,6 +157,25 @@ extension DictationSessionController {
             stopDeferredAnchoredPasteWatch()
             anchorMarker.hide()
         }
+    }
+
+    /// Whether this take presses send after its words land: Press send after
+    /// pasting for `bundleID`, Anchored Enter on top, then the mode
+    /// (`DictationAutoSendMode`) on whichever expected it.
+    func autoSendDecision(for text: String, bundleID: String?) -> DictationAutoSendRequestDecision {
+        DictationAutoSendPolicy.applyingMode(
+            withAnchoredEnter(DictationAutoSendPolicy.requestDecision(
+                isEnabled: DictationAutoSendPreferences.isEnabled(),
+                key: DictationAutoSendPreferences.sendKey(),
+                text: text,
+                duration: CFAbsoluteTimeGetCurrent() - sessionStartTime,
+                sourceBundleID: bundleID,
+                allowedBundleIDs: DictationAutoSendPreferences.allowedBundleIDs()
+            ), text: text),
+            mode: DictationAutoSendPreferences.mode(),
+            startedWithDictateAndSendKey: currentDictationStartedWithDictateAndSendKey,
+            anchoredPasteEnabled: AnchoredPastePreferences.isEnabled()
+        )
     }
 
     /// Anchored Enter: a take with an anchor expects Enter even in an app not
@@ -195,16 +222,6 @@ extension DictationSessionController {
         anchoredSend = (route, anchor)
     }
 
-    private func autoSendDecision(for text: String, bundleID: String?) -> DictationAutoSendRequestDecision {
-        withAnchoredEnter(DictationAutoSendPolicy.requestDecision(
-            isEnabled: DictationAutoSendPreferences.isEnabled(),
-            key: DictationAutoSendPreferences.sendKey(),
-            text: text,
-            duration: CFAbsoluteTimeGetCurrent() - sessionStartTime,
-            sourceBundleID: bundleID,
-            allowedBundleIDs: DictationAutoSendPreferences.allowedBundleIDs()
-        ), text: text)
-    }
 
     /// In the anchored app, the regular paste follows the user; elsewhere the
     /// words wait for them to come back.
@@ -218,6 +235,7 @@ extension DictationSessionController {
             text: text,
             anchor: anchor,
             autoSend: autoSendDecision(for: text, bundleID: anchor.bundleID),
+            takeSequence: DictationTakeScope.take?.sequence ?? Int.max,
             deadline: Date().addingTimeInterval(AnchoredPastePolicy.deferredPasteLifetime),
             unconfirmedValueBefore: unconfirmedValueBefore
         ))
@@ -301,6 +319,17 @@ extension DictationSessionController {
             overlayController?.showSuccessAndDismiss(title: "Pasted")
             return
         }
+        if pending.autoSend.awaitsConfirmation {
+            askToSend(
+                key: pending.autoSend.key,
+                anchor: pending.anchor,
+                text: pending.text,
+                order: pending.takeSequence,
+                // In place of its "Pastes when you're back" unless a take runs.
+                takeOwnsIsland: !isDictating
+            )
+            return
+        }
         Task { @MainActor [weak self] in
             var outcome = await AnchoredTextDelivery.pressSend(pending.autoSend.key, route: .accessibilityInsert, anchor: pending.anchor)
             // No send button: Return, only into the anchored field itself.
@@ -331,6 +360,9 @@ extension DictationSessionController {
             overlayController.showClipboardNotice(message)
         case .error(let message), .notPasted(let message, _), .clipboardBusy(let message):
             overlayController.showError(message)
+        case .awaitingSendConfirmation:
+            // Asked where the pending paste is known (`askToSend`).
+            overlayController.showSuccessAndDismiss(title: "Pasted")
         }
     }
 
@@ -347,6 +379,17 @@ extension DictationSessionController {
             guard pending.autoSend.expected,
                   outcome == .pasted || AnchoredTextDelivery.fieldContains(pending.text, anchor: pending.anchor) else {
                 showDeferredSendResult(pasteOutcome: outcome, sendOutcome: .disabled, expected: pending.autoSend.expected)
+                return
+            }
+            if pending.autoSend.awaitsConfirmation {
+                askToSend(
+                    key: pending.autoSend.key,
+                    anchor: pending.anchor,
+                    text: pending.text,
+                    order: pending.takeSequence,
+                    // In place of its "Pastes when you're back" unless a take runs.
+                    takeOwnsIsland: !isDictating
+                )
                 return
             }
             Task { @MainActor [weak self] in

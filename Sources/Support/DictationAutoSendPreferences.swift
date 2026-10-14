@@ -36,6 +36,89 @@ enum DictationAutoSendKey: String, CaseIterable, Identifiable {
     }
 }
 
+/// When a take that may press send (an app chosen for Press send after
+/// pasting, or Anchored Enter) actually presses it. The app list and the
+/// toggles say where; this says when.
+enum DictationAutoSendMode: String, CaseIterable, Identifiable {
+    /// Every such take presses send, as before this setting existed.
+    case always
+    /// Only a take started with the Dictate & send key.
+    case dictateAndSendKey = "dictate_and_send_key"
+    /// The take waits after pasting, and presses send once the user confirms
+    /// with the confirm key from anywhere or the island's Send button.
+    case confirmAfterPaste = "confirm_after_paste"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .always: return "Always"
+        case .dictateAndSendKey: return "With Dictate & send key"
+        case .confirmAfterPaste: return "After I confirm"
+        }
+    }
+
+    /// One line under the setting's title.
+    var summary: String {
+        switch self {
+        case .always: return "Every dictation that can send, sends."
+        case .dictateAndSendKey: return "Only dictations started with the Dictate & send key."
+        case .confirmAfterPaste: return "Pastes, then waits for your confirm key or Send."
+        }
+    }
+}
+
+/// The key that confirms a waiting send (`DictationAutoSendMode.confirmAfterPaste`):
+/// Return, or keypad Enter, with exactly these modifiers. While a send waits,
+/// the event tap takes that one press from whatever app is in front.
+enum DictationSendConfirmKey: String, CaseIterable, Identifiable {
+    case enter
+    case shiftEnter = "shift_enter"
+    case controlEnter = "control_enter"
+    case optionEnter = "option_enter"
+    case commandEnter = "command_enter"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .enter: return "Enter"
+        case .shiftEnter: return "⇧ Enter"
+        case .controlEnter: return "⌃ Enter"
+        case .optionEnter: return "⌥ Enter"
+        case .commandEnter: return "⌘ Enter"
+        }
+    }
+
+    var modifiers: UInt32 {
+        switch self {
+        case .enter: return 0
+        case .shiftEnter: return PhysicalDictationTriggerModifiers.shift
+        case .controlEnter: return PhysicalDictationTriggerModifiers.control
+        case .optionEnter: return PhysicalDictationTriggerModifiers.option
+        case .commandEnter: return PhysicalDictationTriggerModifiers.command
+        }
+    }
+
+    var eventFlags: CGEventFlags {
+        switch self {
+        case .enter: return []
+        case .shiftEnter: return .maskShift
+        case .controlEnter: return .maskControl
+        case .optionEnter: return .maskAlternate
+        case .commandEnter: return .maskCommand
+        }
+    }
+
+    /// Whether a key-down is this key. Caps Lock is latched, not held, and
+    /// macOS sets Fn on keypad Enter by itself, so neither counts.
+    func matches(keyCode: UInt32, modifiers eventModifiers: UInt32) -> Bool {
+        guard keyCode == UInt32(kVK_Return) || keyCode == UInt32(kVK_ANSI_KeypadEnter) else { return false }
+        let ignored = PhysicalDictationTriggerModifiers.capsLock | PhysicalDictationTriggerModifiers.function
+        return eventModifiers & ~ignored == modifiers
+    }
+}
+
 enum DictationAutoSendBlockReason: String, Equatable {
     case none
     case notEvaluated = "not_evaluated"
@@ -44,6 +127,12 @@ enum DictationAutoSendBlockReason: String, Equatable {
     case durationTooShort = "duration_too_short"
     case sourceAppUnknown = "source_app_unknown"
     case appNotAllowed = "app_not_allowed"
+    /// Send waits for the Dictate & send key (`DictationAutoSendMode`), and
+    /// this take started with the plain dictation key or from the app.
+    case sendKeyNotUsed = "send_key_not_used"
+    /// Send waits for a confirm (`DictationAutoSendMode.confirmAfterPaste`),
+    /// which needs Anchored paste to know where to press it, and that's off.
+    case confirmNeedsAnchoredPaste = "confirm_needs_anchored_paste"
     case accessibilityMissing = "accessibility_missing"
     case eventCreationFailed = "event_creation_failed"
     case targetChanged = "target_changed"
@@ -63,6 +152,9 @@ struct DictationAutoSendRequestDecision: Equatable {
     /// anchored, so Enter goes only into the anchored field, never into
     /// wherever the regular paste followed the user.
     var requiresAnchoredField = false
+    /// Fork (`DictationAutoSendMode.confirmAfterPaste`): send waits for the
+    /// user's confirm after the words land instead of being pressed at once.
+    var awaitsConfirmation = false
 
     static let notEvaluated = DictationAutoSendRequestDecision(
         expected: false,
@@ -82,6 +174,14 @@ enum DictationAutoSendPreferences {
     private static let enabledKey = "dictationAutoEnterEnabled"
     private static let keyKey = "dictationAutoEnterKey"
     private static let allowedBundleIDsKey = "dictationAutoEnterAllowedBundleIDs"
+    private static let modeKey = "dictationAutoEnterMode"
+    private static let confirmKeyKey = "dictationAutoEnterConfirmKey"
+    private static let confirmSecondsKey = "dictationAutoEnterConfirmSeconds"
+
+    /// How long a pasted take waits for its send to be confirmed, offered in
+    /// Settings; the default is 5 s.
+    static let confirmSecondsChoices = [3, 5, 10, 15, 30]
+    static let defaultConfirmSeconds = 5
 
     static func isEnabled(userDefaults: UserDefaults = .standard) -> Bool {
         userDefaults.bool(forKey: enabledKey)
@@ -102,6 +202,44 @@ enum DictationAutoSendPreferences {
 
     static func setSendKey(_ key: DictationAutoSendKey, userDefaults: UserDefaults = .standard) {
         userDefaults.set(key.rawValue, forKey: keyKey)
+    }
+
+    /// Nothing stored (everyone before this setting) or a value this build
+    /// doesn't know reads as `.always`, the behavior before the setting.
+    static func mode(userDefaults: UserDefaults = .standard) -> DictationAutoSendMode {
+        guard let rawValue = userDefaults.string(forKey: modeKey),
+              let mode = DictationAutoSendMode(rawValue: rawValue) else {
+            return .always
+        }
+        return mode
+    }
+
+    /// The event tap catches the Dictate & send key only in its mode, so a
+    /// change rebuilds the tap's bindings (`.hotkeysDidChange`).
+    static func setMode(_ mode: DictationAutoSendMode, userDefaults: UserDefaults = .standard) {
+        userDefaults.set(mode.rawValue, forKey: modeKey)
+        NotificationCenter.default.post(name: .hotkeysDidChange, object: nil)
+    }
+
+    static func confirmKey(userDefaults: UserDefaults = .standard) -> DictationSendConfirmKey {
+        userDefaults.string(forKey: confirmKeyKey).flatMap(DictationSendConfirmKey.init(rawValue:)) ?? .enter
+    }
+
+    static func setConfirmKey(_ key: DictationSendConfirmKey, userDefaults: UserDefaults = .standard) {
+        userDefaults.set(key.rawValue, forKey: confirmKeyKey)
+    }
+
+    /// A stored value outside `confirmSecondsChoices` (hand-edited) reads as
+    /// the default, so a send can't wait forever or not at all.
+    static func confirmSeconds(userDefaults: UserDefaults = .standard) -> Int {
+        guard let seconds = userDefaults.object(forKey: confirmSecondsKey) as? Int,
+              confirmSecondsChoices.contains(seconds) else { return defaultConfirmSeconds }
+        return seconds
+    }
+
+    static func setConfirmSeconds(_ seconds: Int, userDefaults: UserDefaults = .standard) {
+        guard confirmSecondsChoices.contains(seconds) else { return }
+        userDefaults.set(seconds, forKey: confirmSecondsKey)
     }
 
     static func allowedBundleIDs(userDefaults: UserDefaults = .standard) -> Set<String> {
@@ -173,6 +311,97 @@ enum DictationAutoSendPolicy {
             blockReason: blockReason,
             requiresAnchoredField: true
         )
+    }
+
+    /// `DictationAutoSendMode`: the app list and the toggles said where send
+    /// may be pressed; the mode says when. Applied last, to whichever decision
+    /// (per-app or Anchored Enter) expected send.
+    static func applyingMode(
+        _ decision: DictationAutoSendRequestDecision,
+        mode: DictationAutoSendMode,
+        startedWithDictateAndSendKey: Bool,
+        anchoredPasteEnabled: Bool
+    ) -> DictationAutoSendRequestDecision {
+        guard decision.expected else { return decision }
+        func blocked(_ reason: DictationAutoSendBlockReason) -> DictationAutoSendRequestDecision {
+            DictationAutoSendRequestDecision(
+                expected: false,
+                key: decision.key,
+                blockReason: reason,
+                requiresAnchoredField: decision.requiresAnchoredField
+            )
+        }
+        switch mode {
+        case .always:
+            return decision
+        case .dictateAndSendKey:
+            return startedWithDictateAndSendKey ? decision : blocked(.sendKeyNotUsed)
+        case .confirmAfterPaste:
+            // Without Anchored paste nothing knows which box the take went
+            // into once the user moves on, so send is never pressed.
+            guard anchoredPasteEnabled else { return blocked(.confirmNeedsAnchoredPaste) }
+            var waiting = decision
+            waiting.awaitsConfirmation = true
+            return waiting
+        }
+    }
+
+    /// Where a confirmed send goes (`DictationAutoSendMode.confirmAfterPaste`),
+    /// read when the user confirms, not when the words landed. Only a take
+    /// with an anchor is ever asked: without one, nothing says which box the
+    /// words went into once the user clicks elsewhere.
+    static func confirmedSend(
+        anchorAppIsFrontmost: Bool,
+        anchorIsFocused: Bool,
+        isTerminal: Bool,
+        terminalWindowIsCurrent: Bool,
+        appName: String
+    ) -> DictationConfirmedSend {
+        if anchorAppIsFrontmost {
+            // In that box, Return goes there. In another box of the same app
+            // it would land in the wrong one, and refocusing would take the
+            // user's caret.
+            return anchorIsFocused ? .frontmost : .unavailable(.anchoredFieldLeft)
+        }
+        if isTerminal {
+            // Keystrokes go to the terminal's current window: another tab or
+            // window there would run Return in the wrong shell.
+            return terminalWindowIsCurrent
+                ? .background(.terminalKeystrokes)
+                : .unavailable(.backgroundSendUnavailable(appName: appName))
+        }
+        return .background(.accessibilityInsert)
+    }
+
+    /// The island's line while a send waits, naming the key and the app.
+    /// With more sends waiting after it (the dictation queue), it also
+    /// quotes the take's first words, since two can go to the same app.
+    static func confirmationPrompt(
+        confirmKey: DictationSendConfirmKey,
+        appName: String,
+        text: String = "",
+        waitingAfter: Int = 0
+    ) -> String {
+        guard waitingAfter > 0 else {
+            return "Pasted. Press \(confirmKey.title) to send it in \(appName)."
+        }
+        return "Pasted “\(confirmationQuote(text))” in \(appName). Press \(confirmKey.title) to send it (\(waitingAfter) more waiting)."
+    }
+
+    static let confirmationQuoteLength = 28
+
+    /// The take's first words, cut at a word with "…" when longer.
+    static func confirmationQuote(_ text: String) -> String {
+        let words = text.split(whereSeparator: \.isWhitespace)
+        var quote = ""
+        for word in words {
+            let next = quote.isEmpty ? String(word) : quote + " " + word
+            guard next.count <= confirmationQuoteLength else {
+                return (quote.isEmpty ? String(next.prefix(confirmationQuoteLength)) : quote) + "…"
+            }
+            quote = next
+        }
+        return quote
     }
 
     static func isRequested(
@@ -250,6 +479,17 @@ extension TextPasteOutcome {
     }
 }
 
+/// Where a confirmed send is pressed (`DictationAutoSendPolicy.confirmedSend`).
+enum DictationConfirmedSend: Equatable {
+    /// Return to the app in front, as Press send after pasting does.
+    case frontmost
+    /// Send pressed in the anchored box in the background
+    /// (`AnchoredTextDelivery.pressSend`).
+    case background(AnchoredPasteRoute)
+    /// Nowhere safe; the island says why.
+    case unavailable(DictationAutoSendFailure)
+}
+
 enum DictationAutoSendFailure: Equatable {
     case accessibilityMissing
     case targetChanged
@@ -262,6 +502,9 @@ enum DictationAutoSendFailure: Equatable {
     /// Fork (Anchored Enter): after the regular paste the field the take
     /// started in no longer has focus, so Enter would land elsewhere.
     case anchoredFieldLeft
+    /// Fork (After I confirm): a send confirmed while the box is in the
+    /// background, and the box no longer holds the take's words.
+    case boxChanged(appName: String)
 
     /// Shown after the text did paste. Settings calls this feature "Press
     /// send after pasting", and the key may be Return or ⌘Return, so the copy
@@ -278,6 +521,8 @@ enum DictationAutoSendFailure: Equatable {
             return "Pasted in \(appName), but couldn't press Enter there. Press it yourself."
         case .anchoredFieldLeft:
             return "Pasted, but didn't press Enter: you've left the box you started in."
+        case .boxChanged(let appName):
+            return "Didn't press send: the box in \(appName) no longer holds your words."
         }
     }
 
@@ -285,7 +530,7 @@ enum DictationAutoSendFailure: Equatable {
         switch self {
         case .accessibilityMissing:
             return .accessibilityMissing
-        case .targetChanged, .anchoredFieldLeft:
+        case .targetChanged, .anchoredFieldLeft, .boxChanged:
             return .targetChanged
         case .eventCreationFailed, .backgroundSendUnavailable:
             return .eventCreationFailed
@@ -297,11 +542,16 @@ enum DictationAutoSendOutcome: Equatable {
     case disabled
     case sent(DictationAutoSendKey)
     case failed(DictationAutoSendFailure)
+    /// The words landed and send waits for the user's confirm
+    /// (`DictationAutoSendMode.confirmAfterPaste`).
+    case awaitingConfirmation
 
     var diagnosticName: String {
         switch self {
         case .disabled:
             return "disabled"
+        case .awaitingConfirmation:
+            return "awaiting_confirmation"
         case .sent(let key):
             return "sent_\(key.diagnosticName)"
         case .failed:
@@ -313,7 +563,7 @@ enum DictationAutoSendOutcome: Equatable {
         switch self {
         case .sent(let key):
             return "Pasted + \(key.title)"
-        case .disabled, .failed:
+        case .disabled, .failed, .awaitingConfirmation:
             return nil
         }
     }
@@ -342,7 +592,7 @@ struct DictationAutoSendTelemetry: Equatable {
             switch sendOutcome {
             case .disabled:
                 blockReason = .cancelled
-            case .sent:
+            case .sent, .awaitingConfirmation:
                 blockReason = .none
             case .failed(let failure):
                 blockReason = failure.blockReason

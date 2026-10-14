@@ -202,7 +202,7 @@ struct AnchoredEnterRow: View {
                 : enabled ? "Enter goes into that box after the words, in any app." : "Anchored paste only pastes.",
             info: GeneralInfo(
                 title: "Press Enter there",
-                message: "Once Anchored paste puts the words into the box you started in, presses Enter in that same box, in any app, even while you're in another window, so a chat or a terminal sends them. In the background it uses the box's own Send button if it has one; otherwise it points that app's keyboard at the box for a moment, without bringing its window forward or taking your keyboard. It never presses Enter anywhere else: if the window is minimized, the app won't take the key, or you've moved to another box, the island says Enter wasn't pressed and the words just stay there. Apps chosen in Press send after pasting keep their own key."
+                message: "Once Anchored paste puts the words into the box you started in, presses Enter in that same box, in any app, even while you're in another window, so a chat or a terminal sends them. In the background it uses the box's own Send button if it has one; otherwise it points that app's keyboard at the box for a moment, without bringing its window forward or taking your keyboard. It never presses Enter anywhere else: if the window is minimized, the app won't take the key, or you've moved to another box, the island says Enter wasn't pressed and the words just stay there. Apps chosen in Press send after pasting keep their own key. When to send, under Send after dictation, decides when it's pressed."
             ),
             automationIdentifier: "transcripted.settings.general.anchored-enter"
         )

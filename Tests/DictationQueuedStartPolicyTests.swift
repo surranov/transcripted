@@ -244,6 +244,10 @@ func testDictationQueuedStartPolicy() async {
             DictationQueuedStartPolicy.messageCanGiveWayToNextStart(.landedClipboardNotice),
             "a notice for text that did land gives way"
         )
+        assertTrue(
+            DictationQueuedStartPolicy.messageCanGiveWayToNextStart(.sendConfirmation),
+            "a send waiting for its confirm gives way and is asked again after the take"
+        )
         assertFalse(
             DictationQueuedStartPolicy.messageCanGiveWayToNextStart(.other),
             "failures, not-pasted notices and anything with a button keep the next take from starting over them"

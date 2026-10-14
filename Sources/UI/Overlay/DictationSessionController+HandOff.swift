@@ -16,7 +16,7 @@ import Combine
 /// source app, paste target, anchor, Auto Enter decision, stopped audio...)
 /// reads and writes the copy kept in `DictationFinishingTake` from inside
 /// that task, so the code after the stop is unchanged and the next take gets
-/// fresh state. Pastes stay in take order (`awaitDeliveryTurn`).
+/// fresh state. Pastes, and their sends, stay in take order (`awaitDeliveryTurn`).
 @MainActor
 final class DictationFinishingTake {
     let sessionID: UUID
@@ -47,6 +47,7 @@ final class DictationFinishingTake {
     var pasteTarget: DictationPasteTarget?
     var trigger: DictationTrigger = .unknown
     var shortcutMode: DictationShortcutMode?
+    var startedWithDictateAndSendKey = false
     var stoppedAudioRecovery: DictationStoppedAudioRecovery?
     var stoppedAudioRecoveryPreservationSessionID: UUID?
     var transcriptRefinementTask: Task<DictationTextRefinement, Never>?
@@ -152,6 +153,7 @@ extension DictationSessionController {
         take.pasteTarget = sessionPasteTarget
         take.trigger = currentDictationTrigger
         take.shortcutMode = currentDictationShortcutMode
+        take.startedWithDictateAndSendKey = currentDictationStartedWithDictateAndSendKey
         take.stoppedAudioRecovery = stoppedAudioRecovery
         take.stoppedAudioRecoveryPreservationSessionID = stoppedAudioRecoveryPreservationSessionID
         take.transcriptRefinementTask = transcriptRefinementTask

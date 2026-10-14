@@ -104,6 +104,99 @@ func testPhysicalShortcutMatcher() {
         assertTrue(!unknownAction, "release for an unconfigured action is false")
     }
 
+    runSuite("PhysicalShortcutMatcher — the Dictate & send key next to the dictation key") {
+        let rightOption = UInt32(kVK_RightOption)
+        let dictation = binding(.dictationPushToTalk, keyCode: kVK_RightOption)
+        let send = PhysicalShortcutBinding(
+            action: .dictationPushToTalk,
+            binding: PhysicalDictationTriggerBinding(keyCode: rightOption, modifiers: shift),
+            startsDictateAndSend: true
+        )
+        let shortcuts = [dictation, binding(.meeting, keyCode: kVK_ANSI_M, modifiers: option), send]
+
+        assertEqual(
+            PhysicalShortcutMatcher.matchingFlagsChangedPressShortcut(shortcuts, keyCode: rightOption, modifiers: option | shift),
+            send,
+            "⇧ held, then Right ⌥: the Dictate & send key"
+        )
+        assertEqual(
+            PhysicalShortcutMatcher.matchingFlagsChangedPressShortcut(shortcuts, keyCode: rightOption, modifiers: option),
+            dictation,
+            "Right ⌥ alone stays the plain dictation key"
+        )
+        assertTrue(
+            PhysicalShortcutMatcher.matchesRelease(for: .dictationPushToTalk, in: shortcuts, keyCode: rightOption, modifiers: shift),
+            "letting go of Right ⌥ under a held ⇧ ends the hold"
+        )
+        assertNil(
+            PhysicalShortcutMatcher.matchingFlagsChangedPressShortcut(shortcuts, keyCode: UInt32(kVK_Shift), modifiers: option | shift),
+            "⇧ added under a held Right ⌥ isn't the send key, so it can't toggle the take Right ⌥ just started"
+        )
+        assertTrue(
+            PhysicalShortcutMatcher.isChordModifierRelease(keyCode: UInt32(kVK_Shift), modifiers: option, heldKeyCode: rightOption, in: shortcuts),
+            "⇧ let go before Right ⌥ is the same press, so a quick one stays a tap"
+        )
+        assertTrue(
+            !PhysicalShortcutMatcher.isChordModifierRelease(keyCode: UInt32(kVK_Shift), modifiers: option | shift, heldKeyCode: rightOption, in: shortcuts),
+            "⇧ going down is another key"
+        )
+        assertTrue(
+            !PhysicalShortcutMatcher.isChordModifierRelease(keyCode: UInt32(kVK_Control), modifiers: option, heldKeyCode: rightOption, in: shortcuts),
+            "a modifier no dictation chord holds is another key"
+        )
+
+        let rightCommandSend = PhysicalShortcutBinding(
+            action: .dictationPushToTalk,
+            binding: PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_RightCommand)),
+            startsDictateAndSend: true
+        )
+        assertTrue(
+            PhysicalShortcutMatcher.matchesRelease(
+                for: .dictationPushToTalk,
+                in: [dictation, rightCommandSend],
+                keyCode: UInt32(kVK_RightCommand),
+                modifiers: 0
+            ),
+            "a Dictate & send key on another modifier still releases its own hold"
+        )
+
+        let sendChord = PhysicalShortcutBinding(
+            action: .dictationPushToTalk,
+            binding: PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_ANSI_D), modifiers: option | shift),
+            startsDictateAndSend: true
+        )
+        assertTrue(
+            PhysicalShortcutMatcher.hasChordUsingModifier(rightOption, in: [dictation, sendChord], excluding: dictation),
+            "a ⌥⇧D Dictate & send chord makes bare Right ⌥ wait for its chord window"
+        )
+        assertTrue(
+            !PhysicalShortcutMatcher.hasChordUsingModifier(rightOption, in: [dictation, send], excluding: dictation),
+            "a modifier-only Dictate & send key is no chord"
+        )
+        assertEqual(PhysicalShortcutPhase.press(fromDictateAndSendKey: true), .pressFromDictateAndSendKey)
+        assertEqual(PhysicalShortcutPhase.press(fromDictateAndSendKey: false), .press)
+    }
+
+    runSuite("SendConfirmationCatcher — takes one confirm press, from any app, until the deadline") {
+        let returnKey = UInt32(kVK_Return)
+        var catcher = SendConfirmationCatcher()
+        assertTrue(!catcher.catches(keyCode: returnKey, modifiers: 0, isRepeat: false, now: 1), "unarmed: Enter is the app's")
+
+        catcher.arm(.enter, until: 10)
+        assertTrue(!catcher.catches(keyCode: returnKey, modifiers: shift, isRepeat: false, now: 2), "⇧ Enter stays a new line")
+        assertTrue(!catcher.catches(keyCode: returnKey, modifiers: 0, isRepeat: true, now: 2), "a held key's repeat isn't a press")
+        assertTrue(catcher.catches(keyCode: returnKey, modifiers: 0, isRepeat: false, now: 3), "Enter confirms")
+        assertTrue(!catcher.catches(keyCode: returnKey, modifiers: 0, isRepeat: false, now: 4), "only one press is ever taken")
+
+        catcher.arm(.commandEnter, until: 10)
+        assertTrue(!catcher.catches(keyCode: returnKey, modifiers: PhysicalDictationTriggerModifiers.command, isRepeat: false, now: 11), "past the deadline it lets keys through")
+        assertTrue(!catcher.catches(keyCode: returnKey, modifiers: PhysicalDictationTriggerModifiers.command, isRepeat: false, now: 5), "and stays disarmed")
+
+        catcher.arm(.enter, until: 10)
+        catcher.disarm()
+        assertTrue(!catcher.catches(keyCode: returnKey, modifiers: 0, isRepeat: false, now: 5), "Dismiss or a new dictation disarms it")
+    }
+
     runSuite("PhysicalShortcutMatcher — shared-modifier chord guard") {
         let shortcuts = [
             binding(.meeting, keyCode: kVK_ANSI_M, modifiers: option),
@@ -113,19 +206,19 @@ func testPhysicalShortcutMatcher() {
         // Releasing right ⌥ must not fire hands-free while a keyed chord (⌥+M)
         // also depends on the option modifier.
         let blocked = PhysicalShortcutMatcher.hasChordUsingModifier(
-            UInt32(kVK_RightOption), in: shortcuts, excluding: .dictationHandsFree
+            UInt32(kVK_RightOption), in: shortcuts, excluding: shortcuts[1]
         )
         assertTrue(blocked, "⌥+M chord should guard the right-⌥ hands-free release")
 
         // Excluding the chord owner itself removes the guard.
         let unguarded = PhysicalShortcutMatcher.hasChordUsingModifier(
-            UInt32(kVK_RightOption), in: shortcuts, excluding: .meeting
+            UInt32(kVK_RightOption), in: shortcuts, excluding: shortcuts[0]
         )
         assertTrue(!unguarded, "with the ⌥ chord excluded there is nothing left to guard")
 
         // A non-modifier key has no primary modifier mask, so nothing to guard.
         let nonModifier = PhysicalShortcutMatcher.hasChordUsingModifier(
-            UInt32(kVK_ANSI_M), in: shortcuts, excluding: .meeting
+            UInt32(kVK_ANSI_M), in: shortcuts, excluding: shortcuts[0]
         )
         assertTrue(!nonModifier, "a typing key has no shared-modifier chord to guard")
     }

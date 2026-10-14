@@ -1,10 +1,11 @@
 import Foundation
 
 /// Fork: the paste order of the dictation queue. A take gets its number when
-/// its stop is admitted; it pastes once every earlier take has pasted or
-/// ended without pasting (no speech, cancelled, saved only), so words land
-/// in the order they were spoken even when a later, shorter take is refined
-/// first.
+/// its stop is admitted; it pastes once every earlier take has pasted and
+/// pressed send (Auto Enter), or ended without pasting (no speech,
+/// cancelled, saved only), so words land in the order they were spoken even
+/// when a later, shorter take is refined first, and each send carries only
+/// its own take.
 struct DictationDeliveryOrder: Equatable {
     private(set) var nextSequence = 0
     /// Every take up to this number is done with its paste.

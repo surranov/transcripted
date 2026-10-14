@@ -445,6 +445,7 @@ APP_SOURCES=(
     "Sources/Dictation/DictationTextVersions.swift"
     "Sources/Dictation/DictationRefinementChunking.swift"
     "Sources/Dictation/DictationDeliveryOrder.swift"
+    "Sources/Dictation/DictationSendConfirmationQueue.swift"
     "Sources/Support/TranscriptLLMPromptPreferences.swift"
     "Sources/Support/TranscriptLLMModelPreferences.swift"
     "Sources/TranscriptLLM/TranscriptLLMEngineLayout.swift"

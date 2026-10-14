@@ -397,6 +397,25 @@ func testClipboardRestoringTextPaster() async {
             )
         }
 
+        runSuite("A send waiting for its confirm asks on the island instead of saying Pasted") {
+            for outcome in [TextPasteOutcome.pasted, .likelyPasted] {
+                assertEqual(
+                    DictationDeliveryPresentation.resolve(
+                        outcome: outcome, saveFailureMessage: nil, autoSend: .awaitingConfirmation, autoSendExpected: true
+                    ),
+                    .awaitingSendConfirmation,
+                    "the words landed; the island asks to confirm send"
+                )
+            }
+            assertEqual(
+                DictationDeliveryPresentation.resolve(
+                    outcome: .pasted, saveFailureMessage: "Couldn't save.", autoSend: .awaitingConfirmation, autoSendExpected: true
+                ),
+                .error("Couldn't save."),
+                "a save failure still comes first"
+            )
+        }
+
         runSuite("A clipboard fallback is a calm Not pasted notice, and an unconfirmed paste says so") {
             assertEqual(
                 DictationDeliveryPresentation.resolve(

@@ -81,6 +81,8 @@ enum PhysicalDictationTriggerPreferences {
     private static let handsFreeModifiersKey = "dictationHandsFreeTrigger-modifiers"
     private static let meetingKeyCodeKey = "meetingTrigger-keyCode"
     private static let meetingModifiersKey = "meetingTrigger-modifiers"
+    private static let dictateAndSendKeyCodeKey = "dictateAndSendTrigger-keyCode"
+    private static let dictateAndSendModifiersKey = "dictateAndSendTrigger-modifiers"
     private static let oneDictationKeyMigratedKey = "dictationOneKeyMigrated"
     private static let functionKeyUsageDomain = "com.apple.HIToolbox" as CFString
     private static let functionKeyUsageKey = "AppleFnUsageType" as CFString
@@ -120,6 +122,73 @@ enum PhysicalDictationTriggerPreferences {
             ) ?? migratedMeetingBinding(userDefaults: userDefaults),
             fallback: defaultMeetingBinding
         )
+    }
+
+    /// The Dictate & send key (`DictationAutoSendMode.dictateAndSendKey`):
+    /// starts dictation like the dictation key, and only a take it started
+    /// presses send. Until one is recorded it follows the dictation key
+    /// (`defaultDictateAndSendBinding`), so changing that key moves this one.
+    static func dictateAndSendBinding(userDefaults: UserDefaults = .standard) -> PhysicalDictationTriggerBinding {
+        let fallback = defaultDictateAndSendBinding(for: pushToTalkBinding(userDefaults: userDefaults))
+        guard let stored = storedBinding(
+            keyCodeKey: dictateAndSendKeyCodeKey,
+            modifiersKey: dictateAndSendModifiersKey,
+            userDefaults: userDefaults
+        ) else { return fallback }
+        return safeBinding(stored, fallback: fallback)
+    }
+
+    /// The dictation key plus ⇧, held first (⇧ then Right ⌥). Matching is
+    /// exact (`isModifierBindingActive`), so the dictation key alone never
+    /// fires for it. When the dictation key already holds ⇧ (or is a ⇧ key),
+    /// the next modifier it doesn't hold is added instead.
+    static func defaultDictateAndSendBinding(
+        for dictationKey: PhysicalDictationTriggerBinding
+    ) -> PhysicalDictationTriggerBinding {
+        let held = dictationKey.modifiers | (primaryModifierMask(for: dictationKey.keyCode) ?? 0)
+        let candidates = [
+            PhysicalDictationTriggerModifiers.shift,
+            PhysicalDictationTriggerModifiers.control,
+            PhysicalDictationTriggerModifiers.option,
+            PhysicalDictationTriggerModifiers.command,
+            PhysicalDictationTriggerModifiers.function,
+        ]
+        let extra = candidates.first { held & $0 == 0 } ?? 0
+        return PhysicalDictationTriggerBinding(keyCode: dictationKey.keyCode, modifiers: dictationKey.modifiers | extra)
+    }
+
+    /// Whether one was recorded; until then it follows the dictation key.
+    static func hasRecordedDictateAndSend(userDefaults: UserDefaults = .standard) -> Bool {
+        userDefaults.object(forKey: dictateAndSendKeyCodeKey) != nil
+    }
+
+    /// Whether the Dictate & send key must stay clear of a new key for
+    /// another shortcut: once recorded, or while send waits for it. A default
+    /// one moves with the dictation key, so it never blocks that key.
+    static func dictateAndSendKeyGuards(
+        newKeyIsDictationKey: Bool,
+        recorded: Bool,
+        mode: DictationAutoSendMode
+    ) -> Bool {
+        if !recorded, newKeyIsDictationKey { return false }
+        return recorded || mode == .dictateAndSendKey
+    }
+
+    static func saveDictateAndSend(_ binding: PhysicalDictationTriggerBinding, userDefaults: UserDefaults = .standard) {
+        saveBinding(
+            binding,
+            keyCodeKey: dictateAndSendKeyCodeKey,
+            modifiersKey: dictateAndSendModifiersKey,
+            userDefaults: userDefaults
+        )
+    }
+
+    /// Forgets a recorded Dictate & send key, so it follows the dictation
+    /// key again.
+    static func clearDictateAndSend(userDefaults: UserDefaults = .standard) {
+        userDefaults.removeObject(forKey: dictateAndSendKeyCodeKey)
+        userDefaults.removeObject(forKey: dictateAndSendModifiersKey)
+        NotificationCenter.default.post(name: .hotkeysDidChange, object: nil)
     }
 
     static func save(_ binding: PhysicalDictationTriggerBinding, userDefaults: UserDefaults = .standard) {
@@ -177,6 +246,7 @@ enum PhysicalDictationTriggerPreferences {
     static func resetToDefaults(userDefaults: UserDefaults = .standard) {
         savePushToTalk(defaultPushToTalkBinding, userDefaults: userDefaults)
         saveMeeting(defaultMeetingBinding, userDefaults: userDefaults)
+        clearDictateAndSend(userDefaults: userDefaults)
     }
 
     static func functionKeySystemAction() -> FunctionKeySystemAction {

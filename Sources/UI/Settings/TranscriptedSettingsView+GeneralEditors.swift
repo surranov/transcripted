@@ -340,6 +340,13 @@ extension TranscriptedSettingsView {
                 .disabled(!autoEnterEnabled)
             }
 
+            AutoSendModeSettingsRows(
+                pressSendAfterPastingEnabled: autoEnterEnabled,
+                dictationShortcutsEnabled: dictationShortcutsEnabled,
+                recorder: shortcutRecorder,
+                onTrackAction: { trackSettingsAction($0, page: .general) }
+            )
+
             // One list backs one preference: every app Transcripted knows
             // about — allowed apps plus currently running candidates — with a
             // toggle each. "Add" stays as the only way to allow an app that

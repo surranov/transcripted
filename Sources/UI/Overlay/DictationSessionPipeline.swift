@@ -26,6 +26,7 @@ protocol DictationSessionPipelineHost: AnyObject {
     var currentDictationSessionID: UUID { get set }
     var currentDictationTrigger: DictationTrigger { get }
     var currentDictationShortcutMode: DictationShortcutMode? { get }
+    var currentDictationStartedWithDictateAndSendKey: Bool { get }
     var sessionSourceApp: NSRunningApplication? { get }
     var lastCompletedText: String? { get set }
     var recordingStartRetryTask: Task<Void, Never>? { get set }
@@ -46,14 +47,16 @@ protocol DictationSessionPipelineHost: AnyObject {
         trigger: DictationTrigger,
         shortcutMode: DictationShortcutMode?,
         anchorRect: NSRect?,
-        isRetry: Bool
+        isRetry: Bool,
+        fromDictateAndSendKey: Bool
     )
     @discardableResult
     func rememberStartPressIfFinishing(
         sourceApp: NSRunningApplication?,
         trigger: DictationTrigger,
         shortcutMode: DictationShortcutMode?,
-        isRetry: Bool
+        isRetry: Bool,
+        fromDictateAndSendKey: Bool
     ) -> Bool
     func showIslandStartingState(near sourceApp: NSRunningApplication?)
     /// `dictation_start_requested`.
@@ -70,7 +73,12 @@ protocol DictationSessionPipelineHost: AnyObject {
     var stoppedAudioCheckpointSignal: DictationStoppedAudioCheckpointSignal? { get }
     var dictationHasRecoverableRecording: Bool { get }
     var currentStoppedAudioRecoveryWAVExists: Bool { get }
-    func stopDictationAndPaste(trigger: DictationTrigger, shortcutMode: DictationShortcutMode?, autoPaste: Bool)
+    func stopDictationAndPaste(
+        trigger: DictationTrigger,
+        shortcutMode: DictationShortcutMode?,
+        autoPaste: Bool,
+        fromDictateAndSendKey: Bool
+    )
     func cancelDictation(preserveStoppedAudio: Bool)
     func dropQueuedDictationStart(showMessage: Bool)
     func showFailedCheckpointRecoveryError()
@@ -105,7 +113,8 @@ extension DictationSessionPipelineHost {
         sourceApp: NSRunningApplication?,
         trigger: DictationTrigger,
         shortcutMode: DictationShortcutMode?,
-        isRetry: Bool
+        isRetry: Bool,
+        fromDictateAndSendKey: Bool = false
     ) -> Bool {
         let admission = DictationStartAdmission.decide(
             DictationStartAdmission.Steps(
@@ -115,7 +124,8 @@ extension DictationSessionPipelineHost {
                         sourceApp: sourceApp,
                         trigger: trigger,
                         shortcutMode: shortcutMode,
-                        isRetry: isRetry
+                        isRetry: isRetry,
+                        fromDictateAndSendKey: fromDictateAndSendKey
                     )
                 },
                 showStartingIsland: { self.showIslandStartingState(near: sourceApp) },
@@ -159,7 +169,8 @@ extension DictationSessionPipelineHost {
             trigger: currentDictationTrigger,
             shortcutMode: nil,
             anchorRect: anchorRect,
-            isRetry: true
+            isRetry: true,
+            fromDictateAndSendKey: currentDictationStartedWithDictateAndSendKey
         )
     }
 
@@ -571,7 +582,7 @@ extension DictationSessionPipelineHost {
                 dropQueuedStart: { self.dropQueuedDictationStart(showMessage: false) },
                 isDictating: { self.isDictating },
                 admitInactiveQuit: { self.admitInactiveDictationQuit() },
-                stop: { self.stopDictationAndPaste(trigger: .unknown, shortcutMode: nil, autoPaste: true) },
+                stop: { self.stopDictationAndPaste(trigger: .unknown, shortcutMode: nil, autoPaste: true, fromDictateAndSendKey: false) },
                 gracePolls: gracePolls,
                 sleepOnePoll: {
                     do {

@@ -371,6 +371,81 @@ func testPhysicalDictationTriggerPreferences() {
         )
     }
 
+    runSuite("Dictate & send key follows the dictation key plus Shift until recorded") {
+        let (defaults, suiteName) = makePhysicalTriggerDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let shift = PhysicalDictationTriggerModifiers.shift
+        let rightOption = UInt32(kVK_RightOption)
+
+        let fresh = PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: defaults)
+        assertEqual(fresh, PhysicalDictationTriggerBinding(keyCode: rightOption, modifiers: shift), "fresh installs get Shift + Right Option")
+        assertEqual(PhysicalDictationTriggerPreferences.displayString(for: fresh), "⇧Right ⌥", "shown as Shift + Right Option")
+
+        let fn = PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_Function))
+        PhysicalDictationTriggerPreferences.savePushToTalk(fn, userDefaults: defaults)
+        assertEqual(
+            PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: defaults),
+            PhysicalDictationTriggerBinding(keyCode: fn.keyCode, modifiers: shift),
+            "not recorded yet, so it moves with the dictation key"
+        )
+
+        let commandF5 = PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_F5), modifiers: PhysicalDictationTriggerModifiers.command)
+        PhysicalDictationTriggerPreferences.saveDictateAndSend(commandF5, userDefaults: defaults)
+        PhysicalDictationTriggerPreferences.savePushToTalk(
+            PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_RightCommand)),
+            userDefaults: defaults
+        )
+        assertEqual(PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: defaults), commandF5, "a recorded key stays put")
+
+        PhysicalDictationTriggerPreferences.clearDictateAndSend(userDefaults: defaults)
+        assertEqual(
+            PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: defaults),
+            PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_RightCommand), modifiers: shift),
+            "cleared, it follows the dictation key again"
+        )
+
+        PhysicalDictationTriggerPreferences.saveDictateAndSend(PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_ANSI_A)), userDefaults: defaults)
+        assertEqual(
+            PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: defaults),
+            PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_RightCommand), modifiers: shift),
+            "a stored key the tap must never swallow falls back to the default"
+        )
+
+        PhysicalDictationTriggerPreferences.saveDictateAndSend(commandF5, userDefaults: defaults)
+        PhysicalDictationTriggerPreferences.resetToDefaults(userDefaults: defaults)
+        assertEqual(PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: defaults), fresh, "reset forgets it too")
+    }
+
+    runSuite("Dictate & send key blocks another shortcut's key only while it can fire") {
+        func guards(dictation: Bool, recorded: Bool, _ mode: DictationAutoSendMode) -> Bool {
+            PhysicalDictationTriggerPreferences.dictateAndSendKeyGuards(newKeyIsDictationKey: dictation, recorded: recorded, mode: mode)
+        }
+        assertFalse(guards(dictation: false, recorded: false, .always), "never set up: nobody is blocked by it")
+        assertTrue(guards(dictation: false, recorded: false, .dictateAndSendKey), "live: meetings can't take it")
+        assertFalse(guards(dictation: true, recorded: false, .dictateAndSendKey), "a default one moves with the dictation key")
+        assertTrue(guards(dictation: true, recorded: true, .always), "a recorded one stays, so switching the mode back can't bring a clash")
+        assertTrue(guards(dictation: false, recorded: true, .confirmAfterPaste))
+    }
+
+    runSuite("Dictate & send key default never collides with the dictation key") {
+        let m = PhysicalDictationTriggerModifiers.self
+        func sendDefault(_ keyCode: Int, _ modifiers: UInt32 = 0) -> PhysicalDictationTriggerBinding {
+            PhysicalDictationTriggerPreferences.defaultDictateAndSendBinding(
+                for: PhysicalDictationTriggerBinding(keyCode: UInt32(keyCode), modifiers: modifiers)
+            )
+        }
+        assertEqual(sendDefault(kVK_RightShift), PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_RightShift), modifiers: m.control), "a Shift key gets Control instead")
+        assertEqual(sendDefault(kVK_ANSI_D, m.shift | m.option), PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_ANSI_D), modifiers: m.shift | m.option | m.control), "a chord already holding Shift gets Control")
+        assertEqual(sendDefault(kVK_F5), PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_F5), modifiers: m.shift), "a function key gets Shift")
+
+        let rightOption = UInt32(kVK_RightOption)
+        let dictation = PhysicalDictationTriggerPreferences.defaultPushToTalkBinding
+        let send = sendDefault(kVK_RightOption)
+        assertTrue(PhysicalDictationTriggerPreferences.matchesFlagsChangedPress(send, keyCode: rightOption, modifiers: m.shift | m.option), "Shift then Right Option is the send key")
+        assertFalse(PhysicalDictationTriggerPreferences.matchesFlagsChangedPress(dictation, keyCode: rightOption, modifiers: m.shift | m.option), "and not the dictation key")
+        assertFalse(PhysicalDictationTriggerPreferences.matchesFlagsChangedPress(send, keyCode: rightOption, modifiers: m.option), "Right Option alone stays the dictation key")
+    }
+
     runSuite("PhysicalDictationTriggerPreferences rejects chords the event tap must never swallow") {
         let command = PhysicalDictationTriggerModifiers.command
         let shift = PhysicalDictationTriggerModifiers.shift

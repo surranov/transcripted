@@ -66,6 +66,9 @@ extension DictationQueuedStartPolicy {
         case noSpeechNote
         /// "Copied. Press ⌘V" after the text did land, so a new take may replace it.
         case landedClipboardNotice
+        /// Fork: "Press Enter to send it": the words landed, and the send
+        /// waits to be asked again after the new take.
+        case sendConfirmation
         /// Every other message: failures, saved/not-pasted notices, anything with a button.
         case other
     }
@@ -75,7 +78,7 @@ extension DictationQueuedStartPolicy {
     /// message keeps the next take from starting over it.
     static func messageCanGiveWayToNextStart(_ kind: MessageKind) -> Bool {
         switch kind {
-        case .noSpeechNote, .landedClipboardNotice: return true
+        case .noSpeechNote, .landedClipboardNotice, .sendConfirmation: return true
         case .other: return false
         }
     }

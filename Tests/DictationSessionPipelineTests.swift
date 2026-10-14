@@ -83,6 +83,12 @@ func testDictationSessionPipeline() async {
         assertEqual(host.starts.first?.isRetry, true, "four taps on Try Again must not read as five attempts")
         assertEqual(host.starts.first?.trigger, .physicalKey, "the retry keeps the failed take's trigger")
         assertEqual(host.starts.first?.anchorRect, anchor, "the retry opens where the take was")
+        assertEqual(host.starts.first?.fromDictateAndSendKey, false, "a plain take stays plain")
+
+        let sending = PipelineFakeHost()
+        sending.currentDictationStartedWithDictateAndSendKey = true
+        sending.retryDictation(sourceApp: nil, anchorRect: nil)
+        assertEqual(sending.starts.first?.fromDictateAndSendKey, true, "Try Again on a Dictate & send take still sends")
     }
 
     await runSuite("The start click is queued before the mic start and plays once per session") {
@@ -446,6 +452,7 @@ private final class PipelineFakeHost: DictationSessionPipelineHost {
         var trigger: DictationTrigger
         var anchorRect: NSRect?
         var isRetry: Bool
+        var fromDictateAndSendKey = false
     }
 
     struct Message {
@@ -467,6 +474,7 @@ private final class PipelineFakeHost: DictationSessionPipelineHost {
     var currentDictationSessionID = UUID()
     var currentDictationTrigger: DictationTrigger = .keyboardShortcut
     var currentDictationShortcutMode: DictationShortcutMode? = .pushToTalk
+    var currentDictationStartedWithDictateAndSendKey = false
     var sessionSourceApp: NSRunningApplication?
     var lastCompletedText: String?
     var recordingStartRetryTask: Task<Void, Never>?
@@ -584,16 +592,18 @@ private final class PipelineFakeHost: DictationSessionPipelineHost {
         trigger: DictationTrigger,
         shortcutMode: DictationShortcutMode?,
         anchorRect: NSRect?,
-        isRetry: Bool
+        isRetry: Bool,
+        fromDictateAndSendKey: Bool
     ) {
-        starts.append(Start(trigger: trigger, anchorRect: anchorRect, isRetry: isRetry))
+        starts.append(Start(trigger: trigger, anchorRect: anchorRect, isRetry: isRetry, fromDictateAndSendKey: fromDictateAndSendKey))
     }
 
     func rememberStartPressIfFinishing(
         sourceApp: NSRunningApplication?,
         trigger: DictationTrigger,
         shortcutMode: DictationShortcutMode?,
-        isRetry: Bool
+        isRetry: Bool,
+        fromDictateAndSendKey: Bool
     ) -> Bool { false }
 
     func showIslandStartingState(near sourceApp: NSRunningApplication?) { events.append("island") }
@@ -614,7 +624,12 @@ private final class PipelineFakeHost: DictationSessionPipelineHost {
         events.append("prepare activation current=\(isCurrent())")
     }
 
-    func stopDictationAndPaste(trigger: DictationTrigger, shortcutMode: DictationShortcutMode?, autoPaste: Bool) {
+    func stopDictationAndPaste(
+        trigger: DictationTrigger,
+        shortcutMode: DictationShortcutMode?,
+        autoPaste: Bool,
+        fromDictateAndSendKey: Bool
+    ) {
         events.append("stop")
     }
 

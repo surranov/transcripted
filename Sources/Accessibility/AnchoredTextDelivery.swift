@@ -207,6 +207,15 @@ enum AnchoredTextDelivery {
         return value.contains(needle)
     }
 
+    /// Whether the anchored field reads empty now (fork: its words were sent
+    /// or cleared). False when it can't be read.
+    static func anchoredFieldIsEmpty(_ anchor: DictationPasteAnchor) -> Bool {
+        guard let field = anchor.field else { return false }
+        AXUIElementSetMessagingTimeout(field, messagingTimeout)
+        guard let value = stringValue(of: field) else { return false }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// Types `text` into the anchored terminal through keystrokes addressed
     /// to its process (`BackgroundKeystrokes`).
     static func typeIntoTerminal(_ text: String, anchor: DictationPasteAnchor) async -> Bool {

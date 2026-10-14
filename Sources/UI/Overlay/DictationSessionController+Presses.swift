@@ -78,7 +78,8 @@ extension DictationSessionController {
         sourceApp: NSRunningApplication?,
         trigger: DictationTrigger,
         shortcutMode: DictationShortcutMode?,
-        isRetry: Bool = false
+        isRetry: Bool = false,
+        fromDictateAndSendKey: Bool = false
     ) -> Bool {
         guard queuedStartGate.admitsPress(
                   shortcutMode: shortcutMode,
@@ -97,6 +98,7 @@ extension DictationSessionController {
             trigger: trigger,
             shortcutMode: shortcutMode,
             isRetry: isRetry,
+            fromDictateAndSendKey: fromDictateAndSendKey,
             requestedAt: ProcessInfo.processInfo.systemUptime
         )
         if let overlayController,
@@ -165,7 +167,8 @@ extension DictationSessionController {
                     sourceApp: request.sourceApp,
                     trigger: request.trigger,
                     shortcutMode: request.shortcutMode,
-                    isRetry: request.isRetry
+                    isRetry: request.isRetry,
+                    fromDictateAndSendKey: request.fromDictateAndSendKey
                 )
             case .giveUp:
                 self.queuedDictationStartTask = nil
@@ -233,6 +236,7 @@ extension DictationSessionController {
                 trigger: queued.trigger,
                 shortcutMode: .handsFree,
                 isRetry: queued.isRetry,
+                fromDictateAndSendKey: queued.fromDictateAndSendKey,
                 requestedAt: queued.requestedAt,
                 keptByTap: true
             )

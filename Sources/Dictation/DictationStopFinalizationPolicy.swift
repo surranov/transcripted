@@ -89,6 +89,9 @@ extension TextPasteOutcome {
 /// What the pill shows once a finished take was delivered (or not) and saved.
 enum DictationDeliveryPresentation: Equatable {
     case success(title: String)
+    /// Fork (`DictationAutoSendMode.confirmAfterPaste`): the words landed and
+    /// the island asks to confirm send.
+    case awaitingSendConfirmation
     /// A calm notice that a newer take's start may replace.
     case clipboardNotice(String)
     /// The words are on the clipboard; the notice offers Paste where they go.
@@ -113,6 +116,7 @@ enum DictationDeliveryPresentation: Equatable {
             if case .failed(let failure) = autoSend {
                 return .error(failure.message)
             }
+            if autoSend == .awaitingConfirmation { return .awaitingSendConfirmation }
             return .success(title: autoSend.confirmationTitle ?? "Pasted")
         case .likelyPasted:
             // No Accessibility proof, but the target stayed in front and read
@@ -126,6 +130,9 @@ enum DictationDeliveryPresentation: Equatable {
             switch autoSend {
             case .sent:
                 return .success(title: autoSend.confirmationTitle ?? "Pasted")
+            case .awaitingConfirmation:
+                // Only once the anchored field shows the words, like Anchored Enter.
+                return .awaitingSendConfirmation
             case .failed(let failure):
                 return .error(failure.message)
             case .disabled:

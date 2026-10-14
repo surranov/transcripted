@@ -14,7 +14,8 @@ extension DictationSessionController {
     func stopDictationAndPaste(
         trigger: DictationTrigger = .unknown,
         shortcutMode: DictationShortcutMode? = nil,
-        autoPaste: Bool = true
+        autoPaste: Bool = true,
+        fromDictateAndSendKey: Bool = false
     ) {
         guard let (appState, overlayController) = readyState() else { return }
         let stopRequestedAt = CFAbsoluteTimeGetCurrent()
@@ -46,7 +47,8 @@ extension DictationSessionController {
                     self.rememberStartPressIfFinishing(
                         sourceApp: NSWorkspace.shared.frontmostApplication,
                         trigger: trigger,
-                        shortcutMode: shortcutMode
+                        shortcutMode: shortcutMode,
+                        fromDictateAndSendKey: fromDictateAndSendKey
                     )
                 },
                 isAlreadyFinalizing: {
@@ -539,7 +541,10 @@ extension DictationSessionController {
                 }
                 stopTiming.pastedAt = CFAbsoluteTimeGetCurrent()
                 take.isDelivering = false
-                self.markDelivered(take.sequence)
+                // Fork: the next take's turn waits for this one's send too
+                // (`performAutoEnter` below): pasted in the same box first,
+                // its words would go out with this send, and its own send
+                // would press on an empty box.
                 self.setActiveTakeCanHandOff(true)
                 // Paste confirmation pumps the run loop, so cancellation/restart can occur here too.
                 guard DictationSessionCompletionPolicy.canPublish(
@@ -580,6 +585,7 @@ extension DictationSessionController {
                             sessionID: taskSessionID
                         )
                         stopTiming.autoEnterFinishedAt = CFAbsoluteTimeGetCurrent()
+                        self.markDelivered(take.sequence)
                         return outcome
                     }
                 )
@@ -646,6 +652,15 @@ extension DictationSessionController {
                     switch presentation {
                     case .success, .clipboardNotice:
                         break
+                    case .awaitingSendConfirmation:
+                        // Asked in turn once no take is on the island.
+                        self.askToSend(
+                            key: self.autoSendRequestDecision.key,
+                            anchor: self.pasteAnchor,
+                            text: text,
+                            order: take.sequence,
+                            takeOwnsIsland: false
+                        )
                     case .notPasted(let message, let unconfirmed):
                         self.queueHandedOffNotice(.init(text: text, message: message, kind: .notPasted(unconfirmed: unconfirmed)))
                     case .clipboardBusy(let message):
@@ -657,6 +672,14 @@ extension DictationSessionController {
                     switch presentation {
                     case .success(let title):
                         overlayController.showSuccessAndDismiss(title: title)
+                    case .awaitingSendConfirmation:
+                        self.askToSend(
+                            key: self.autoSendRequestDecision.key,
+                            anchor: self.pasteAnchor,
+                            text: text,
+                            order: take.sequence,
+                            takeOwnsIsland: true
+                        )
                     case .clipboardNotice(let message):
                         overlayController.showClipboardNotice(message)
                         // The text landed; a press for the next take can replace this.
@@ -675,6 +698,17 @@ extension DictationSessionController {
                     case .error(let message):
                         overlayController.showError(message)
                     }
+                }
+                if case .error = presentation, autoSendOutcome == .awaitingConfirmation {
+                    // Fork: the words landed but the save failed. Its error
+                    // shows first; the send is still asked, after it.
+                    self.askToSend(
+                        key: self.autoSendRequestDecision.key,
+                        anchor: self.pasteAnchor,
+                        text: text,
+                        order: take.sequence,
+                        takeOwnsIsland: false
+                    )
                 }
                 let handedOff = DictationTakeScope.handedOff != nil
                 self.endActiveTake()

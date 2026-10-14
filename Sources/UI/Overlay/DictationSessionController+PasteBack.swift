@@ -60,15 +60,9 @@ extension DictationSessionController {
         } else {
             appState?.logger.log("DICTATION | long model wait, keeping the original paste target")
         }
-        // Fork: an anchored take may expect Enter in any app (Anchored Enter).
-        autoSendRequestDecision = withAnchoredEnter(DictationAutoSendPolicy.requestDecision(
-            isEnabled: DictationAutoSendPreferences.isEnabled(),
-            key: DictationAutoSendPreferences.sendKey(),
-            text: text,
-            duration: CFAbsoluteTimeGetCurrent() - sessionStartTime,
-            sourceBundleID: sessionSourceApp?.bundleIdentifier,
-            allowedBundleIDs: DictationAutoSendPreferences.allowedBundleIDs()
-        ), text: text)
+        // Fork: an anchored take may expect Enter in any app (Anchored Enter),
+        // and the mode may hold it (Dictate & send key).
+        autoSendRequestDecision = autoSendDecision(for: text, bundleID: sessionSourceApp?.bundleIdentifier)
         let sessionID = currentDictationSessionID
         let trigger = currentDictationTrigger
         let outcome = textPaster.paste(
@@ -198,6 +192,13 @@ extension DictationSessionController {
               pasteOutcome.allowsAutoSend
                 || (decision.requiresAnchoredField && pasteOutcome == .likelyPasted && pasteAnchorHolds(text)) else {
             return .disabled
+        }
+        // Fork: the user confirms first (`askToSend`). The words went where
+        // the user is; asked only if that's the anchored box, the one a
+        // confirmed send presses in (`DictationAutoSendPolicy.confirmedSend`).
+        if decision.awaitsConfirmation {
+            if pasteAnchor != nil, let blocker = anchoredEnterBlocker() { return .failed(blocker) }
+            return .awaitingConfirmation
         }
 
         try? await Task.sleep(nanoseconds: TranscriptedConstants.dictationAutoEnterDelay)

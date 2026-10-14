@@ -235,6 +235,51 @@ func testContextCaptureEnginePolicy() {
         )
     }
 
+    runSuite("Binding snapshot — the Dictate & send key joins only while send waits for it") {
+        let (defaults, suiteName) = makeContextCaptureDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        assertEqual(
+            PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults).map(\.startsDictateAndSend),
+            [false, false],
+            "Always: no extra key is caught"
+        )
+
+        DictationAutoSendPreferences.setMode(.dictateAndSendKey, userDefaults: defaults)
+        let bindings = PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults)
+        assertEqual(bindings.map(\.action), [.dictationPushToTalk, .meeting, .dictationPushToTalk], "last, so the other keys win a stale clash")
+        assertEqual(bindings.last?.startsDictateAndSend, true)
+        assertEqual(
+            bindings.last?.binding,
+            PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: defaults),
+            "the stored or default Dictate & send key"
+        )
+
+        HotkeyPreferences.setDictationKeyBehavior(.tapToToggle, userDefaults: defaults)
+        assertEqual(
+            PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults).last?.action,
+            .dictationHandsFree,
+            "it behaves like the dictation key"
+        )
+
+        PhysicalDictationTriggerPreferences.saveDictateAndSend(
+            PhysicalDictationTriggerPreferences.defaultMeetingBinding,
+            userDefaults: defaults
+        )
+        assertEqual(
+            PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults).map(\.startsDictateAndSend),
+            [false, false],
+            "a key another shortcut already uses is left out"
+        )
+
+        defaults.set(false, forKey: "hotkey-dictation-shortcuts-enabled")
+        assertEqual(
+            PhysicalShortcutMatcher.configuredBindings(userDefaults: defaults).map(\.action),
+            [.meeting],
+            "dictation shortcuts off takes it with the dictation key"
+        )
+    }
+
     runSuite("Binding snapshot — dictation shortcuts off still keeps meetings") {
         let (defaults, suiteName) = makeContextCaptureDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -759,7 +804,7 @@ func testContextCaptureEnginePolicy() {
             PhysicalShortcutMatcher.hasChordUsingModifier(
                 UInt32(kVK_RightOption),
                 in: bindings,
-                excluding: .dictationHandsFree
+                excluding: bindings[0]
             ),
             "Right Option must be detected as feeding the meeting Option-M chord so the modifier press is deferred"
         )
@@ -787,7 +832,7 @@ func testContextCaptureEnginePolicy() {
             PhysicalShortcutMatcher.hasChordUsingModifier(
                 UInt32(kVK_RightOption),
                 in: bindings,
-                excluding: .meeting
+                excluding: bindings[1]
             ),
             "excluding the only Option chord leaves only a modifier-only binding, which is not a chord conflict"
         )
@@ -808,7 +853,7 @@ func testContextCaptureEnginePolicy() {
             PhysicalShortcutMatcher.hasChordUsingModifier(
                 UInt32(kVK_ANSI_M),
                 in: bindings,
-                excluding: .dictationHandsFree
+                excluding: PhysicalShortcutBinding(action: .dictationHandsFree, binding: PhysicalDictationTriggerBinding(keyCode: UInt32(kVK_RightOption)))
             ),
             "a typing keyCode has no primary modifier mask, so it can't share a modifier with another chord"
         )

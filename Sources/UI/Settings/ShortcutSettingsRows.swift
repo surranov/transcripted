@@ -11,11 +11,14 @@ import SwiftUI
 enum ShortcutRecordingTarget: CaseIterable {
     case dictation
     case meeting
+    /// Fork: `DictationAutoSendMode.dictateAndSendKey`.
+    case dictateAndSend
 
     var name: String {
         switch self {
         case .dictation: return "Dictation key"
         case .meeting: return "Meetings"
+        case .dictateAndSend: return "Dictate & send key"
         }
     }
 
@@ -23,6 +26,7 @@ enum ShortcutRecordingTarget: CaseIterable {
         switch self {
         case .dictation: return PhysicalDictationTriggerPreferences.pushToTalkBinding()
         case .meeting: return PhysicalDictationTriggerPreferences.meetingBinding()
+        case .dictateAndSend: return PhysicalDictationTriggerPreferences.dictateAndSendBinding()
         }
     }
 
@@ -30,6 +34,10 @@ enum ShortcutRecordingTarget: CaseIterable {
         switch self {
         case .dictation: return PhysicalDictationTriggerPreferences.defaultPushToTalkBinding
         case .meeting: return PhysicalDictationTriggerPreferences.defaultMeetingBinding
+        case .dictateAndSend:
+            return PhysicalDictationTriggerPreferences.defaultDictateAndSendBinding(
+                for: PhysicalDictationTriggerPreferences.pushToTalkBinding()
+            )
         }
     }
 
@@ -37,7 +45,29 @@ enum ShortcutRecordingTarget: CaseIterable {
         switch self {
         case .dictation: PhysicalDictationTriggerPreferences.savePushToTalk(binding)
         case .meeting: PhysicalDictationTriggerPreferences.saveMeeting(binding)
+        case .dictateAndSend: PhysicalDictationTriggerPreferences.saveDictateAndSend(binding)
         }
+    }
+
+    /// The reset arrow. The Dictate & send key goes back to following the
+    /// dictation key rather than pinning today's default.
+    func resetToDefault() {
+        switch self {
+        case .dictation, .meeting: save(defaultBinding)
+        case .dictateAndSend: PhysicalDictationTriggerPreferences.clearDictateAndSend()
+        }
+    }
+
+    /// Whether a new key for `target` must stay clear of this row's key
+    /// (`dictateAndSendKeyGuards` for the Dictate & send key).
+    func guardsKey(for target: ShortcutRecordingTarget) -> Bool {
+        guard self != target else { return false }
+        guard self == .dictateAndSend else { return true }
+        return PhysicalDictationTriggerPreferences.dictateAndSendKeyGuards(
+            newKeyIsDictationKey: target == .dictation,
+            recorded: PhysicalDictationTriggerPreferences.hasRecordedDictateAndSend(),
+            mode: DictationAutoSendPreferences.mode()
+        )
     }
 }
 
@@ -65,7 +95,10 @@ final class ShortcutRecorderModel: ObservableObject {
     }
 
     func isDefault(_ target: ShortcutRecordingTarget) -> Bool {
-        target.binding == target.defaultBinding
+        // A recorded Dictate & send key equal to today's default is still
+        // pinned, so it keeps its reset arrow.
+        if target == .dictateAndSend { return !PhysicalDictationTriggerPreferences.hasRecordedDictateAndSend() }
+        return target.binding == target.defaultBinding
     }
 
     func hint(for target: ShortcutRecordingTarget) -> String? {
@@ -90,7 +123,7 @@ final class ShortcutRecorderModel: ObservableObject {
             rejectionHint = reason
             return
         }
-        target.save(target.defaultBinding)
+        target.resetToDefault()
         revision &+= 1
     }
 
@@ -180,10 +213,10 @@ final class ShortcutRecorderModel: ObservableObject {
     }
 
     /// The dictation key counts even while dictation shortcuts are off, so
-    /// turning them back on can't bring a clash back.
+    /// turning them back on can't bring a clash back (`guardsKey(for:)`).
     private func duplicateReason(for binding: PhysicalDictationTriggerBinding, target: ShortcutRecordingTarget) -> String? {
         let others = ShortcutRecordingTarget.allCases
-            .filter { $0 != target }
+            .filter { $0.guardsKey(for: target) }
             .map { (name: $0.name, binding: $0.binding) }
         return PhysicalDictationTriggerPreferences.duplicateReason(for: binding, otherShortcuts: others)
     }

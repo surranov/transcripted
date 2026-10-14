@@ -18,15 +18,37 @@ enum PhysicalShortcutAction: Equatable {
     case meeting
 }
 
-struct PhysicalShortcutBinding {
+struct PhysicalShortcutBinding: Equatable {
     let action: PhysicalShortcutAction
     let binding: PhysicalDictationTriggerBinding
+    /// The Dictate & send key: the same dictation action, but the take it
+    /// starts may press send (`DictationAutoSendMode.dictateAndSendKey`).
+    var startsDictateAndSend = false
+}
+
+/// What happened to a shortcut, from the event tap.
+enum PhysicalShortcutPhase {
+    case press
+    /// A dictation press by the Dictate & send key.
+    case pressFromDictateAndSendKey
+    case release
+    /// A Push to Talk release after a quick press with no other key in
+    /// between (`DictationHoldKeyTapPolicy`).
+    case tapRelease
+    /// Another key went down while a hands-free modifier that fired on press
+    /// was held, or inside a shared Push to Talk modifier's chord window.
+    case comboInterrupted
+
+    static func press(fromDictateAndSendKey: Bool) -> PhysicalShortcutPhase {
+        fromDictateAndSendKey ? .pressFromDictateAndSendKey : .press
+    }
 }
 
 struct DelayedModifierShortcutPress: Equatable {
     let generation: UInt64
     let keyCode: UInt32
     let action: PhysicalShortcutAction
+    var startsDictateAndSend = false
 }
 
 /// Times a held Push to Talk key so its release can say tap or hold
@@ -132,6 +154,37 @@ struct PushToTalkModifierComboWindow {
     }
 }
 
+/// Fork (`DictationAutoSendMode.confirmAfterPaste`): while a pasted take
+/// waits for its send, the tap takes one press of the confirm key from any
+/// app, until the deadline. Fed from the tap thread under its lock.
+struct SendConfirmationCatcher {
+    private var key: DictationSendConfirmKey?
+    private var deadline: TimeInterval = 0
+
+    mutating func arm(_ key: DictationSendConfirmKey, until deadline: TimeInterval) {
+        self.key = key
+        self.deadline = deadline
+    }
+
+    mutating func disarm() {
+        key = nil
+    }
+
+    /// True when this key-down confirms the send: the tap takes it and the
+    /// catcher disarms, so only one press is ever taken. A held key's repeat
+    /// never confirms; past the deadline the catcher lets keys through.
+    mutating func catches(keyCode: UInt32, modifiers: UInt32, isRepeat: Bool, now: TimeInterval) -> Bool {
+        guard let key else { return false }
+        guard now <= deadline else {
+            self.key = nil
+            return false
+        }
+        guard !isRepeat, key.matches(keyCode: keyCode, modifiers: modifiers) else { return false }
+        self.key = nil
+        return true
+    }
+}
+
 enum PhysicalShortcutMatcher {
     /// A typed key this recent means the user is mid-typing, where a
     /// hands-free modifier press is likely the start of a combo (typing é
@@ -193,36 +246,65 @@ enum PhysicalShortcutMatcher {
             return exact
         }
 
+        // The Dictate & send key only on its own key's press (⇧ held, then
+        // Right ⌥): ⇧ added under a held Right ⌥ would otherwise toggle a
+        // take that key just started.
         return shortcuts.first {
-            PhysicalDictationTriggerPreferences.matchesFlagsChangedPress($0.binding, keyCode: keyCode, modifiers: modifiers)
+            !$0.startsDictateAndSend
+                && PhysicalDictationTriggerPreferences.matchesFlagsChangedPress($0.binding, keyCode: keyCode, modifiers: modifiers)
         }
     }
 
+    /// Whether a modifier change is the release of a modifier that a held
+    /// dictation key's chord includes (⇧ let go before Right ⌥ on ⇧+Right ⌥).
+    /// That's still the same press, so a quick one stays a tap.
+    static func isChordModifierRelease(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        heldKeyCode: UInt32,
+        in shortcuts: [PhysicalShortcutBinding]
+    ) -> Bool {
+        guard let mask = PhysicalDictationTriggerPreferences.primaryModifierMask(for: keyCode),
+              modifiers & mask == 0 else { return false }
+        return shortcuts.contains {
+            $0.action != .meeting && $0.binding.keyCode == heldKeyCode && $0.binding.modifiers & mask != 0
+        }
+    }
+
+    /// Any binding of the action counts: the dictation action may have two
+    /// (the dictation key and the Dictate & send key), and the held one may
+    /// be either. A release still needs the event to belong to that binding
+    /// and the binding to stop being held.
     static func matchesRelease(
         for action: PhysicalShortcutAction,
         in shortcuts: [PhysicalShortcutBinding],
         keyCode: UInt32,
         modifiers: UInt32
     ) -> Bool {
-        guard let shortcut = shortcuts.first(where: { $0.action == action }) else { return false }
-        return PhysicalDictationTriggerPreferences.matchesFlagsChangedRelease(
-            shortcut.binding,
-            keyCode: keyCode,
-            modifiers: modifiers
-        )
+        shortcuts.contains {
+            $0.action == action && PhysicalDictationTriggerPreferences.matchesFlagsChangedRelease(
+                $0.binding,
+                keyCode: keyCode,
+                modifiers: modifiers
+            )
+        }
     }
 
+    /// Whether another shortcut's key chord uses this modifier (Right Option
+    /// vs Option+M). Only the pressed shortcut itself is left out, so a
+    /// Dictate & send chord (⌥⇧D) still makes a bare Right Option dictation
+    /// key wait for its chord window.
     static func hasChordUsingModifier(
         _ keyCode: UInt32,
         in shortcuts: [PhysicalShortcutBinding],
-        excluding action: PhysicalShortcutAction
+        excluding pressed: PhysicalShortcutBinding
     ) -> Bool {
         guard let modifier = PhysicalDictationTriggerPreferences.primaryModifierMask(for: keyCode) else {
             return false
         }
 
         return shortcuts.contains {
-            $0.action != action
+            $0 != pressed
                 && !PhysicalDictationTriggerPreferences.isModifierKey($0.binding.keyCode)
                 && ($0.binding.modifiers & modifier) != 0
         }
@@ -289,13 +371,19 @@ extension PhysicalShortcutMatcher {
         // path; the other behaviors are Push to Talk, where Hold or tap
         // keeps listening after a quick tap (DictationHotkeyRouter).
         let behavior = HotkeyPreferences.dictationKeyBehavior(userDefaults: userDefaults)
-        bindings.insert(
-            PhysicalShortcutBinding(
-                action: behavior == .tapToToggle ? .dictationHandsFree : .dictationPushToTalk,
-                binding: PhysicalDictationTriggerPreferences.pushToTalkBinding(userDefaults: userDefaults)
-            ),
-            at: 0
-        )
+        let dictationAction: PhysicalShortcutAction = behavior == .tapToToggle ? .dictationHandsFree : .dictationPushToTalk
+        let dictationKey = PhysicalDictationTriggerPreferences.pushToTalkBinding(userDefaults: userDefaults)
+        bindings.insert(PhysicalShortcutBinding(action: dictationAction, binding: dictationKey), at: 0)
+
+        // The Dictate & send key works like the dictation key, only while
+        // send waits for it. Last, so on a stale clash the dictation and
+        // meeting keys keep winning (the recorder refuses new clashes).
+        if DictationAutoSendPreferences.mode(userDefaults: userDefaults) == .dictateAndSendKey {
+            let sendKey = PhysicalDictationTriggerPreferences.dictateAndSendBinding(userDefaults: userDefaults)
+            if !bindings.contains(where: { $0.binding == sendKey }) {
+                bindings.append(PhysicalShortcutBinding(action: dictationAction, binding: sendKey, startsDictateAndSend: true))
+            }
+        }
         return bindings
     }
 

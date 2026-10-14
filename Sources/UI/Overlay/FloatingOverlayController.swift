@@ -107,7 +107,9 @@ class FloatingOverlayController {
     /// (saved, not pasted), so it needs no "press again to discard" confirm.
     var escapeKeepsTake = false
     var onStopListening: (() -> Void)?
-    var onActionableMessageDiscarded: (() -> Void)?
+    /// True when the user dismissed it (Dismiss, Esc); false when something
+    /// else took its place.
+    var onActionableMessageDiscarded: ((_ dismissed: Bool) -> Void)?
     /// Every Esc during an active session, before the discard decision.
     var onEscapeKeyDuringSession: (() -> Void)?
 
@@ -471,6 +473,12 @@ class FloatingOverlayController {
         }
     }
 
+    /// A calm notice with one action, up until the action, Dismiss, Esc or
+    /// its caller takes it down (fork: the send confirmation).
+    func showActionNotice(_ message: String, actionTitle: String, action: @escaping () -> Void) {
+        showMessage(message, tone: .notice, actionTitle: actionTitle, action: action)
+    }
+
     /// Calm "it's saved" message, with an optional action such as Paste It.
     func showSavedNotice(
         _ message: String,
@@ -560,7 +568,7 @@ class FloatingOverlayController {
         errorDismissTask?.cancel()
         errorDismissTask = nil
         errorMessage = ""
-        discardActionableMessageIfNeeded()
+        discardActionableMessageIfNeeded(dismissed: true)
         // Only real problems shake on the way out.
         if messageTone == .error {
             hideWithCancelAnimation()
@@ -569,12 +577,12 @@ class FloatingOverlayController {
         }
     }
 
-    private func discardActionableMessageIfNeeded() {
+    private func discardActionableMessageIfNeeded(dismissed: Bool = false) {
         let hadAction = errorActionHandler != nil
         errorActionTitle = nil
         errorActionHandler = nil
         if hadAction {
-            onActionableMessageDiscarded?()
+            onActionableMessageDiscarded?(dismissed)
         }
     }
 
@@ -679,15 +687,6 @@ class FloatingOverlayController {
         loadingPresentation = .initial
         islandSourceApp = nil
         pushStateToIsland()
-    }
-
-    // MARK: - System Wake Recovery & Periodic AG Refresh
-
-    func handleSystemWake() {
-        // No NSHostingView to recreate. AppKit views survive sleep/wake without corruption.
-        // Reset state to idle as a safety measure.
-        guard !isVisible else { return }
-        state = .idle
     }
 
     // MARK: - Global Escape Monitor

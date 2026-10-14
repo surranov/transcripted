@@ -101,8 +101,9 @@ class DictationSessionController: ObservableObject {
                 guard let self = self, self.isDictating else { return }
                 self.stopDictationAndPaste(trigger: .overlayButton)
             }
-            overlayController?.onActionableMessageDiscarded = { [weak self] in
+            overlayController?.onActionableMessageDiscarded = { [weak self] dismissed in
                 self?.textPaster.discardPasteRetry()
+                self?.sendPromptLeftIsland(dismissed: dismissed)
             }
             overlayController?.onTakeQueueAction = { [weak self] action in
                 self?.handleTakeQueueAction(action)
@@ -170,6 +171,13 @@ class DictationSessionController: ObservableObject {
         get { if let take = DictationTakeScope.handedOff { return take.shortcutMode }; return storedDictationShortcutMode }
         set { if let take = DictationTakeScope.handedOff { take.shortcutMode = newValue } else { storedDictationShortcutMode = newValue } }
     }
+    /// Fork (`DictationAutoSendMode.dictateAndSendKey`): the Dictate & send
+    /// key started this take, so it may press send. Read from the press.
+    private var storedDictationStartedWithDictateAndSendKey = false
+    var currentDictationStartedWithDictateAndSendKey: Bool {
+        get { DictationTakeScope.handedOff.map { $0.startedWithDictateAndSendKey } ?? storedDictationStartedWithDictateAndSendKey }
+        set { if let take = DictationTakeScope.handedOff { take.startedWithDictateAndSendKey = newValue } else { storedDictationStartedWithDictateAndSendKey = newValue } }
+    }
     private var storedStoppedAudioRecovery: DictationStoppedAudioRecovery?
     var stoppedAudioRecovery: DictationStoppedAudioRecovery? {
         get { if let take = DictationTakeScope.handedOff { return take.stoppedAudioRecovery }; return storedStoppedAudioRecovery }
@@ -227,6 +235,12 @@ class DictationSessionController: ObservableObject {
         get { DictationTakeScope.handedOff.map { $0.autoSendRequestDecision } ?? storedAutoSendRequestDecision }
         set { if let take = DictationTakeScope.handedOff { take.autoSendRequestDecision = newValue } else { storedAutoSendRequestDecision = newValue } }
     }
+    /// Fork: pasted takes waiting for their send to be confirmed, asked one
+    /// at a time (`DictationSessionController+SendConfirmation.swift`).
+    var sendConfirmations = DictationSendConfirmationQueue<PendingSendConfirmation>()
+    var sendConfirmationTimeout: Task<Void, Never>?
+    var sendConfirmationRetry: Task<Void, Never>?
+    @Published var sendConfirmationArm: DictationSendConfirmationArm?
     /// Fork: the dictation queue (`DictationSessionController+HandOff.swift`).
     var finishingTake: DictationFinishingTake?
     var handedOffTakes: [DictationFinishingTake] = []
@@ -244,6 +258,7 @@ class DictationSessionController: ObservableObject {
         let trigger: DictationTrigger
         let shortcutMode: DictationShortcutMode
         let isRetry: Bool
+        let fromDictateAndSendKey: Bool
         let requestedAt: TimeInterval
         /// A Push to Talk tap turned this start hands-free, so the next
         /// Push to Talk press takes it back.
@@ -261,6 +276,8 @@ class DictationSessionController: ObservableObject {
         recordingStartRetryTask?.cancel()
         sessionTimeoutTask?.cancel()
         queuedDictationStartTask?.cancel()
+        sendConfirmationTimeout?.cancel()
+        sendConfirmationRetry?.cancel()
     }
 
     private func setupInterruptionObserver() {
@@ -291,7 +308,8 @@ class DictationSessionController: ObservableObject {
         trigger: DictationTrigger = .unknown,
         shortcutMode: DictationShortcutMode? = nil,
         anchorRect: NSRect? = nil,
-        isRetry: Bool = false
+        isRetry: Bool = false,
+        fromDictateAndSendKey: Bool = false
     ) {
         let requestStartedAt = CFAbsoluteTimeGetCurrent()
         guard let (appState, overlayController) = readyState() else { return }
@@ -306,7 +324,8 @@ class DictationSessionController: ObservableObject {
             sourceApp: sourceApp,
             trigger: trigger,
             shortcutMode: shortcutMode,
-            isRetry: isRetry
+            isRetry: isRetry,
+            fromDictateAndSendKey: fromDictateAndSendKey
         ) else { return }
         // Issue #1743: decide the readiness plan BEFORE `isDictating` flips,
         // because that flip takes the App Nap suppression assertion and its
@@ -349,7 +368,10 @@ class DictationSessionController: ObservableObject {
         sessionStartTime = requestStartedAt
         currentDictationTrigger = trigger
         currentDictationShortcutMode = shortcutMode
+        currentDictationStartedWithDictateAndSendKey = fromDictateAndSendKey
         autoSendRequestDecision = .notEvaluated
+        // A send waiting for its confirm is asked again after this take.
+        holdSendConfirmationForNewTake()
         lastCompletedText = nil
         appState.runtimeDiagnostics.recordSession(kind: "dictation", stage: "start_requested")
         recordStartReadinessPrepared(

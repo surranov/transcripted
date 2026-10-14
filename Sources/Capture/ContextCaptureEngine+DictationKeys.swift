@@ -5,7 +5,9 @@
 import AppKit
 
 extension ContextCaptureEngine {
-    func handlePhysicalDictationPushToTalkPress() {
+    /// `fromDictateAndSendKey`: the Dictate & send key was pressed, so the
+    /// take it starts (now or once the last one finishes) may press send.
+    func handlePhysicalDictationPushToTalkPress(fromDictateAndSendKey: Bool = false) {
         let frontApp = NSWorkspace.shared.frontmostApplication
         guard let session = sessionController else { return }
         DiagnosticsTrail.record(
@@ -26,8 +28,11 @@ extension ContextCaptureEngine {
         // one when it finishes, instead of being dropped. A press during a
         // take a tap kept going stops it.
         let wasDictating = session.isDictating
-        pushToTalkPressStoppedTake = dictationHotkeyRouter(session: session, sourceApp: frontApp)
-            .pushToTalkPressed() == .stoppedHandsFreeTake
+        pushToTalkPressStoppedTake = dictationHotkeyRouter(
+            session: session,
+            sourceApp: frontApp,
+            fromDictateAndSendKey: fromDictateAndSendKey
+        ).pushToTalkPressed() == .stoppedHandsFreeTake
         pushToTalkPressStartedSessionID = wasDictating ? nil : session.activeDictationSessionID
     }
 
@@ -74,7 +79,7 @@ extension ContextCaptureEngine {
         dictationHotkeyRouter(session: session, sourceApp: nil).pushToTalkReleased(wasTap: wasTap)
     }
 
-    func handlePhysicalDictationHandsFreePress() {
+    func handlePhysicalDictationHandsFreePress(fromDictateAndSendKey: Bool = false) {
         handsFreePressStartedSessionID = nil
         guard shouldAcceptHotkeyAction(.dictationHandsFree) else {
             DiagnosticsTrail.record(
@@ -94,7 +99,7 @@ extension ContextCaptureEngine {
 
         let frontApp = NSWorkspace.shared.frontmostApplication
         let wasDictating = sessionController?.isDictating ?? false
-        routeHandsFreeToggle(sourceApp: frontApp)
+        routeHandsFreeToggle(sourceApp: frontApp, fromDictateAndSendKey: fromDictateAndSendKey)
         if !wasDictating {
             handsFreePressStartedSessionID = sessionController?.activeDictationSessionID
         }
@@ -110,7 +115,7 @@ extension ContextCaptureEngine {
         sessionController?.abandonDictationStartForModifierCombo(sessionID: sessionID)
     }
 
-    func routeHandsFreeToggle(sourceApp: NSRunningApplication?) {
+    func routeHandsFreeToggle(sourceApp: NSRunningApplication?, fromDictateAndSendKey: Bool = false) {
         let trigger = DictationTrigger.physicalKey
         guard isHotkeyRoutingActive, let session = sessionController else { return }
         DiagnosticsTrail.record(
@@ -126,14 +131,22 @@ extension ContextCaptureEngine {
                 "overlay_state": overlayStateName(session.overlayController?.state)
             ]
         )
-        dictationHotkeyRouter(session: session, sourceApp: sourceApp).handsFreePressed()
+        dictationHotkeyRouter(
+            session: session,
+            sourceApp: sourceApp,
+            fromDictateAndSendKey: fromDictateAndSendKey
+        ).handsFreePressed()
     }
 
     /// The session commands behind the physical dictation keys. The routing
     /// itself (and which shortcut each command names) is `DictationHotkeyRouter`.
+    /// `fromDictateAndSendKey` marks only a take this press starts: a stop
+    /// it makes ends the running take as it was started, and only a press
+    /// remembered as the next start carries it.
     func dictationHotkeyRouter(
         session: DictationSessionController,
-        sourceApp: NSRunningApplication?
+        sourceApp: NSRunningApplication?,
+        fromDictateAndSendKey: Bool = false
     ) -> DictationHotkeyRouter {
         DictationHotkeyRouter(
             isDictating: { session.isDictating },
@@ -141,15 +154,25 @@ extension ContextCaptureEngine {
                 session.rememberStartPressIfFinishing(
                     sourceApp: sourceApp,
                     trigger: trigger,
-                    shortcutMode: shortcutMode
+                    shortcutMode: shortcutMode,
+                    fromDictateAndSendKey: fromDictateAndSendKey
                 )
             },
             dropQueuedPushToTalkStart: { session.dropQueuedPushToTalkStart() },
             start: { trigger, shortcutMode in
-                session.startDictation(sourceApp: sourceApp, trigger: trigger, shortcutMode: shortcutMode)
+                session.startDictation(
+                    sourceApp: sourceApp,
+                    trigger: trigger,
+                    shortcutMode: shortcutMode,
+                    fromDictateAndSendKey: fromDictateAndSendKey
+                )
             },
             stop: { trigger, shortcutMode in
-                session.stopDictationAndPaste(trigger: trigger, shortcutMode: shortcutMode)
+                session.stopDictationAndPaste(
+                    trigger: trigger,
+                    shortcutMode: shortcutMode,
+                    fromDictateAndSendKey: fromDictateAndSendKey
+                )
             },
             tapKeepsListening: { HotkeyPreferences.dictationKeyBehavior() == .holdOrTap },
             isHandsFreeTakeListening: { session.isHandsFreeTakeListening },

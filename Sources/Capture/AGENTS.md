@@ -15,7 +15,7 @@ Global physical triggers: the dictation key and the meeting key, from a CGEvent 
 
 - `ContextCaptureEngine.swift` — the event tap (`PhysicalShortcutDetector`), shortcut debounce, delayed modifier presses, `hotkeyError`, and the routing switch in `handlePhysicalShortcut`.
 - `ContextCaptureEngine+DictationKeys.swift` — the dictation keys as session commands: Push to Talk press, release and combo-interrupt, and the hands-free toggle. Press/release semantics live in `DictationHotkeyRouter` (`Sources/Speech/DictationTrigger.swift`).
-- `PhysicalShortcutMatcher.swift` — Foundation-pure helpers: `configuredBindings`, exact/fallback binding precedence, release matching, and the tap and combo trackers below.
+- `PhysicalShortcutMatcher.swift` — Foundation-pure helpers: `configuredBindings`, exact/fallback binding precedence, release matching, the tap and combo trackers below, `PhysicalShortcutPhase`, and `SendConfirmationCatcher` (fork, below).
 
 ## Dictation key behavior
 
@@ -24,6 +24,10 @@ Defaults (`Sources/Support/PhysicalDictationTriggerPreferences.swift`): Right Op
 - **Hold or tap** (default): registers as `.dictationPushToTalk`. Hold, and the release stops and pastes. Tap it (held under `DictationHoldKeyTapPolicy.tapThresholdSeconds`, no other key or modifier meanwhile) and the take flips to hands-free: the next press stops it and that press's release is swallowed.
 - **Hold only**: the same `.dictationPushToTalk` registration, plain Push to Talk with no tap flip.
 - **Tap to toggle**: registers as `.dictationHandsFree`.
+
+Fork: **Dictate & send key** (`DictationAutoSendMode.dictateAndSendKey`). Only in that mode, and only while dictation shortcuts are on, `configuredBindings` appends a second binding with the dictation key's own action and `startsDictateAndSend` set (`PhysicalDictationTriggerPreferences.dictateAndSendBinding`, by default the dictation key plus ⇧). It goes last, so on a stale clash the dictation and meeting keys win. Matching is exact, so ⇧ then Right ⌥ is the send key and Right ⌥ alone stays the dictation key; ⇧ has to go down first. Its press arrives as `.pressFromDictateAndSendKey` and marks only the take it starts (`startDictation(fromDictateAndSendKey:)`, also through a queued start); a stop it makes doesn't change the running take. `matchesRelease` accepts any binding of the action, and `hasChordUsingModifier` leaves out only the pressed binding, so a ⌥⇧D send chord still makes bare Right ⌥ wait for its chord window.
+
+Fork: **confirm key** (`DictationAutoSendMode.confirmAfterPaste`). While a pasted take waits for its send, `DictationSessionController.sendConfirmationArm` arms the tap's `SendConfirmationCatcher`: the first non-repeat key-down of the confirm key (Return or keypad Enter with exactly its modifiers) before the deadline is taken with its keyUp, from whatever app is in front, and calls `confirmPendingSend(fromKey: true)`. It disarms on that press, past the deadline, or when the session clears the arm (the prompt leaving the island: Dismiss, Esc, another message, a new take, the wait running out). With several takes waiting, the arm is for the one the island shows. Under Secure Input the tap sees no keys, so the island's Send is the only way.
 
 The paste-last-dictation shortcut is no longer registered. The unused paste-last action, detector routing, callback and binding helpers have been removed; the island's Paste again action and feedback remain. The old hands-free binding is retained only for the one-key migration and reset, not registered as a separate shortcut.
 
