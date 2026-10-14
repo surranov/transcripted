@@ -1,11 +1,11 @@
 import Foundation
 
-/// Runs the transcript LLM for the app's lifetime: downloads and verifies its
-/// model, keeps its own `llama-server` helper up (Writing's process host,
-/// `.chat` profile, one slot for dictation and one for meetings), keeps both
-/// prompts cached in it, refines dictation text before paste
-/// (`DictationTextRefiner`) and meeting utterances after save
-/// (`MeetingUtteranceRefiner`, in `+Meeting.swift`).
+/// Runs the transcript LLM for the app's lifetime: downloads and verifies the
+/// models the two passes picked, keeps a `llama-server` helper up per model
+/// (Writing's process host, `.chat` profile, a slot per pass it serves; see
+/// `TranscriptLLMEngineLayout`), keeps the prompts cached in them, refines
+/// dictation text before paste (`DictationTextRefiner`) and meeting
+/// utterances after save (`MeetingUtteranceRefiner`, in `+Meeting.swift`).
 ///
 /// Always on, no toggle: an empty prompt is the only off switch. Nothing here
 /// can cost the user a dictation or a meeting: every path that isn't a clean,
@@ -15,11 +15,52 @@ import Foundation
 /// `handleSystemWake()` on wake, `stop()` at quit.
 @MainActor
 final class TranscriptLLMController: DictationTextRefiner {
-    private(set) var models: ModelManager?
-    private(set) var host: LlamaServerProcessHost?
-    private var preparationTask: Task<Void, Never>?
-    private var warmTask: Task<Void, Never>?
-    private var promptObservers: [NSObjectProtocol] = []
+    /// One helper of the layout as it runs: its model's download and
+    /// verification, the process host, and the tasks working on them.
+    @MainActor
+    final class EngineRuntime {
+        let engine: TranscriptLLMEngineLayout.Engine
+        let models: ModelManager
+        let host: LlamaServerProcessHost
+        var preparationTask: Task<Void, Never>?
+        var warmTask: Task<Void, Never>?
+
+        init(engine: TranscriptLLMEngineLayout.Engine) {
+            self.engine = engine
+            let models = ModelManager(
+                descriptor: TranscriptLLMModel.descriptor(for: engine.model),
+                rootDirectory: TranscriptLLMModel.modelRoot
+            )
+            self.models = models
+            host = LlamaServerProcessHost(
+                port: engine.port,
+                profile: .chat(
+                    contextTokens: TranscriptLLMModel.contextTokens,
+                    slots: engine.passes.count,
+                    diagnosticsLabel: TranscriptLLMModel.diagnosticsLabel
+                ),
+                modelFileProvider: { models.verifiedInstalledModelFile() }
+            )
+        }
+
+        /// Stops the download and prompt warming. A resumable `.partial`
+        /// stays on disk; the helper is stopped separately.
+        func cancelWork() {
+            preparationTask?.cancel()
+            preparationTask = nil
+            warmTask?.cancel()
+            warmTask = nil
+            models.cancel()
+        }
+    }
+
+    private(set) var layout: TranscriptLLMEngineLayout?
+    private(set) var engines: [EngineRuntime] = []
+    /// Applies model choices one change at a time, after the launch reap:
+    /// helpers leaving the layout are shut down before new ones take their
+    /// port.
+    private var reconfiguration: Task<Void, Never>?
+    private var observers: [NSObjectProtocol] = []
     private(set) var isStarted = false
     private(set) var isStopped = false
     /// Dictation passes in flight. A meeting pass waits for zero before each
@@ -33,71 +74,61 @@ final class TranscriptLLMController: DictationTextRefiner {
         guard !isStarted, !isStopped else { return }
         isStarted = true
         self.log = log
-        let models = ModelManager(
-            descriptor: TranscriptLLMModel.descriptor,
-            rootDirectory: TranscriptLLMModel.modelRoot
-        )
-        let host = LlamaServerProcessHost(
-            port: TranscriptLLMModel.port,
-            profile: .chat(
-                contextTokens: TranscriptLLMModel.contextTokens,
-                slots: TranscriptLLMModel.Slot.allCases.count,
-                diagnosticsLabel: TranscriptLLMModel.diagnosticsLabel
-            ),
-            modelFileProvider: { models.verifiedInstalledModelFile() }
-        )
-        // A fresh helper has empty prompt caches: refill them.
-        host.setReadinessObserver { [weak self] ready in
-            guard ready else { return }
-            Task { @MainActor [weak self] in self?.warmPrompts() }
-        }
-        self.models = models
-        self.host = host
-        promptObservers = [TranscriptLLMPromptPreference.dictation, .meeting].map { preference in
-            NotificationCenter.default.addObserver(
-                forName: preference.didChangeNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
+        let center = NotificationCenter.default
+        observers = TranscriptLLMPass.allCases.map { pass in
+            center.addObserver(forName: pass.prompt.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.warmPrompts() }
             }
         }
-        let port = TranscriptLLMModel.port
-        preparationTask = Task { @MainActor [weak self] in
+        observers.append(center.addObserver(
+            forName: TranscriptLLMModelPreference.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyModelChoices() }
+        })
+        reconfiguration = Task { @MainActor [weak self] in
             // A helper a crashed run left behind holds ~3 GB until reaped.
             // lsof/ps shell-outs: never on the main thread.
             await Task.detached(priority: .utility) {
-                LlamaServerProcessHost.reapOrphanedHelper(port: port)
+                for port in TranscriptLLMEngineLayout.ports {
+                    LlamaServerProcessHost.reapOrphanedHelper(port: port)
+                }
             }.value
-            await self?.prepareModelAndStartEngine()
+            await self?.applyLayout()
         }
-        log("TRANSCRIPT LLM | starting (\(TranscriptLLMModel.descriptor.identifier))")
+        log("TRANSCRIPT LLM | starting")
     }
 
     func handleSystemWake() {
         guard isStarted, !isStopped else { return }
-        ensureRunning()
+        engines.forEach(ensureRunning)
     }
 
-    /// Safe to call more than once. Bounded: the helper gets TERM, then KILL
+    /// Safe to call more than once. Bounded: each helper gets TERM, then KILL
     /// after a second, so a quit can't orphan it.
     func stop() {
         guard !isStopped else { return }
         isStopped = true
-        preparationTask?.cancel()
-        preparationTask = nil
-        warmTask?.cancel()
-        warmTask = nil
-        promptObservers.forEach { NotificationCenter.default.removeObserver($0) }
-        promptObservers = []
-        host?.stop()
-        models?.cancel()
+        reconfiguration?.cancel()
+        reconfiguration = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers = []
+        for runtime in engines {
+            runtime.cancelWork()
+            runtime.host.stop()
+        }
     }
 
-    /// One line for Settings. Reads in-memory state only.
-    var statusLine: String {
-        guard isStarted, !isStopped, let models, let host else { return "Off" }
-        switch models.state {
+    /// One line per pass for Settings. Reads in-memory state only.
+    func statusLine(for pass: TranscriptLLMPass) -> String {
+        guard isStarted, !isStopped else { return "Off" }
+        guard let runtime = runtime(for: pass) else { return "Starting…" }
+        return statusLine(runtime)
+    }
+
+    private func statusLine(_ runtime: EngineRuntime) -> String {
+        switch runtime.models.state {
         case .checking: return "Checking the model…"
         case .missing: return "Model not downloaded yet"
         case let .downloading(received, total):
@@ -105,13 +136,104 @@ final class TranscriptLLMController: DictationTextRefiner {
         case .verifying: return "Verifying the model…"
         case let .failed(failure): return "Model download failed (\(Self.describe(failure))), retrying"
         case .ready:
-            switch host.snapshot {
+            switch runtime.host.snapshot {
             case .starting: return "Starting…"
             case .ready: return "Ready"
             case .retrying: return "Engine restarting…"
-            case .failed: return "Engine stopped, retrying on the next dictation"
+            case .failed: return "Engine stopped, retrying on the next request"
             }
         }
+    }
+
+    // MARK: - Models
+
+    /// Deletes a model no pass runs anymore, with any partial download, once
+    /// a model switch still shutting its helper down is done. Deletes nothing
+    /// when a pass picked the model again meanwhile.
+    func deleteUnusedModel(_ model: TranscriptLLMModelChoice) async -> TranscriptLLMModelDeletion {
+        applyModelChoices()
+        await reconfiguration?.value
+        guard !TranscriptLLMModelPreference.modelsInUse().contains(model), layout?.runs(model) != true else {
+            return .inUse
+        }
+        let manager = ModelManager(
+            descriptor: TranscriptLLMModel.descriptor(for: model),
+            rootDirectory: TranscriptLLMModel.modelRoot
+        )
+        await manager.deleteModelAndWait()
+        guard manager.state == .missing else {
+            log("TRANSCRIPT LLM | couldn't delete \(model.rawValue)")
+            return .failed
+        }
+        // Only an empty folder goes; anything else in it stays.
+        _ = rmdir(manager.modelDirectory.path)
+        log("TRANSCRIPT LLM | deleted \(model.rawValue); no pass runs it")
+        return .deleted
+    }
+
+    /// Queues a move onto the layout the saved model choices ask for.
+    private func applyModelChoices() {
+        guard isStarted, !isStopped else { return }
+        let previous = reconfiguration
+        reconfiguration = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.applyLayout()
+        }
+    }
+
+    /// Moves the passes onto the layout the saved choices ask for. A helper
+    /// whose model, port and passes stay the same keeps running with its
+    /// cached prompts. Any other is shut down off the main thread (TERM, KILL
+    /// after a second) before its replacement starts, so the port is free.
+    /// A pass in flight on a retiring helper fails over like a dead helper:
+    /// a dictation keeps its recognized text, a meeting utterance is retried.
+    private func applyLayout() async {
+        guard isStarted, !isStopped else { return }
+        let next = TranscriptLLMEngineLayout()
+        guard next != layout else { return }
+        let retiring = engines.filter { !next.engines.contains($0.engine) }
+        retiring.forEach { $0.cancelWork() }
+        engines.removeAll { runtime in retiring.contains { $0 === runtime } }
+        let hosts = retiring.map(\.host)
+        if !hosts.isEmpty {
+            await Task.detached(priority: .userInitiated) {
+                hosts.forEach { $0.stop() }
+            }.value
+        }
+        guard isStarted, !isStopped else { return }
+        let kept = engines
+        engines = next.engines.map { engine in
+            kept.first { $0.engine == engine } ?? makeRuntime(engine)
+        }
+        layout = next
+        for engine in next.engines {
+            let passes = engine.passes.map(\.rawValue).joined(separator: " + ")
+            log("TRANSCRIPT LLM | \(passes) on \(engine.model.rawValue), port \(engine.port)")
+        }
+        for runtime in engines where !kept.contains(where: { $0 === runtime }) {
+            prepare(runtime)
+        }
+    }
+
+    private func makeRuntime(_ engine: TranscriptLLMEngineLayout.Engine) -> EngineRuntime {
+        let runtime = EngineRuntime(engine: engine)
+        // A fresh helper has empty prompt caches: refill them.
+        runtime.host.setReadinessObserver { [weak self, weak runtime] ready in
+            guard ready else { return }
+            Task { @MainActor [weak self, weak runtime] in
+                guard let self, let runtime else { return }
+                self.warmPrompts(runtime)
+            }
+        }
+        return runtime
+    }
+
+    func runtime(for pass: TranscriptLLMPass) -> EngineRuntime? {
+        engines.first { $0.engine.passes.contains(pass) }
+    }
+
+    private func isCurrent(_ runtime: EngineRuntime) -> Bool {
+        isStarted && !isStopped && engines.contains { $0 === runtime }
     }
 
     // MARK: - Dictation
@@ -119,23 +241,25 @@ final class TranscriptLLMController: DictationTextRefiner {
     func refine(_ text: String) async -> DictationTextRefinement {
         let prompt = Self.systemPrompt(.dictation)
         guard !prompt.isEmpty else { return .unchanged(.noPrompt) }
-        guard isStarted, !isStopped, let host else { return .unchanged(.notReady) }
+        guard isStarted, !isStopped, let runtime = runtime(for: .dictation) else { return .unchanged(.notReady) }
+        let host = runtime.host
+        let slot = runtime.engine.slot(of: .dictation)
         dictationsInFlight += 1
         defer { dictationsInFlight -= 1 }
-        guard await waitUntilEngineReady(host) else {
+        guard await waitUntilEngineReady(runtime) else {
             if Task.isCancelled { return .unchanged(.cancelled) }
-            ensureRunning()
-            log("TRANSCRIPT LLM | not ready (\(statusLine)); keeping the recognized text")
+            ensureRunning(runtime)
+            log("TRANSCRIPT LLM | not ready (\(statusLine(runtime))); keeping the recognized text")
             return .unchanged(.notReady)
         }
         let started = CFAbsoluteTimeGetCurrent()
         let chunks = DictationRefinementChunking.chunks(of: text)
         if chunks.count > 1 {
-            return await refineInPieces(text, chunks: chunks, prompt: prompt, host: host, started: started)
+            return await refineInPieces(text, chunks: chunks, prompt: prompt, host: host, slot: slot, started: started)
         }
         let outcome = await Self.complete(
             host: host,
-            slot: .dictation,
+            slot: slot,
             systemPrompt: prompt,
             transcript: text,
             maxTokens: TranscriptLLMChat.maxTokens(transcript: text)
@@ -177,6 +301,7 @@ final class TranscriptLLMController: DictationTextRefiner {
         chunks: [DictationRefinementChunking.Chunk],
         prompt: String,
         host: LlamaServerProcessHost,
+        slot: Int,
         started: CFAbsoluteTime
     ) async -> DictationTextRefinement {
         var pieces: [String] = []
@@ -184,7 +309,7 @@ final class TranscriptLLMController: DictationTextRefiner {
         for chunk in chunks {
             let outcome = await Self.complete(
                 host: host,
-                slot: .dictation,
+                slot: slot,
                 systemPrompt: prompt,
                 transcript: chunk.text,
                 maxTokens: TranscriptLLMChat.maxTokens(transcript: chunk.text)
@@ -220,21 +345,30 @@ final class TranscriptLLMController: DictationTextRefiner {
 
     // MARK: - Lifecycle
 
-    private func prepareModelAndStartEngine() async {
+    private func prepare(_ runtime: EngineRuntime) {
+        runtime.preparationTask?.cancel()
+        runtime.preparationTask = Task { @MainActor [weak self, weak runtime] in
+            guard let self, let runtime else { return }
+            await self.prepareModelAndStartEngine(runtime)
+        }
+    }
+
+    private func prepareModelAndStartEngine(_ runtime: EngineRuntime) async {
         var attempt = 0
-        while !Task.isCancelled, !isStopped, let models {
-            models.prepare()
-            await models.waitUntilSettled()
-            guard !Task.isCancelled, !isStopped else { return }
-            if models.state.isReady {
-                log("TRANSCRIPT LLM | model ready; starting the engine")
-                host?.start()
+        let model = runtime.engine.model.rawValue
+        while !Task.isCancelled, isCurrent(runtime) {
+            runtime.models.prepare()
+            await runtime.models.waitUntilSettled()
+            guard !Task.isCancelled, isCurrent(runtime) else { return }
+            if runtime.models.state.isReady {
+                log("TRANSCRIPT LLM | \(model) ready; starting its engine")
+                runtime.host.start()
                 return
             }
             let delays = TranscriptLLMModel.downloadRetryDelays
             let delay = delays[min(attempt, delays.count - 1)]
             attempt += 1
-            log("TRANSCRIPT LLM | model not ready (\(statusLine)); retrying in \(delay)")
+            log("TRANSCRIPT LLM | \(model) not ready (\(statusLine(runtime))); retrying in \(delay)")
             try? await Task.sleep(for: delay)
         }
     }
@@ -244,38 +378,44 @@ final class TranscriptLLMController: DictationTextRefiner {
     /// download already running is joined, not restarted (the manager owns
     /// it). A helper that gave up on missing assets gets the model re-verified
     /// first. A helper that is up, or coming up, is left alone.
-    func ensureRunning() {
-        guard isStarted, !isStopped, let models, let host else { return }
-        let assetsMissing = host.snapshot == .failed(.assetsMissing)
-        guard models.state.isReady, !assetsMissing else {
-            if assetsMissing { models.refresh() }
-            preparationTask?.cancel()
-            preparationTask = Task { @MainActor [weak self] in
-                await self?.prepareModelAndStartEngine()
-            }
+    func ensureRunning(_ runtime: EngineRuntime) {
+        guard isCurrent(runtime) else { return }
+        let assetsMissing = runtime.host.snapshot == .failed(.assetsMissing)
+        guard runtime.models.state.isReady, !assetsMissing else {
+            if assetsMissing { runtime.models.refresh() }
+            prepare(runtime)
             return
         }
-        host.start()
+        runtime.host.start()
     }
 
     /// Waits only while a verified model's helper is still coming up (it
-    /// loads in a second or two after launch). Anything else answers now.
-    func waitUntilEngineReady(_ host: LlamaServerProcessHost) async -> Bool {
+    /// loads in a few seconds after launch or a model switch). Anything else
+    /// answers now.
+    func waitUntilEngineReady(_ runtime: EngineRuntime) async -> Bool {
         while !Task.isCancelled {
-            if await host.isReadyForCompletion() { return true }
-            guard models?.state.isReady == true, host.snapshot == .starting else { return false }
+            if await runtime.host.isReadyForCompletion() { return true }
+            guard isCurrent(runtime), runtime.models.state.isReady, runtime.host.snapshot == .starting else {
+                return false
+            }
             try? await Task.sleep(for: .milliseconds(100))
         }
         return false
     }
 
-    /// Sends each non-empty prompt once on its own slot so the helper caches
-    /// it; the next request then reads only its own text.
     private func warmPrompts() {
-        warmTask?.cancel()
-        guard isStarted, !isStopped, let host else { return }
-        let prompts = TranscriptLLMModel.Slot.allCases.map { ($0, Self.systemPrompt($0)) }
-        warmTask = Task {
+        engines.forEach(warmPrompts)
+    }
+
+    /// Sends each non-empty prompt the helper serves once, on its pass's
+    /// slot, so the helper caches it; the next request then reads only its
+    /// own text.
+    private func warmPrompts(_ runtime: EngineRuntime) {
+        runtime.warmTask?.cancel()
+        guard isCurrent(runtime) else { return }
+        let host = runtime.host
+        let prompts = runtime.engine.passes.enumerated().map { (slot: $0.offset, prompt: Self.systemPrompt($0.element)) }
+        runtime.warmTask = Task {
             guard await host.isReadyForCompletion() else { return }
             for (slot, prompt) in prompts where !prompt.isEmpty {
                 guard !Task.isCancelled else { return }
@@ -284,9 +424,8 @@ final class TranscriptLLMController: DictationTextRefiner {
         }
     }
 
-    static func systemPrompt(_ slot: TranscriptLLMModel.Slot) -> String {
-        let preference: TranscriptLLMPromptPreference = slot == .dictation ? .dictation : .meeting
-        return preference.prompt().trimmingCharacters(in: .whitespacesAndNewlines)
+    static func systemPrompt(_ pass: TranscriptLLMPass) -> String {
+        pass.prompt.prompt().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Transport
@@ -304,13 +443,13 @@ final class TranscriptLLMController: DictationTextRefiner {
 
     nonisolated static func complete(
         host: LlamaServerProcessHost,
-        slot: TranscriptLLMModel.Slot,
+        slot: Int,
         systemPrompt: String,
         transcript: String,
         maxTokens: Int
     ) async -> Outcome {
         guard let body = try? TranscriptLLMChat.requestBody(
-            systemPrompt: systemPrompt, transcript: transcript, maxTokens: maxTokens, slot: slot.rawValue
+            systemPrompt: systemPrompt, transcript: transcript, maxTokens: maxTokens, slot: slot
         ) else { return .answer(.malformed) }
         var request = URLRequest(url: host.baseURL.appendingPathComponent("v1/chat/completions"))
         request.httpMethod = "POST"

@@ -56,7 +56,13 @@ extension TranscriptedSettingsView {
             },
             onEditCorrections: { showCorrectionsSheet = true },
             shortcutEditor: { generalShortcutSettingsEditor },
-            transcriptLLMEditor: { TranscriptLLMSettingsEditor(statusLine: { transcriptLLM.statusLine }) },
+            transcriptLLMEditor: {
+                TranscriptLLMSettingsEditor(
+                    statusLine: { transcriptLLM.statusLine(for: $0) },
+                    modelBytesOnDisk: { TranscriptLLMModel.bytesOnDisk($0) },
+                    deleteUnusedModel: { await transcriptLLM.deleteUnusedModel($0) }
+                )
+            },
             bluetoothMicEditor: { generalBluetoothMicEditor },
             autoSendEditor: { generalAutoSendEditor },
             speakerEditor: { generalSpeakerMatchingEditor },
@@ -104,9 +110,9 @@ extension TranscriptedSettingsView {
         )
         return VStack(alignment: .leading, spacing: 0) {
             SettingsControlRow(
-                title: "Model",
+                title: "Speech recognition",
                 info: GeneralInfo(
-                    title: "Model",
+                    title: "Speech recognition",
                     message: "All models run on this Mac. Parakeet V3 is the multilingual default; Parakeet V2 is English-only; Whisper adds broader language coverage; Apple Speech uses the engine built into macOS. Captures keep the model they started with. Overlapping captures on the same engine share that model until they finish."
                 ),
                 automationIdentifier: "transcripted.settings.general.model"

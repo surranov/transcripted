@@ -445,6 +445,8 @@ APP_SOURCES=(
     "Sources/Dictation/DictationRefinementChunking.swift"
     "Sources/Dictation/DictationDeliveryOrder.swift"
     "Sources/Support/TranscriptLLMPromptPreferences.swift"
+    "Sources/Support/TranscriptLLMModelPreferences.swift"
+    "Sources/TranscriptLLM/TranscriptLLMEngineLayout.swift"
     "Sources/TranscriptLLM/TranscriptLLMChat.swift"
     "Sources/Meeting/MeetingTranscriptLLMDocument.swift"
     "Sources/Meeting/MeetingTranscriptLLMPass.swift"

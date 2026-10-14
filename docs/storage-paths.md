@@ -76,7 +76,10 @@ library moves:
   `Outcome Ledger/` and `Word Diary/` (Tilde's plaintext word diary isn't
   ported; accepted text is saved only by Save my writing), and the encrypted
   `Personal History/`
-- transcript LLM model (fork): `~/Library/Application Support/Transcripted/models/transcript-llm/gemma-4-e2b-it-q4_0/model.gguf` (downloaded at launch, hash-pinned in `Sources/TranscriptLLM/TranscriptLLMModel.swift`)
+- transcript LLM models (fork): `~/Library/Application Support/Transcripted/models/transcript-llm/<id>/model.gguf`,
+  one folder per model a pass picked (`gemma-4-e2b-it-q4_0`, `gemma-4-e4b-it-qat-q4_0`),
+  downloaded at launch or on a switch, hash-pinned in `Sources/TranscriptLLM/TranscriptLLMModel.swift`.
+  Switching away from a model no pass runs offers to delete its folder's files
 - models: `~/Library/Application Support/Transcripted/models/writing/<id>/model.gguf`,
   excluded from backup. The Writing tab's **Delete model** empties this folder
   (never Delete all writing); it refuses the folder if it's a symlink

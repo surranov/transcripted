@@ -575,7 +575,7 @@ extension TranscriptedSettingsView {
         case .models:
             trackSettingsAction("open_needs_attention_models", page: .home)
             navigation.select(.general, source: .settingsAction)
-            settingsScrollTargetID = "transcripted.settings.section.transcription"
+            settingsScrollTargetID = "transcripted.settings.section.models"
         }
     }
 

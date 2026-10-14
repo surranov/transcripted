@@ -105,13 +105,17 @@ struct GeneralSettingsPage<
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("transcripted.settings.section.dictation")
 
-            SettingsCardLabel(text: "Local LLM")
+            // Fork: speech recognition and the transcript LLM's models sit
+            // with the prompts they serve.
+            SettingsCardLabel(text: "Models and prompts")
                 .padding(.top, 16)
             SettingsCard {
+                modelEditor()
                 transcriptLLMEditor()
             }
             .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("transcripted.settings.section.transcript-llm")
+            .accessibilityIdentifier("transcripted.settings.section.models")
+            .id("transcripted.settings.section.models")
 
             SettingsCardLabel(text: "Microphone")
                 .padding(.top, 16)
@@ -166,8 +170,6 @@ struct GeneralSettingsPage<
             SettingsCardLabel(text: "Transcription")
                 .padding(.top, 16)
             SettingsCard {
-                modelEditor()
-
                 SettingsControlRow(
                     title: "Corrections",
                     info: GeneralInfo(
