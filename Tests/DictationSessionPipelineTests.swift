@@ -438,6 +438,10 @@ func testDictationSessionPipeline() async {
 
 @MainActor
 private final class PipelineFakeHost: DictationSessionPipelineHost {
+    // No hand-off in the fake: the take on the island is the only one.
+    var activeTakeIsLive: Bool { isDictating }
+    func endActiveTake() { isDictating = false }
+
     struct Start: Equatable {
         var trigger: DictationTrigger
         var anchorRect: NSRect?

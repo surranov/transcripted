@@ -180,39 +180,59 @@ func testNotchIslandPresentation() {
         assertEqual(layout.drop, .dictationMessage(message), "the words, the reason and Copy open by themselves")
     }
 
-    runSuite("NotchIslandPresentation splits a dictation over a live meeting") {
+    runSuite("NotchIslandPresentation puts a dictation on top and the live meeting behind it") {
         let layout = notchLayout(dictation: listening(), meeting: recording())
-        assertEqual(layout.left, [.recordingDot, .live(.meetingTimer, .title)], "the meeting keeps the left wing")
-        assertEqual(layout.right, [.symbol(.mic, .accent), .dictationBars(count: 9)], "dictation takes the right")
+        assertEqual(layout.left, [.symbol(.mic, .accent), .text("Listening", .title)], "the newest thing, the take, has the island")
+        assertEqual(layout.right, [.dictationBars(count: 9), .live(.dictationTimer, .secondary)])
+        assertEqual(layout.backLayers, [NotchIslandBackLayer(key: "meeting", glyph: .meeting)], "the meeting is a layer behind it")
+        assertEqual(notchLayout(meeting: recording()).backLayers, [], "a meeting alone has the island to itself")
     }
 
-    runSuite("NotchIslandPresentation marks takes finishing behind the current one (dictation queue)") {
-        var content = listening()
-        content.finishingInBackground = 1
-        let layout = notchLayout(dictation: content)
-        assertEqual(layout.left, [.symbol(.mic, .accent), .text("Listening", .title)], "the new take keeps its wing")
+    runSuite("NotchIslandPresentation draws takes finishing behind the current one as layers (dictation queue)") {
+        let older = backgroundTake(stage: .processing)
+        let newer = backgroundTake(stage: .queued)
+        let layout = notchLayout(dictation: listening(), meeting: recording(), backgroundTakes: [older, newer])
+        assertEqual(layout.left, [.symbol(.mic, .accent), .text("Listening", .title)], "the new take keeps its whole wing")
         assertEqual(
-            layout.right, [.dots, .dictationBars(count: 6), .live(.dictationTimer, .secondary)],
-            "writing dots take the room of three bars, so the island barely grows"
+            layout.backLayers.map(\.glyph), [.queued, .processing, .meeting],
+            "newest first behind it, the meeting deepest"
         )
-        var writing = NotchIslandDictationContent(phase: .writing)
-        writing.finishingInBackground = 2
-        assertEqual(notchLayout(dictation: writing).right, [.text("+2", .secondary), .shimmer], "while this take is written too: a count")
         var waiting = NotchIslandDictationContent(phase: .writing)
         waiting.nextTakeWaiting = true
         assertEqual(notchLayout(dictation: waiting).right, [.symbol(.mic, .accent)], "a press waiting for this take shows as a mic")
-        assertEqual(notchLayout(dictation: listening()).right, [.dictationBars(count: 9), .live(.dictationTimer, .secondary)], "nothing behind: as before")
     }
 
-    runSuite("NotchIslandPresentation keeps a meeting's hover during a dictation in it") {
-        var meeting = recording()
-        meeting.showsLiveTranscript = true
-        var content = listening()
-        content.showsLivePreview = true
+    runSuite("NotchIslandPresentation shows the newest take behind the island once none is on it") {
+        let older = backgroundTake(stage: .queued)
+        let newer = backgroundTake(stage: .processing)
+        let layout = notchLayout(backgroundTakes: [older, newer])
+        assertEqual(layout.left, [.dots, .text("Writing", .title)], "the newest finishing take is on top, as being written")
+        assertEqual(layout.backLayers, [NotchIslandBackLayer(key: older.id.uuidString, glyph: .queued)], "and is not drawn twice")
+        let prompt = NotchIslandCallPromptContent(title: "Zoom call", detail: "Record this meeting?", secondsLeft: 30)
+        assertFalse(
+            NotchIslandPresentation.callPromptIsOnScreen(dictation: nil, callPrompt: prompt, backgroundTakes: [newer]),
+            "a call prompt waits while a take finishes, as it waits for a take on the island"
+        )
+    }
+
+    runSuite("NotchIslandPresentation lists everything as cards when more than one thing goes on") {
+        let behind = backgroundTake(stage: .processing)
+        let drop = notchLayout(dictation: listening(), meeting: recording(), expanded: true, backgroundTakes: [behind])
+        guard case .activities(let cards)? = drop.drop else {
+            return assertTrue(false, "a hover over a take, a take behind it and a meeting lists them, got \(String(describing: drop.drop))")
+        }
+        assertEqual(cards.map(\.kind), [.listening(appName: "Notes"), .background(behind), .meeting], "newest first, the meeting last")
+        assertEqual(cards.map(\.isEscapeTarget), [true, false, false], "Esc acts on the take being spoken")
+        assertEqual(drop.backLayers, [], "the layers tuck in while the cards list them")
+
+        guard case .activities(let lone)? = notchLayout(expanded: true, backgroundTakes: [behind]).drop else {
+            return assertTrue(false, "a take finishing on its own still gets its card and Don't paste")
+        }
+        assertEqual(lone.map(\.kind), [.background(behind)])
         assertEqual(
-            notchLayout(dictation: content, meeting: meeting, expanded: true).drop,
-            .meetingControls(callAudioNote: nil, systemAudioUnverified: false, showsTranscript: true),
-            "hovering during a meeting shows the meeting, not the dictation's words"
+            notchLayout(dictation: listening(), expanded: true).drop,
+            .dictationTarget(appName: "Notes", showsPreview: false),
+            "one take alone keeps its usual hover"
         )
     }
 
@@ -287,13 +307,19 @@ func testNotchIslandPresentation() {
         let meetingDrop = NotchIslandDrop.meetingControls(callAudioNote: nil, systemAudioUnverified: false, showsTranscript: true)
         assertEqual(
             notchLayout(dictation: listening(), meeting: transcribing, expanded: true).drop,
-            meetingDrop,
-            "a dictation inside the meeting doesn't take the meeting's hover"
+            .activities([
+                NotchIslandActivityCard(kind: .listening(appName: "Notes"), isEscapeTarget: true),
+                NotchIslandActivityCard(kind: .meeting),
+            ]),
+            "a dictation inside the meeting lists both, the take first; Esc is the take's, never the meeting's"
         )
         assertEqual(
             notchLayout(dictation: NotchIslandDictationContent(phase: .writing), meeting: transcribing, expanded: true).drop,
-            meetingDrop,
-            "once the key is up, hovering shows the meeting again"
+            .activities([
+                NotchIslandActivityCard(kind: .writing(appName: nil), isEscapeTarget: true),
+                NotchIslandActivityCard(kind: .meeting),
+            ]),
+            "once the key is up, the take being written still has its card and Don't paste"
         )
         assertEqual(
             notchLayout(meeting: transcribing, recentInsert: NotchIslandRecentInsert(title: "Pasted", text: "Hi there"), expanded: true).drop,
@@ -461,6 +487,8 @@ func testNotchIslandPresentation() {
         assertEqual(NotchIslandAction.meetingOpen.owner, .meeting)
         assertEqual(NotchIslandAction.callRecord.owner, .callPrompt)
         assertEqual(NotchIslandAction.callRemind.owner, .callPrompt)
+        assertEqual(NotchIslandAction.dictationDeclinePaste.owner, .dictation)
+        assertEqual(NotchIslandAction.backgroundTakeDeclinePaste(UUID()).owner, .dictation)
     }
 
     runSuite("The call prompt is off screen while a dictation has the island, and back once it lands") {
@@ -595,7 +623,8 @@ private func notchLayout(
     callPrompt: NotchIslandCallPromptContent? = nil,
     recentInsert: NotchIslandRecentInsert? = nil,
     expanded: Bool = false,
-    collapsedStickyKey: String? = nil
+    collapsedStickyKey: String? = nil,
+    backgroundTakes: [NotchIslandBackgroundTake] = []
 ) -> NotchIslandLayout {
     NotchIslandPresentation.layout(
         dictation: dictation,
@@ -603,8 +632,13 @@ private func notchLayout(
         callPrompt: callPrompt,
         recentInsert: recentInsert,
         expanded: expanded,
-        collapsedStickyKey: collapsedStickyKey
+        collapsedStickyKey: collapsedStickyKey,
+        backgroundTakes: backgroundTakes
     )
+}
+
+private func backgroundTake(stage: NotchIslandBackgroundTake.Stage) -> NotchIslandBackgroundTake {
+    NotchIslandBackgroundTake(id: UUID(), stage: stage, appName: "Notes")
 }
 
 private func listening() -> NotchIslandDictationContent {

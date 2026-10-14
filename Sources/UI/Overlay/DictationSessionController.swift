@@ -104,6 +104,9 @@ class DictationSessionController: ObservableObject {
             overlayController?.onActionableMessageDiscarded = { [weak self] in
                 self?.textPaster.discardPasteRetry()
             }
+            overlayController?.onTakeQueueAction = { [weak self] action in
+                self?.handleTakeQueueAction(action)
+            }
             // Any Esc, including the first of "press again to discard",
             // takes back a start that is waiting on this take.
             overlayController?.onEscapeKeyDuringSession = { [weak self] in
@@ -178,10 +181,11 @@ class DictationSessionController: ObservableObject {
         set { if let take = DictationTakeScope.handedOff { take.stoppedAudioRecoveryPreservationSessionID = newValue } else { storedStoppedAudioRecoveryPreservationSessionID = newValue } }
     }
     var stoppedAudioCheckpointSignal: DictationStoppedAudioCheckpointSignal?
-    /// Fork: the session whose paste Esc declined after its stop was admitted.
-    /// That take still finishes and is saved to Dictations, just not pasted
-    /// (`keepStoppedTakeWithoutPasting`).
-    var pasteDeclinedSessionID: UUID?
+    /// Fork: the sessions whose paste Esc declined after their stop was
+    /// admitted. Those takes still finish and are saved to Dictations, just
+    /// not pasted (`keepStoppedTakeWithoutPasting`, `declineNewestHandedOffTakePaste`).
+    /// A take leaves the set when its stop task ends.
+    var pasteDeclinedSessionIDs: Set<UUID> = []
     /// Fork: the transcript LLM pass in flight, so Esc can stop waiting on it.
     private var storedTranscriptRefinementTask: Task<DictationTextRefinement, Never>?
     var transcriptRefinementTask: Task<DictationTextRefinement, Never>? {
@@ -230,6 +234,8 @@ class DictationSessionController: ObservableObject {
     var deliveryOrder = DictationDeliveryOrder()
     var pendingHandedOffNotices: [HandedOffTakeNotice] = []
     var handedOffNoticeRetry: Task<Void, Never>?
+    /// Esc for the takes finishing behind an empty island (`+HandOff.swift`).
+    var handedOffEscapeMonitor: Any?
     /// A start-shortcut press that landed while the last take was still
     /// finishing. It starts as soon as that take is done. See
     /// `DictationQueuedStartPolicy`.
@@ -549,7 +555,10 @@ class DictationSessionController: ObservableObject {
         startActivation.cancel()
         let recordingStartWasInFlight = recordingStartRetryTask != nil
         let sttIsRecording = appState?.sttRouter.isRecording ?? false
-        let sttIsTranscribing = appState?.sttRouter.isTranscribing ?? false
+        // Fork: only a take still holding the engine's audio is protected
+        // from the engine cancel; a detached take doesn't use the engine's
+        // buffer, so cancelling this take's recording can't touch it.
+        let sttIsTranscribing = appState?.sttRouter.blocksNewDictationStart ?? false
         let cancellationPlan = DictationActiveTaskCancellationPolicy.plan(
             cancelRecording: cancelRecording,
             recordingStartWasInFlight: recordingStartWasInFlight,
@@ -586,7 +595,7 @@ class DictationSessionController: ObservableObject {
 extension DictationSessionController: DictationSessionPipelineHost {
     var appIsActive: Bool { NSApp.isActive }
 
-    var isPreviousTakeTranscribing: Bool { appState?.sttRouter.isTranscribing ?? false }
+    var isPreviousTakeTranscribing: Bool { appState?.sttRouter.blocksNewDictationStart ?? false }
 
     var dictationHasRecoverableRecording: Bool { appState?.sttRouter.hasRecoverableRecording ?? false }
 

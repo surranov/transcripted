@@ -20,7 +20,7 @@ extension DictationSessionController {
     ) async -> DictationTextRefinement {
         // Esc during transcription already declined the paste: save the
         // transcript now rather than wait on the model.
-        guard pasteDeclinedSessionID != sessionID, !Task.isCancelled else { return .unchanged(.cancelled) }
+        guard !pasteDeclinedSessionIDs.contains(sessionID), !Task.isCancelled else { return .unchanged(.cancelled) }
         let refiner: any DictationTextRefiner = appState.transcriptLLM
         let task = Task { @MainActor in await refiner.refine(text) }
         transcriptRefinementTask = task
@@ -48,8 +48,8 @@ extension DictationSessionController {
               stopFinalizationGate.admittedSessionID == currentDictationSessionID else { return false }
         // Esc on a finishing take means stop, not "and start the next one".
         dropQueuedDictationStart(showMessage: false)
-        guard pasteDeclinedSessionID != currentDictationSessionID else { return true }
-        pasteDeclinedSessionID = currentDictationSessionID
+        guard !pasteDeclinedSessionIDs.contains(currentDictationSessionID) else { return true }
+        pasteDeclinedSessionIDs.insert(currentDictationSessionID)
         transcriptRefinementTask?.cancel()
         appState?.logger.log("DICTATION | Esc after stop: keeping the take, saving it without pasting")
         // The overlay stays as it is (switching it to `.loading` would change

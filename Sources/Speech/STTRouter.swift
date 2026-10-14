@@ -14,8 +14,8 @@ class STTRouter: ObservableObject {
     /// DictationAudioLevels). The engine that records publishes into it.
     let audioLevels: DictationAudioLevels
     let parakeetEngine: ParakeetEngine
-    private let whisperEngine = WhisperEngine()
-    private let appleSpeechEngine = AppleSpeechEngine()
+    let whisperEngine = WhisperEngine()
+    let appleSpeechEngine = AppleSpeechEngine()
 
     @Published private(set) var selectedModel = TranscriptionModelPreferences.preferredModel()
     @Published private(set) var modelDownloadState: ParakeetModelState = .notLoaded
@@ -23,9 +23,17 @@ class STTRouter: ObservableObject {
     /// for the Meeting language row in Settings.
     @Published private(set) var appleSpeechLanguageDownload: AppleSpeechLanguageDownload?
     @Published var isRecording = false
-    /// True while the engine finishes a take or while Transcribe again runs
-    /// over a saved dictation file, so a new dictation queues behind either.
+    /// True while any take is transcribed (a detached one too) or while
+    /// Transcribe again runs over a saved dictation file: the voice model is busy.
     @Published var isTranscribing = false
+    /// Fork: the dictation queue. The engine transcribes a take that still
+    /// holds its audio buffer, or Transcribe again runs; a new take waits for
+    /// either. A take detached at its stop never blocks the next one.
+    @Published private(set) var blocksNewDictationStart = false
+    /// Fork: detached takes queued or being transcribed (`+DetachedDictation`).
+    @Published var detachedDictationTranscriptions = 0
+    /// Fork: detached takes are transcribed one at a time, in stop order.
+    let detachedDictationLine = DictationTranscriptionLine()
     /// Transcribe again is running (`transcribeSavedDictation`).
     @Published private(set) var isTranscribingSavedDictation = false
     @Published var recordingInterrupted = false
@@ -37,7 +45,7 @@ class STTRouter: ObservableObject {
     private(set) var heldBackDictationText: String?
 
     private var cancellables: Set<AnyCancellable> = []
-    private var recordingModelOwnership = TranscriptionRecordingModelOwnership()
+    var recordingModelOwnership = TranscriptionRecordingModelOwnership()
     private var warmupOwnership = TranscriptionModelWarmupOwnership()
     private var backgroundWarmupTask: Task<Void, Never>?
     private var backgroundWarmupGeneration = SupersessionEpoch()
@@ -89,6 +97,11 @@ class STTRouter: ObservableObject {
         parakeetEngine.$isTranscribing
             .combineLatest($isTranscribingSavedDictation)
             .map { $0 || $1 }
+            .removeDuplicates()
+            .assign(to: &$blocksNewDictationStart)
+        $blocksNewDictationStart
+            .combineLatest($detachedDictationTranscriptions)
+            .map { $0 || $1 > 0 }
             .removeDuplicates()
             .assign(to: &$isTranscribing)
         parakeetEngine.$recordingInterrupted.assign(to: &$recordingInterrupted)
@@ -252,7 +265,7 @@ class STTRouter: ObservableObject {
         return claim.model
     }
 
-    private func endForegroundUse(of model: TranscriptionModelChoice) {
+    func endForegroundUse(of model: TranscriptionModelChoice) {
         guard warmupOwnership.releaseForegroundUse(of: model) else { return }
 
         if model != selectedModel {
@@ -410,25 +423,10 @@ class STTRouter: ObservableObject {
         defer {
             parakeetEngine.scorePendingPinnedSpeedPathTake(text: text, emptyReason: lastEmptyTranscriptionReason)
         }
-        // The policy reads the person's languages (a Carbon keyboard lookup)
-        // only when the text is nearly all one non-Latin script.
-        guard let text, !Task.isCancelled,
-              let script = DictationLanguageScriptPolicy.unexpectedScript(
-                  in: text,
-                  userLanguageCodes: { DictationUserLanguages.current() }
-              ) else { return text }
-        // A multilingual model probably guessed a language this person doesn't
-        // use (Russian for an English speaker). Don't paste it unasked; the
-        // message offers Paste Anyway in case the text is right.
-        heldBackDictationText = text
+        guard let text, !Task.isCancelled else { return text }
+        guard let heldBack = holdBackTextInUnexpectedScript(text, model: model) else { return text }
+        heldBackDictationText = heldBack
         lastEmptyTranscriptionReason = .otherLanguage
-        EventReporter.shared.capture(
-            level: .warning,
-            engine: "dictation",
-            event: "dictation_output_language_mismatch",
-            message: "Dictation text was in a writing system none of the Mac's languages use",
-            context: ["model": model.rawValue, "script": script.rawValue]
-        )
         return nil
     }
 

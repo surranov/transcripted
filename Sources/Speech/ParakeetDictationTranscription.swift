@@ -9,6 +9,7 @@
 // (ParakeetEngine.swift) stays the public-API owner and @MainActor home for
 // the state; this file only groups one slice of its implementation.
 
+import FluidAudio
 import Foundation
 import TranscriptedCore
 
@@ -280,6 +281,87 @@ extension ParakeetEngine {
             return nil
         }
         let consumedRevision = recordedSamplesRevision
+        let outcome = await runDictationInference(manager: manager, recorded: recorded, startTime: startTime) {
+            self.ownsRecordedTranscription(transcriptionLease, expectedRevision: consumedRevision)
+        }
+        switch outcome {
+        case .text(let text):
+            finishTranscription(ownedBy: transcriptionLease)
+            return text
+        case .empty(let reason):
+            lastEmptyTranscriptionReason = reason
+            finishTranscription(ownedBy: transcriptionLease)
+            return nil
+        case .superseded:
+            finishTranscription(ownedBy: transcriptionLease, clearSamples: false)
+            return nil
+        }
+    }
+
+    // MARK: - Detached takes (fork: the dictation queue)
+
+    /// A checkpointed take takes its samples out of the engine at its stop:
+    /// the timeline is cleared under the snapshot's claim, so the next take
+    /// can record into a fresh one at once. False when the claim no longer
+    /// names this recording (a newer one began); the timeline is untouched then.
+    func detachStoppedDictationRecording(_ recorded: RecordedSpeechSamples) -> Bool {
+        drainPendingSamplesIntoTimeline()
+        return PreparedRecordingConsumer.consume(claim: recorded.claim, cancelled: Task.isCancelled, timeline: self)
+    }
+
+    /// Transcribes a detached take. It owns its samples, so a newer recording
+    /// can't supersede it (no lease, no revision fence); only cancellation
+    /// stops it. Same short-audio gate, focused empty retry and failure
+    /// reasons as `transcribe`, returned instead of kept in the engine-wide
+    /// `lastEmptyTranscriptionReason`, which the next take owns.
+    func transcribeDetachedDictation(
+        _ recorded: RecordedSpeechSamples
+    ) async -> (text: String?, emptyReason: DictationEmptyTranscriptionReason?) {
+        guard !Task.isCancelled else { return (nil, nil) }
+        guard let manager = asrManager, asrManagerReady else {
+            AppLogger.transcription.error("PARAKEET | ASR manager not available")
+            EventReporter.shared.capture(level: .error, engine: "parakeet", event: "asr_manager_unavailable",
+                message: "ASR manager not available for transcription")
+            return (nil, .modelFailure)
+        }
+        // Counted like the meeting's pure-sample work, so a model teardown
+        // waits for this take between its first pass and the focused retry.
+        pureSampleTranscriptionActivityCount += 1
+        defer {
+            pureSampleTranscriptionActivityCount = max(0, pureSampleTranscriptionActivityCount - 1)
+            finishDeferredModelTeardownIfIdle()
+        }
+        let outcome = await runDictationInference(
+            manager: manager,
+            recorded: recorded,
+            startTime: CFAbsoluteTimeGetCurrent()
+        ) { true }
+        switch outcome {
+        case .text(let text): return (text, nil)
+        case .empty(let reason): return (nil, reason)
+        case .superseded: return (nil, nil)
+        }
+    }
+
+    // MARK: - Inference
+
+    /// How one dictation inference ended. `superseded`: cancelled, or the
+    /// take stopped owning its samples; it leaves no reason behind.
+    enum DictationInferenceOutcome: Equatable {
+        case text(String)
+        case empty(DictationEmptyTranscriptionReason)
+        case superseded
+    }
+
+    /// The short-audio gate, the inference, the focused retry of an empty
+    /// result, and the failure reasons. `isCurrent` is checked after every
+    /// await that hands control away.
+    private func runDictationInference(
+        manager: AsrManager,
+        recorded: RecordedSpeechSamples,
+        startTime: CFAbsoluteTime,
+        isCurrent: () -> Bool
+    ) async -> DictationInferenceOutcome {
         let nativeCount = recorded.nativeSampleCount
         let resampled = recorded.samples16k
         AppLogger.transcription.info("PARAKEET | resampled \(nativeCount) → \(resampled.count) samples")
@@ -289,7 +371,6 @@ extension ParakeetEngine {
             resampledSampleCount: resampled.count
         )
         guard shortAudioDecision.shouldTranscribe else {
-            lastEmptyTranscriptionReason = .recordingTooShort
             let audioDuration = shortAudioDecision.context["audio_duration_s"] ?? "0.00"
             AppLogger.transcription.warning("PARAKEET | skipping transcription for short audio (\(audioDuration)s)")
             EventReporter.shared.capture(
@@ -299,8 +380,7 @@ extension ParakeetEngine {
                 message: shortAudioDecision.message ?? "Dictation audio too short for transcription",
                 context: shortAudioDecision.context
             )
-            finishTranscription(ownedBy: transcriptionLease)
-            return nil
+            return .empty(.recordingTooShort)
         }
 
         do {
@@ -308,13 +388,7 @@ extension ParakeetEngine {
                 manager: manager,
                 samples: resampled
             )
-            guard ownsRecordedTranscription(
-                transcriptionLease,
-                expectedRevision: consumedRevision
-            ), !Task.isCancelled else {
-                finishTranscription(ownedBy: transcriptionLease, clearSamples: false)
-                return nil
-            }
+            guard isCurrent(), !Task.isCancelled else { return .superseded }
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
             let trimmed = resultText.trimmingCharacters(in: .whitespacesAndNewlines)
             let corrected = CustomDictionaryTextProcessor.apply(to: trimmed)
@@ -354,13 +428,7 @@ extension ParakeetEngine {
                             manager: manager,
                             samples: retrySamples
                         )
-                        guard ownsRecordedTranscription(
-                            transcriptionLease,
-                            expectedRevision: consumedRevision
-                        ), !Task.isCancelled else {
-                            finishTranscription(ownedBy: transcriptionLease, clearSamples: false)
-                            return nil
-                        }
+                        guard isCurrent(), !Task.isCancelled else { return .superseded }
                         let retryElapsed = CFAbsoluteTimeGetCurrent() - retryStarted
                         let retryTrimmed = retryResultText.trimmingCharacters(in: .whitespacesAndNewlines)
                         let retryCorrected = CustomDictionaryTextProcessor.apply(to: retryTrimmed)
@@ -379,8 +447,7 @@ extension ParakeetEngine {
                                     "chars": "\(retryCorrected.count)",
                                     "input_samples": "\(nativeCount)",
                                 ]) { current, _ in current })
-                            finishTranscription(ownedBy: transcriptionLease)
-                            return retryCorrected
+                            return .text(retryCorrected)
                         }
 
                         emptyContext["retry_empty"] = "true"
@@ -389,13 +456,7 @@ extension ParakeetEngine {
                         emptyContext["retry_samples"] = "\(retrySamples.count)"
                     } catch {
                         if Task.isCancelled || error is CancellationError { throw CancellationError() }
-                        guard ownsRecordedTranscription(
-                            transcriptionLease,
-                            expectedRevision: consumedRevision
-                        ) else {
-                            finishTranscription(ownedBy: transcriptionLease, clearSamples: false)
-                            return nil
-                        }
+                        guard isCurrent() else { return .superseded }
                         emptyContext["retry_error"] = error.localizedDescription
                         retryOutcome = .failed
                     }
@@ -413,14 +474,10 @@ extension ParakeetEngine {
                 EventReporter.shared.capture(level: .warning, engine: "parakeet", event: "transcription_empty",
                     message: "Parakeet returned no text after \(String(format: "%.1f", elapsed))s inference",
                     context: emptyContext)
-                lastEmptyTranscriptionReason = DictationEmptyInferencePolicy.reason(
+                return .empty(DictationEmptyInferencePolicy.reason(
                     hasUsableSpeechSignal: analysis.hasUsableSpeechSignal
-                )
-                finishTranscription(ownedBy: transcriptionLease)
-                return nil
+                ))
             }
-
-            finishTranscription(ownedBy: transcriptionLease)
 
             EventReporter.shared.capture(level: .info, engine: "parakeet", event: "transcription_complete",
                 message: "Transcribed in \(String(format: "%.2f", elapsed))s",
@@ -431,19 +488,10 @@ extension ParakeetEngine {
                     "chars": "\(corrected.count)",
                     "input_samples": "\(nativeCount)",
                 ])
-            return corrected
+            return .text(corrected)
         } catch {
-            if Task.isCancelled || error is CancellationError {
-                finishTranscription(ownedBy: transcriptionLease, clearSamples: false)
-                return nil
-            }
-            guard ownsRecordedTranscription(
-                transcriptionLease,
-                expectedRevision: consumedRevision
-            ) else {
-                finishTranscription(ownedBy: transcriptionLease, clearSamples: false)
-                return nil
-            }
+            if Task.isCancelled || error is CancellationError { return .superseded }
+            guard isCurrent() else { return .superseded }
             let elapsed = CFAbsoluteTimeGetCurrent() - startTime
             if let fallbackDecision = ParakeetShortAudioGate.dictationFallback(
                 nativeSampleCount: nativeCount,
@@ -459,18 +507,14 @@ extension ParakeetEngine {
                     message: fallbackDecision.message ?? "Dictation audio too short for transcription",
                     context: fallbackContext
                 )
-                lastEmptyTranscriptionReason = .recordingTooShort
-                finishTranscription(ownedBy: transcriptionLease)
-                return nil
+                return .empty(.recordingTooShort)
             }
 
             AppLogger.transcription.error("PARAKEET | transcription failed: \(error.localizedDescription)")
             EventReporter.shared.capture(level: .error, engine: "parakeet", event: "transcription_failed",
                 message: error.localizedDescription,
                 context: ["samples": "\(nativeCount)", "elapsed": String(format: "%.2f", elapsed)])
-            lastEmptyTranscriptionReason = .modelFailure
-            finishTranscription(ownedBy: transcriptionLease)
-            return nil
+            return .empty(.modelFailure)
         }
     }
 }

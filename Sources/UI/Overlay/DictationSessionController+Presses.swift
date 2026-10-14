@@ -64,7 +64,9 @@ extension DictationSessionController {
         if isDictating {
             return stopFinalizationGate.admittedSessionID == currentDictationSessionID
         }
-        return appState.sttRouter.isTranscribing
+        // Fork: a take transcribed from its own detached audio doesn't hold
+        // the engine, so it never makes a press wait.
+        return appState.sttRouter.blocksNewDictationStart
     }
 
     /// Remembers a start-shortcut press that landed while the last take is
@@ -112,7 +114,7 @@ extension DictationSessionController {
                     // Fork: the dictation queue. A take that is transcribed
                     // finishes on its own and frees the controller now.
                     self.handOffFinishingTakeIfReady()
-                    let stillFinishing = self.isDictating || (self.appState?.sttRouter.isTranscribing ?? false)
+                    let stillFinishing = self.isDictating || (self.appState?.sttRouter.blocksNewDictationStart ?? false)
                     // A take that ended in a problem or a "press ⌘V" notice keeps
                     // its message; starting over it would wipe the only sign the
                     // text didn't land (and its Transcribe It or Paste It button).
@@ -139,7 +141,7 @@ extension DictationSessionController {
                         self.handOffReadiness.eraseToAnyPublisher(),
                     ]
                     if let router = self.appState?.sttRouter {
-                        changes.append(router.$isTranscribing.dropFirst().map { _ in () }.eraseToAnyPublisher())
+                        changes.append(router.$blocksNewDictationStart.dropFirst().map { _ in () }.eraseToAnyPublisher())
                     }
                     let watch = Publishers.MergeMany(changes).sink { _ in wake() }
                     return { watch.cancel() }

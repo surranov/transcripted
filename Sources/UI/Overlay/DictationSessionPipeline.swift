@@ -18,6 +18,11 @@ import AppKit
 @MainActor
 protocol DictationSessionPipelineHost: AnyObject {
     var isDictating: Bool { get set }
+    /// Fork: the dictation queue. `isDictating` for the take on the island;
+    /// the take's own flag once it has handed the controller on.
+    var activeTakeIsLive: Bool { get }
+    /// Ends the take running this code without touching the next take's state.
+    func endActiveTake()
     var currentDictationSessionID: UUID { get set }
     var currentDictationTrigger: DictationTrigger { get }
     var currentDictationShortcutMode: DictationShortcutMode? { get }
@@ -292,8 +297,10 @@ extension DictationSessionPipelineHost {
         _ steps: DictationStopTranscriptionSteps<Snapshot>
     ) async -> (outcome: DictationStopTranscriptionOutcome, marks: DictationStopTranscriptionMarks) {
         var marks = DictationStopTranscriptionMarks()
+        // Fork: `activeTakeIsLive`, since a take may hand the controller on
+        // while it is transcribed; the session id reads the take's own then.
         let isCurrent: @MainActor () -> Bool = {
-            !Task.isCancelled && self.isDictating && self.currentDictationSessionID == taskSessionID
+            !Task.isCancelled && self.activeTakeIsLive && self.currentDictationSessionID == taskSessionID
         }
         guard isCurrent() else { return (.abandoned, marks) }
         steps.markStopRequested()
@@ -493,12 +500,13 @@ extension DictationSessionPipelineHost {
             // The captured audio has no durable WAV. If native RAM
             // remains, offer the guarded no-paste checkpoint retry
             // rather than mislabeling this as model-empty speech.
-            isDictating = false
+            // (A handed-off take always has its WAV, so never here.)
+            endActiveTake()
             showFailedCheckpointRecoveryError()
         case .showMessage:
             steps.showMessage(message, nil, nil)
         }
-        isDictating = false
+        endActiveTake()
         steps.clearSession(reason.runtimeOutcome)
         if decision.discardsSavedRecording {
             discardStoppedAudioRecovery(transcriptPersisted: false, explicitDiscard: true)

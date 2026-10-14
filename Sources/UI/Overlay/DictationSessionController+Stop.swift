@@ -100,7 +100,7 @@ extension DictationSessionController {
         switch DictationStopRoute.route(
             stopDecision: stopDecision,
             trigger: trigger,
-            isFinishingPreviousTake: overlayController.state == .drafting || appState.sttRouter.isTranscribing,
+            isFinishingPreviousTake: overlayController.state == .drafting || appState.sttRouter.blocksNewDictationStart,
             isRecording: appState.sttRouter.isRecording,
             hasRecoverableRecording: appState.sttRouter.hasRecoverableRecording
         ) {
@@ -298,7 +298,18 @@ extension DictationSessionController {
                             appState.runtimeDiagnostics.recordSession(kind: "dictation", stage: "transcribing")
                         },
                         transcribe: { preparedRecording in
-                            await appState.sttRouter.transcribe(preparedRecording: preparedRecording)
+                            // Fork: the dictation queue. A take whose audio is
+                            // safe in its WAV takes it out of the engine, so a
+                            // press may start the next take while this one waits
+                            // its turn and is transcribed (`+HandOff.swift`).
+                            guard let preparedRecording,
+                                  let detached = appState.sttRouter.detachStoppedDictation(preparedRecording) else {
+                                return await appState.sttRouter.transcribe(preparedRecording: preparedRecording)
+                            }
+                            self.setActiveTakeCanHandOff(true)
+                            let transcript = await appState.sttRouter.transcribeDetachedDictation(detached)
+                            take.detachedTranscript = transcript
+                            return transcript.text
                         },
                         now: { CFAbsoluteTimeGetCurrent() }
                     )
@@ -324,7 +335,14 @@ extension DictationSessionController {
                 }
                 stopTiming.cleanedAt = CFAbsoluteTimeGetCurrent()
                 guard let transcribedText = cleanupResult?.text, !transcribedText.isEmpty else {
-                    let emptyReason = appState.sttRouter.lastEmptyTranscriptionReason ?? .noSpeech
+                    // A detached take carries its own reason; the router's is the newest take's.
+                    let emptyReason: DictationEmptyTranscriptionReason = (take.detachedTranscript != nil
+                        ? take.detachedTranscript?.emptyReason
+                        : appState.sttRouter.lastEmptyTranscriptionReason) ?? .noSpeech
+                    // Fork: once handed off, the island and the runtime
+                    // diagnostics are the next take's; this one only logs,
+                    // and a message that needs an answer waits for the island.
+                    let handedOff = DictationTakeScope.handedOff != nil
                     // finishEmptyTake (DictationSessionPipeline.swift) runs
                     // DictationEmptyTranscriptPolicy and the matching message.
                     self.finishEmptyTake(
@@ -333,7 +351,11 @@ extension DictationSessionController {
                             reason: emptyReason,
                             stopRequestedAt: stopTiming.requestedAt,
                             sessionStartedAt: sessionStartTime,
-                            heldBackText: { appState.sttRouter.heldBackDictationText },
+                            heldBackText: {
+                                take.detachedTranscript != nil
+                                    ? take.detachedTranscript?.heldBackText
+                                    : appState.sttRouter.heldBackDictationText
+                            },
                             report: { emptyDecision in
                                 appState.logger.log("DICTATION | no transcription (\(emptyReason.rawValue)), cancelling")
                                 EventReporter.shared.capture(
@@ -371,11 +393,13 @@ extension DictationSessionController {
                                 )
                             },
                             closeLikeCancel: {
+                                guard !handedOff else { return }
                                 NotificationCenter.default.post(name: .dictationNoSpeechDetected, object: nil)
                                 AppSoundPlayer.shared.play(.dictationCancelled)
                                 overlayController.hideWithCancelAnimation()
                             },
                             showNoSpeechAndDismiss: {
+                                guard !handedOff else { return }
                                 NotificationCenter.default.post(name: .dictationNoSpeechDetected, object: nil)
                                 AppSoundPlayer.shared.play(.noSpeech)
                                 overlayController.showNoSpeechAndDismiss(
@@ -388,10 +412,22 @@ extension DictationSessionController {
                                 )
                             },
                             showMessage: { message, actionTitle, action in
+                                guard !handedOff else {
+                                    self.queueHandedOffNotice(HandedOffTakeNotice(
+                                        text: "",
+                                        message: message,
+                                        kind: .message(actionTitle: actionTitle, action: action)
+                                    ))
+                                    return
+                                }
                                 overlayController.showError(message, actionTitle: actionTitle, action: action)
                             },
-                            showPasted: { overlayController.showSuccessAndDismiss(title: "Pasted") },
+                            showPasted: {
+                                guard !handedOff else { return }
+                                overlayController.showSuccessAndDismiss(title: "Pasted")
+                            },
                             clearSession: { outcome in
+                                guard !handedOff else { return }
                                 appState.runtimeDiagnostics.clearSession(kind: "dictation", outcome: outcome)
                             }
                         )
@@ -422,7 +458,7 @@ extension DictationSessionController {
                     isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
                 ) else { return }
 
-                let pasteDeclined = self.pasteDeclinedSessionID == taskSessionID
+                let pasteDeclined = self.pasteDeclinedSessionIDs.contains(taskSessionID)
                 if !autoPaste || pasteDeclined {
                     // Session cap reached (the user walked away mid-dictation), or
                     // Esc after the stop (fork). Recover the transcript by saving it
@@ -441,11 +477,31 @@ extension DictationSessionController {
                     return
                 }
 
-                // Fork: not while the clipboard is borrowed, and after every
-                // earlier take has pasted.
-                self.setActiveTakeCanHandOff(false)
+                // Fork: after every earlier take has pasted. A press may still
+                // hand this take off while it waits its turn; not once it pastes,
+                // while the clipboard is borrowed.
+                take.cardText = text
+                take.stage = .queued
                 await self.awaitDeliveryTurn(take.sequence)
+                guard DictationSessionCompletionPolicy.canPublish(
+                    sessionID: taskSessionID, currentSessionID: self.currentDictationSessionID,
+                    isDictating: self.activeTakeIsLive, cancelled: Task.isCancelled
+                ) else { return }
+                if self.pasteDeclinedSessionIDs.contains(taskSessionID) {
+                    // Esc reached it while it waited its turn.
+                    await self.finalizeWithoutPaste(
+                        text: text,
+                        appState: appState,
+                        overlayController: overlayController,
+                        sessionID: taskSessionID,
+                        reason: .escapeAfterStop,
+                        versions: textVersions
+                    )
+                    return
+                }
+                self.setActiveTakeCanHandOff(false)
                 take.isDelivering = true
+                take.stage = .pasting
                 appState.logger.log("DICTATION | pasting \(text.count) chars")
                 lastCompletedText = text
                 stopTiming.pasteStartedAt = CFAbsoluteTimeGetCurrent()

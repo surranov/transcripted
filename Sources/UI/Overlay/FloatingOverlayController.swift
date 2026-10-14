@@ -60,10 +60,8 @@ class FloatingOverlayController {
             pushStateToIsland()
         }
     }
-    /// Fork: takes finishing in the background (the dictation queue).
-    var finishingInBackground = 0 {
-        didSet { if finishingInBackground != oldValue { pushStateToIsland() } }
-    }
+    /// Fork: the dictation queue's Don't paste buttons (`+HandOff.swift`).
+    var onTakeQueueAction: ((NotchIslandAction) -> Void)?
 
     // MARK: - State (plain vars with didSet — no @Published, no ObservableObject)
 
@@ -245,7 +243,6 @@ class FloatingOverlayController {
             phase: phase,
             notice: listeningNotice,
             targetAppName: islandSourceApp?.localizedName,
-            finishingInBackground: finishingInBackground,
             nextTakeWaiting: listeningNotice == DictationQueuedStartPolicy.waitingNotice
         )
     }
@@ -269,6 +266,8 @@ class FloatingOverlayController {
             handler?()
         case .dictationDismissMessage:
             dismissError()
+        case .dictationDeclinePaste, .backgroundTakeDeclinePaste:
+            onTakeQueueAction?(action)
         default:
             break
         }

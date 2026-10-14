@@ -346,13 +346,29 @@ extension ParakeetEngine {
     func scorePendingPinnedSpeedPathTake(text: String?, emptyReason: DictationEmptyTranscriptionReason?) {
         guard let take = pendingPinnedSpeedPathTake else { return }
         pendingPinnedSpeedPathTake = nil
+        scorePinnedSpeedPathTake(
+            take,
+            text: text,
+            emptyReason: emptyReason,
+            micSentOnlyDigitalSilence: lastRecordingWasDigitalSilence
+        )
+    }
+
+    /// Fork: the dictation queue. A take detached at its stop scores the mark
+    /// and silence flag it took with it; the engine's own belong to the next take.
+    func scorePinnedSpeedPathTake(
+        _ take: PinnedDictationSpeedPathTake,
+        text: String?,
+        emptyReason: DictationEmptyTranscriptionReason?,
+        micSentOnlyDigitalSilence: Bool
+    ) {
         guard !Task.isCancelled,
               let outcome = PinnedDictationSpeedPath.outcome(
                   text: text,
                   emptyReason: emptyReason,
                   heldSeconds: take.heldSeconds,
                   audioSeconds: take.audioSeconds,
-                  micSentOnlyDigitalSilence: lastRecordingWasDigitalSilence
+                  micSentOnlyDigitalSilence: micSentOnlyDigitalSilence
               ) else { return }
         let result = PinnedDictationSpeedPath.record(outcome, for: take.input)
         guard result.turnedOffNow else { return }

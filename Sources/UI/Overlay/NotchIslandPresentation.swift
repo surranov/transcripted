@@ -80,9 +80,6 @@ struct NotchIslandDictationContent: Equatable {
     /// words as they're spoken (set by the island from
     /// `LiveDictationCaptions`).
     var showsLivePreview = false
-    /// Fork: earlier takes still being refined and pasted (the dictation
-    /// queue), shown as a small mark beside this take.
-    var finishingInBackground = 0
     /// Fork: a start press waits for this take to be transcribed; the
     /// writing wing shows a mic so the press doesn't look ignored.
     var nextTakeWaiting = false
@@ -218,6 +215,10 @@ enum NotchIslandAction: Equatable {
     case dictationCancel
     case dictationMessageAction
     case dictationDismissMessage
+    /// Fork: the take on the island won't paste; it is saved (as Esc after its stop).
+    case dictationDeclinePaste
+    /// Fork: a take finishing behind the island won't paste; it is saved.
+    case backgroundTakeDeclinePaste(UUID)
     case copyLastDictation
     case pasteLastDictation
     case meetingStop
@@ -243,7 +244,8 @@ enum NotchIslandAction: Equatable {
 
     var owner: Owner {
         switch self {
-        case .dictationStop, .dictationCancel, .dictationMessageAction, .dictationDismissMessage:
+        case .dictationStop, .dictationCancel, .dictationMessageAction, .dictationDismissMessage,
+             .dictationDeclinePaste, .backgroundTakeDeclinePaste:
             return .dictation
         case .copyLastDictation, .pasteLastDictation, .meetingCopyTranscript:
             return .island
@@ -290,6 +292,9 @@ enum NotchIslandDrop: Equatable {
     case speakerReview(NotchIslandSpeakerReviewContent)
     /// Recording already started with only the mic; offer call audio.
     case meetingCallAudioAsk
+    /// Fork: everything going on, newest first, one card each with its own
+    /// buttons (`NotchIslandActivityStack.cards`).
+    case activities([NotchIslandActivityCard])
 
     /// Identifies an auto-opened drop-down, so closing one keeps it closed
     /// until something new needs saying.
@@ -302,7 +307,7 @@ enum NotchIslandDrop: Equatable {
         case .speakerReview(let review): return "speaker-review:\(review.reviewID.uuidString)"
         case .meetingCallAudioAsk: return "meeting-call-audio-ask"
         case .dictationTarget, .dictationLoading, .justInserted, .meetingPreparing,
-             .meetingControls, .meetingSaved:
+             .meetingControls, .meetingSaved, .activities:
             return ""
         }
     }
@@ -324,6 +329,8 @@ struct NotchIslandLayout: Equatable {
     var dropIsSticky = false
     /// Transcription progress runs along the island's lower edge.
     var showsEdgeProgress = false
+    /// Fork: what sits behind the island, top-most first (the pyramid).
+    var backLayers: [NotchIslandBackLayer] = []
 
     var isEmpty: Bool { left.isEmpty && right.isEmpty && drop == nil }
 
@@ -380,18 +387,37 @@ enum NotchIslandPresentation {
         dictation: NotchIslandDictationContent?,
         meeting: NotchIslandMeetingContent?,
         callPrompt: NotchIslandCallPromptContent?,
-        speakerReview: NotchIslandSpeakerReviewContent? = nil
+        speakerReview: NotchIslandSpeakerReviewContent? = nil,
+        backgroundTakes: [NotchIslandBackgroundTake] = []
     ) -> String? {
-        stickyDrop(dictation: dictation, meeting: meeting, callPrompt: callPrompt, speakerReview: speakerReview)?.stickyKey
+        stickyDrop(
+            dictation: shownDictation(dictation, backgroundTakes: backgroundTakes),
+            meeting: meeting,
+            callPrompt: callPrompt,
+            speakerReview: speakerReview
+        )?.stickyKey
     }
 
-    /// The call prompt is on screen unless a dictation (or its message) has
-    /// the island; it waits behind one and comes back once the words land.
+    /// The call prompt is on screen unless a dictation (or its message, or
+    /// a take finishing behind it) has the island; it waits behind one and
+    /// comes back once the words land.
     static func callPromptIsOnScreen(
         dictation: NotchIslandDictationContent?,
-        callPrompt: NotchIslandCallPromptContent?
+        callPrompt: NotchIslandCallPromptContent?,
+        backgroundTakes: [NotchIslandBackgroundTake] = []
     ) -> Bool {
-        callPrompt != nil && dictation == nil
+        callPrompt != nil && dictation == nil && backgroundTakes.isEmpty
+    }
+
+    /// Fork: the take the island shows. Its own, or with none on it, the
+    /// newest take still finishing behind it, as one being written.
+    static func shownDictation(
+        _ dictation: NotchIslandDictationContent?,
+        backgroundTakes: [NotchIslandBackgroundTake]
+    ) -> NotchIslandDictationContent? {
+        if let dictation { return dictation }
+        return NotchIslandActivityStack.topTake(dictationOnIsland: false, takes: backgroundTakes)
+            .map { NotchIslandDictationContent(phase: .writing, targetAppName: $0.appName) }
     }
 
     /// The island keeps the keyboard only while "Who was on this call?" is
@@ -405,9 +431,11 @@ enum NotchIslandPresentation {
         speakerReview?.stage == .naming && onScreen
     }
 
-    /// Composes the island from whatever is active. Dictation owns the right
-    /// wing and the drop-down while it runs; a live meeting keeps the left
-    /// wing. Messages and prompts open the drop-down by themselves unless the
+    /// Composes the island from whatever is active. The newest thing going
+    /// on has the island (fork): a dictation, or else a take still finishing
+    /// behind it; everything older, a recording meeting included, sits behind
+    /// as layers (`backLayers`), and the hover lists them all as cards.
+    /// Messages and prompts open the drop-down by themselves unless the
     /// person closed that one (`collapsedStickyKey`).
     static func layout(
         dictation: NotchIslandDictationContent?,
@@ -416,24 +444,38 @@ enum NotchIslandPresentation {
         recentInsert: NotchIslandRecentInsert?,
         expanded: Bool,
         collapsedStickyKey: String? = nil,
-        speakerReview: NotchIslandSpeakerReviewContent? = nil
+        speakerReview: NotchIslandSpeakerReviewContent? = nil,
+        backgroundTakes: [NotchIslandBackgroundTake] = []
     ) -> NotchIslandLayout {
         var result = NotchIslandLayout()
+        let shown = shownDictation(dictation, backgroundTakes: backgroundTakes)
+        let meetingRecording = meeting?.isRecording == true
 
-        let sticky = stickyDrop(dictation: dictation, meeting: meeting, callPrompt: callPrompt, speakerReview: speakerReview)
+        let sticky = stickyDrop(dictation: shown, meeting: meeting, callPrompt: callPrompt, speakerReview: speakerReview)
         if let sticky, sticky.stickyKey != collapsedStickyKey || expanded {
             result.drop = sticky
             result.dropIsSticky = true
         } else if expanded {
-            result.drop = onDemandDrop(dictation: dictation, meeting: meeting, recentInsert: recentInsert)
+            let cards = NotchIslandActivityStack.cards(
+                dictation: dictation,
+                takes: backgroundTakes,
+                meetingRecording: meetingRecording
+            )
+            // More than one thing going on, or a take finishing behind the
+            // island: the cards, so each has its own buttons.
+            result.drop = cards.count > 1 || (!backgroundTakes.isEmpty && !cards.isEmpty)
+                ? .activities(cards)
+                : onDemandDrop(dictation: shown, meeting: meeting, recentInsert: recentInsert)
         }
 
         let dropIsOpen = result.drop != nil
-        if let dictation, let meeting, meeting.isRecording {
-            result.left = meetingLeading
-            result.right = dictationMini(dictation)
-        } else if let dictation {
-            (result.left, result.right) = dictationWings(dictation)
+        if let shown {
+            (result.left, result.right) = dictationWings(shown)
+            result.backLayers = NotchIslandActivityStack.backLayers(
+                takes: backgroundTakes,
+                topTakeID: NotchIslandActivityStack.topTake(dictationOnIsland: dictation != nil, takes: backgroundTakes)?.id,
+                meetingBehind: meetingRecording
+            )
         } else if let callPrompt, !(meeting?.isBusy ?? false) {
             result.left = [.symbol(.video, .accent), .text("Call", .title)]
             // Collapsed, an auto-record prompt still shows its seconds: when
@@ -456,11 +498,13 @@ enum NotchIslandPresentation {
 
         if dropIsOpen {
             // The drop-down carries the buttons; the wings only report status,
-            // so nothing is offered twice.
+            // so nothing is offered twice. The layers tuck in: the cards list
+            // everything behind the island.
             result.left = result.left.map(statusOnly)
             result.right = result.right.map(statusOnly)
+            result.backLayers = []
         }
-        if case .transcribing? = meeting?.phase, dictation == nil, !dropIsOpen {
+        if case .transcribing? = meeting?.phase, shown == nil, !dropIsOpen {
             result.showsEdgeProgress = true
         }
         return result
@@ -580,30 +624,6 @@ enum NotchIslandPresentation {
     private static func dictationWings(
         _ dictation: NotchIslandDictationContent
     ) -> ([NotchIslandItem], [NotchIslandItem]) {
-        let wings = singleDictationWings(dictation)
-        guard dictation.finishingInBackground > 0 else { return wings }
-        return (wings.0, withFinishingMark(wings.1, phase: dictation.phase, count: dictation.finishingInBackground))
-    }
-
-    /// Fork: the dictation queue's mark for takes finishing behind this one.
-    /// It takes the room of a few bars, so the island barely grows: writing
-    /// dots while this take listens, "+N" while it is written itself.
-    private static func withFinishingMark(
-        _ right: [NotchIslandItem],
-        phase: NotchIslandDictationContent.Phase,
-        count: Int
-    ) -> [NotchIslandItem] {
-        let fewerBars = right.map { item -> NotchIslandItem in
-            if case .dictationBars = item { return .dictationBars(count: 6) }
-            return item
-        }
-        if case .writing = phase { return [.text("+\(count)", .secondary)] + fewerBars }
-        return [.dots] + fewerBars
-    }
-
-    private static func singleDictationWings(
-        _ dictation: NotchIslandDictationContent
-    ) -> ([NotchIslandItem], [NotchIslandItem]) {
         switch dictation.phase {
         case .starting:
             return ([.accentDot], [])
@@ -628,21 +648,6 @@ enum NotchIslandPresentation {
             return ([.symbol(.check, .accent), .text(title, .title)], [])
         case .message(let message):
             return ([messageSymbol(message.tone), .text(messageLabel(message), .title)], [])
-        }
-    }
-
-    private static func dictationMini(_ dictation: NotchIslandDictationContent) -> [NotchIslandItem] {
-        switch dictation.phase {
-        case .starting, .loading:
-            return [.accentDot]
-        case .listening:
-            return [.symbol(.mic, .accent), .dictationBars(count: 9)]
-        case .writing:
-            return [.dots]
-        case .success:
-            return [.symbol(.check, .accent)]
-        case .message(let message):
-            return [messageSymbol(message.tone)]
         }
     }
 

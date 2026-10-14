@@ -44,6 +44,8 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     private static let meterInterval: CFTimeInterval = 0.05
 
     var dictation: NotchIslandDictationContent?
+    /// Fork: takes finishing behind the island, oldest first (`+ActivityStack`).
+    var backgroundTakes: [NotchIslandBackgroundTake] = []
     var meeting: NotchIslandMeetingContent?
     private var callPrompt: NotchIslandCallPromptContent?
     var speakerReview: NotchIslandSpeakerReviewContent?
@@ -302,7 +304,7 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
             reportedCallPromptVisible = nil
             return
         }
-        let visible = NotchIslandPresentation.callPromptIsOnScreen(dictation: dictation, callPrompt: callPrompt)
+        let visible = NotchIslandPresentation.callPromptIsOnScreen(dictation: dictation, callPrompt: callPrompt, backgroundTakes: backgroundTakes)
         guard reportedCallPromptVisible != visible else { return }
         reportedCallPromptVisible = visible
         callVisibilityHandler?(visible)
@@ -311,7 +313,7 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
     // MARK: - Rendering
 
     func render(animated: Bool = true) {
-        if NotchIslandPresentation.stickyKey(dictation: dictation, meeting: meeting, callPrompt: callPrompt, speakerReview: speakerReview) == nil {
+        if NotchIslandPresentation.stickyKey(dictation: dictation, meeting: meeting, callPrompt: callPrompt, speakerReview: speakerReview, backgroundTakes: backgroundTakes) == nil {
             collapsedStickyKey = nil
         }
         let layout = NotchIslandPresentation.layout(
@@ -321,7 +323,8 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
             recentInsert: recentInsert,
             expanded: expanded,
             collapsedStickyKey: collapsedStickyKey,
-            speakerReview: speakerReview
+            speakerReview: speakerReview,
+            backgroundTakes: backgroundTakes
         )
         lastLayout = layout
         reportSpeakerReviewVisibility(layout.showsSpeakerReview)
@@ -694,7 +697,7 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         // Clicks between the review's rows mean nothing; Later and Done
         // are the ways out.
         if case .speakerReview? = lastLayout?.drop { return }
-        let stickyKey = NotchIslandPresentation.stickyKey(dictation: dictation, meeting: meeting, callPrompt: callPrompt, speakerReview: speakerReview)
+        let stickyKey = NotchIslandPresentation.stickyKey(dictation: dictation, meeting: meeting, callPrompt: callPrompt, speakerReview: speakerReview, backgroundTakes: backgroundTakes)
         if let stickyKey, lastLayout?.dropIsSticky == true {
             // Close the drop-down that opened by itself. It stays closed
             // until something new needs saying; a hover or click reopens it.

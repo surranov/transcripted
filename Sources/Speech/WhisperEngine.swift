@@ -640,10 +640,31 @@ final class WhisperEngine: ObservableObject {
     /// while recording plus the last one; if anything about them is in doubt
     /// it transcribes the whole take, like the other Whisper models always do.
     func transcribeDictationTake(_ samples: [Float], model: TranscriptionModelChoice) async throws -> String {
-        if model.usesWhisperCpp, let live = liveDictation {
-            detachLiveDictationSink?()
-            detachLiveDictationSink = nil
+        let live = model.usesWhisperCpp ? detachLiveDictation() : nil
+        return try await transcribeDictationTake(samples, model: model, live: live)
+    }
+
+    /// Fork: the dictation queue. A take detached at its stop takes its live
+    /// pieces with it, so the next take's `beginLiveDictation` starts its own
+    /// instead of cancelling these. The caller finishes or cancels it.
+    func detachLiveDictation() -> BreezeLiveDictation? {
+        detachLiveDictationSink?()
+        detachLiveDictationSink = nil
+        defer {
             liveDictation = nil
+            liveDictationModel = nil
+        }
+        return liveDictation
+    }
+
+    /// A take's text from its own live pieces (`live`, detached at its stop),
+    /// or from the whole take when there are none or they are in doubt.
+    func transcribeDictationTake(
+        _ samples: [Float],
+        model: TranscriptionModelChoice,
+        live: BreezeLiveDictation?
+    ) async throws -> String {
+        if model.usesWhisperCpp, let live {
             let startTime = CFAbsoluteTimeGetCurrent()
             if let pieces = await live.finish(fullSampleCount: samples.count) {
                 try Task.checkCancellation()

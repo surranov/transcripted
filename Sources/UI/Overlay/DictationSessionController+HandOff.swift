@@ -29,6 +29,17 @@ final class DictationFinishingTake {
     var finished = false
     /// Delivering its words (paste or anchored insert) right now.
     var isDelivering = false
+    /// Set once its detached audio is transcribed: the take's own empty
+    /// reason and held-back text (the router's belong to the newest take).
+    var detachedTranscript: DetachedDictationTranscript?
+    /// Where it is, for the island's layers and hover cards.
+    var stage: NotchIslandBackgroundTake.Stage = .processing {
+        didSet { if stage != oldValue { onChange?() } }
+    }
+    /// Its words once written, for its hover card. Memory only.
+    var cardText: String?
+    /// Set at hand-off: the island follows its stage.
+    var onChange: (() -> Void)?
 
     // The per-take controller state, copied at hand-off.
     var sessionStartTime: CFAbsoluteTime = 0
@@ -66,12 +77,24 @@ enum DictationTakeScope {
     }
 }
 
+/// Who answers Esc while takes finish in the background.
+enum DictationHandedOffEscapePolicy {
+    /// The take on the island has Esc first (the overlay's monitor); only
+    /// with none there does Esc reach the takes behind it.
+    static func handlesEscape(isDictating: Bool, overlayOwnsEscape: Bool) -> Bool {
+        !isDictating && !overlayOwnsEscape
+    }
+}
+
 /// A handed-off take that didn't paste, shown once the island is free.
 struct HandedOffTakeNotice {
     enum Kind {
         case notPasted(unconfirmed: Bool)
         case clipboardBusy
         case error
+        /// An empty take's message, with its button when it has one (Paste
+        /// Anyway, Transcribe It).
+        case message(actionTitle: String?, action: (() -> Void)?)
     }
     let text: String
     let message: String
@@ -79,8 +102,11 @@ struct HandedOffTakeNotice {
 }
 
 extension DictationSessionController {
-    /// How long a ready take waits for an earlier take to paste first.
-    static let deliveryTurnWaitSeconds: Double = 60
+    /// How long a ready take waits for an earlier take to paste first. Every
+    /// take ends its turn however it ends (`takeTaskEnded`), so this only
+    /// guards against a take stuck for good; it used to be 60 s, which a long
+    /// LLM pass over an earlier take could outlast and paste out of order.
+    static let deliveryTurnWaitSeconds: Double = 600
 
     /// Whether the take running this code is still live: `isDictating` for
     /// the current take, its own flag once handed off.
@@ -116,9 +142,10 @@ extension DictationSessionController {
               let take = finishingTake, take.canHandOff, !take.isHandedOff,
               take.sessionID == currentDictationSessionID,
               // The waiting press must start right away: with the engine busy
-              // (Transcribe Again, launch recovery) it keeps waiting, and the
-              // island would be left on this take's "Writing".
-              !(appState?.sttRouter.isTranscribing ?? false) else { return false }
+              // (Transcribe Again, a take still holding the engine's audio) it
+              // keeps waiting, and the island would be left on this take's
+              // "Writing". Detached takes being transcribed don't hold it.
+              !(appState?.sttRouter.blocksNewDictationStart ?? false) else { return false }
         // Outside any take's scope, these read the controller's own state.
         take.sessionStartTime = sessionStartTime
         take.sourceApp = sessionSourceApp
@@ -144,7 +171,11 @@ extension DictationSessionController {
         pasteAnchorTask = nil
         finishingTake = nil
         handedOffTakes.append(take)
-        overlayController?.finishingInBackground = handedOffTakes.count
+        take.onChange = { [weak self] in self?.handedOffTakesChanged() }
+        // Its transcription and LLM pass run on: App Nap must not throttle
+        // them once `isDictating` lets go below. Released when it ends.
+        DictationProcessActivity.shared.acquire(reason: "Finishing a dictation in the background")
+        handedOffTakesChanged()
         appState?.logger.log("DICTATION | take handed off to finish in the background (\(handedOffTakes.count) finishing)")
         isDictating = false
         return true
@@ -155,10 +186,59 @@ extension DictationSessionController {
     func takeTaskEnded(_ take: DictationFinishingTake) {
         take.isDelivering = false
         markDelivered(take.sequence)
+        pasteDeclinedSessionIDs.remove(take.sessionID)
         if take.isHandedOff {
             finishHandedOffTake(take)
         } else if finishingTake === take {
             finishingTake = nil
+        }
+    }
+
+    // MARK: - Esc
+
+    /// Esc with no take on the island reaches the newest take still finishing
+    /// behind it: it won't paste and is saved to Dictations, like Esc after
+    /// a stop. Each Esc takes the next one back. A take already pasting, or
+    /// declined, is passed over. False when none is left.
+    @discardableResult
+    func declineNewestHandedOffTakePaste() -> Bool {
+        guard let take = handedOffTakes.last(where: {
+            !$0.finished && !$0.isDelivering && !pasteDeclinedSessionIDs.contains($0.sessionID)
+        }) else { return false }
+        pasteDeclinedSessionIDs.insert(take.sessionID)
+        take.transcriptRefinementTask?.cancel()
+        appState?.logger.log("DICTATION | Esc: a take finishing in the background won't paste; it is saved")
+        handedOffTakesChanged()
+        return true
+    }
+
+    /// Watches Esc while takes finish in the background. The overlay's own
+    /// monitor owns Esc while a take is on the island (cancel, or decline
+    /// its paste); this one acts only when none is. Never touches a meeting.
+    func updateHandedOffEscapeMonitor() {
+        let wanted = handedOffTakes.contains { !$0.finished }
+        if wanted, handedOffEscapeMonitor == nil {
+            handedOffEscapeMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard event.keyCode == 53, !event.isARepeat,
+                      // Decided now, as the key lands: the overlay's monitor
+                      // reacts to this same press on a later turn, and its
+                      // cancel would otherwise make this one act on the take
+                      // behind as well. Off the main thread it's left alone.
+                      Thread.isMainThread,
+                      MainActor.assumeIsolated({ [weak self] in
+                          guard let self else { return false }
+                          return DictationHandedOffEscapePolicy.handlesEscape(
+                              isDictating: self.isDictating,
+                              overlayOwnsEscape: self.overlayController?.ownsEscapeForTake ?? false
+                          )
+                      }) else { return }
+                Task { @MainActor [weak self] in
+                    self?.declineNewestHandedOffTakePaste()
+                }
+            }
+        } else if !wanted, let monitor = handedOffEscapeMonitor {
+            NSEvent.removeMonitor(monitor)
+            handedOffEscapeMonitor = nil
         }
     }
 
@@ -172,10 +252,50 @@ extension DictationSessionController {
         guard !take.finished else { return }
         take.finished = true
         take.isDelivering = false
+        DictationProcessActivity.shared.release()
         markDelivered(take.sequence)
         handedOffTakes.removeAll { $0 === take }
-        overlayController?.finishingInBackground = handedOffTakes.count
+        handedOffTakesChanged()
         presentHandedOffNoticeIfIdle()
+    }
+
+    /// The takes finishing behind the island changed (one joined, left, or
+    /// moved on a stage): the island's layers and the background Esc follow.
+    func handedOffTakesChanged() {
+        overlayController?.island?.updateBackgroundTakes(backgroundTakeSnapshots())
+        updateHandedOffEscapeMonitor()
+    }
+
+    /// The takes finishing behind the island, oldest first, as the island
+    /// draws them.
+    func backgroundTakeSnapshots() -> [NotchIslandBackgroundTake] {
+        handedOffTakes.filter { !$0.finished }.map { take in
+            NotchIslandBackgroundTake(
+                id: take.sessionID,
+                stage: take.stage,
+                appName: take.sourceApp?.localizedName,
+                text: take.cardText,
+                declined: pasteDeclinedSessionIDs.contains(take.sessionID)
+            )
+        }
+    }
+
+    /// The hover cards' Don't paste: the take on the island (as Esc after its
+    /// stop), or one finishing behind it.
+    func handleTakeQueueAction(_ action: NotchIslandAction) {
+        switch action {
+        case .dictationDeclinePaste:
+            _ = keepStoppedTakeWithoutPasting()
+        case .backgroundTakeDeclinePaste(let id):
+            guard let take = handedOffTakes.first(where: { $0.sessionID == id }),
+                  !take.finished, !take.isDelivering else { return }
+            pasteDeclinedSessionIDs.insert(id)
+            take.transcriptRefinementTask?.cancel()
+            appState?.logger.log("DICTATION | Don't paste: a take finishing in the background is saved instead")
+            handedOffTakesChanged()
+        default:
+            break
+        }
     }
 
     // MARK: - Paste order
@@ -230,6 +350,19 @@ extension DictationSessionController {
             showClipboardBusy(notice.text, message: notice.message, overlayController: overlayController)
         case .error:
             overlayController.showError(notice.message)
+        case .message(let actionTitle, let action):
+            overlayController.showError(notice.message, actionTitle: actionTitle, action: action)
+        }
+    }
+}
+
+extension FloatingOverlayController {
+    /// A take is on the island in a state the overlay's own Esc monitor
+    /// answers (cancel, confirm, decline its paste, dismiss its message).
+    var ownsEscapeForTake: Bool {
+        switch state {
+        case .starting, .loading, .listening, .drafting: return true
+        case .idle, .success: return false
         }
     }
 }
