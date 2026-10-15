@@ -529,12 +529,97 @@ func testNotchIslandPresentation() {
         assertFalse(NotchIslandPresentation.speakerReviewKeepsKeyboard(nil, onScreen: false), "a finished or replaced review gives it back")
     }
 
+    runSuite("Meetings queue: the next meeting records while the earlier one is transcribed behind it") {
+        let next = recording().withEarlierMeeting(transcriptionProgress: 0.4, waiting: 0, sessionStartsOrRecords: true)
+        let layout = notchLayout(meeting: next)
+        assertEqual(layout.left, [.recordingDot, .live(.meetingTimer, .title)], "the recording keeps the island")
+        assertEqual(layout.backLayers, [NotchIslandActivityStack.transcribingMeetingLayer], "the earlier meeting sits behind it")
+        assertFalse(layout.showsEdgeProgress, "the edge belongs to a meeting being transcribed on the island")
+        assertEqual(
+            notchLayout(meeting: next, expanded: true).drop,
+            .meetingControls(callAudioNote: nil, systemAudioUnverified: false, earlierMeeting: NotchIslandEarlierMeeting(moreWaiting: 0)),
+            "the hover keeps the recording's own controls and lists the earlier meeting under Stop"
+        )
+
+        let starting = NotchIslandMeetingContent(phase: .preparing(title: "Starting…", detail: ""))
+            .withEarlierMeeting(transcriptionProgress: nil, waiting: 0, sessionStartsOrRecords: true)
+        assertNil(starting.earlierMeeting, "nothing is transcribed or waiting, nothing behind")
+        let between = NotchIslandMeetingContent(phase: .preparing(title: "Starting…", detail: ""))
+            .withEarlierMeeting(transcriptionProgress: nil, waiting: 2, sessionStartsOrRecords: true)
+        assertEqual(between.earlierMeeting, NotchIslandEarlierMeeting(moreWaiting: 1), "between two jobs the first waiting one is the earlier meeting")
+        assertEqual(notchLayout(meeting: between).backLayers, [NotchIslandActivityStack.transcribingMeetingLayer])
+
+        let alone = NotchIslandMeetingContent(phase: .transcribing(progress: 0.4, detail: "40%"))
+            .withEarlierMeeting(transcriptionProgress: 0.4, waiting: 1, sessionStartsOrRecords: true)
+        assertNil(alone.earlierMeeting, "a meeting being transcribed shows its progress on its own pill")
+
+        // Right after Stop the meeting's own job starts while the island
+        // still shows it recording: that job is not an earlier meeting.
+        let justStopped = recording().withEarlierMeeting(transcriptionProgress: 0.1, waiting: 0, sessionStartsOrRecords: false)
+        assertNil(justStopped.earlierMeeting, "its own transcription never flashes as a layer behind it")
+    }
+
+    runSuite("Meetings queue: a dictation during the next meeting lists all three, the meetings deepest") {
+        let next = recording().withEarlierMeeting(transcriptionProgress: 0.4, waiting: 1, sessionStartsOrRecords: true)
+        let layout = notchLayout(dictation: listening(), meeting: next)
+        assertEqual(layout.backLayers.map(\.key), ["meeting", NotchIslandActivityStack.transcribingMeetingLayer.key])
+        guard case .activities(let cards)? = notchLayout(dictation: listening(), meeting: next, expanded: true).drop else {
+            return assertTrue(false, "the hover lists each thing going on")
+        }
+        assertEqual(cards.map(\.kind), [.listening(appName: "Notes"), .meeting, .earlierMeeting(NotchIslandEarlierMeeting(moreWaiting: 1))])
+        assertEqual(cards.map(\.isEscapeTarget), [true, false, false], "Esc still reaches only the take")
+    }
+
+    runSuite("Meetings queue: a call prompt takes the island from a meeting that is only being transcribed") {
+        let prompt = NotchIslandCallPromptContent(title: "Kontur.Talk call", detail: "Record this meeting?", secondsLeft: 60)
+        let transcribing = NotchIslandMeetingContent(phase: .transcribing(progress: 0.4, detail: "40%"))
+        let open = notchLayout(meeting: transcribing, callPrompt: prompt)
+        assertEqual(open.drop, .callPrompt(title: "Kontur.Talk call", detail: "Record this meeting?"))
+        assertEqual(open.left, [.symbol(.video, .accent), .text("Call", .title)], "the wings say there's a call, not the old meeting's progress")
+
+        let key = NotchIslandPresentation.stickyKey(dictation: nil, meeting: transcribing, callPrompt: prompt)
+        let closed = notchLayout(meeting: transcribing, callPrompt: prompt, collapsedStickyKey: key)
+        assertEqual(closed.right, [.chip("Record", .destructive, .callRecord)], "closed, Record stays one click away")
+        assertEqual(closed.backLayers, [NotchIslandActivityStack.transcribingMeetingLayer], "the meeting being transcribed waits behind it")
+        assertFalse(closed.showsEdgeProgress)
+
+        let starting = NotchIslandMeetingContent(phase: .preparing(title: "Starting…", detail: ""))
+        let whileStarting = notchLayout(meeting: starting, callPrompt: prompt, collapsedStickyKey: key)
+        assertEqual(whileStarting.left, [.spinner, .text("Starting…", .title)], "a meeting that is starting keeps the wings")
+    }
+
+    runSuite("Meetings queue: an earlier meeting's review asks while a later one is transcribed, never while one records") {
+        let review = NotchIslandSpeakerReviewContent(reviewID: UUID(), meetingTitle: "Daily", stage: .naming)
+        func layout(_ phase: NotchIslandMeetingContent.Phase) -> NotchIslandLayout {
+            NotchIslandPresentation.layout(
+                dictation: nil, meeting: NotchIslandMeetingContent(phase: phase), callPrompt: nil,
+                recentInsert: nil, expanded: false, speakerReview: review
+            )
+        }
+        assertTrue(layout(.transcribing(progress: 0.2, detail: "20%")).showsSpeakerReview, "names for the earlier meeting needn't wait for the later one")
+        assertFalse(layout(.recording).showsSpeakerReview, "never during a call")
+        assertFalse(layout(.preparing(title: "Starting…", detail: "")).showsSpeakerReview, "never while the next one starts")
+    }
+
+    runSuite("An earlier meeting's progress is a live value, not a rebuild") {
+        let base = recording().withEarlierMeeting(transcriptionProgress: 0.3, waiting: 0, sessionStartsOrRecords: true)
+        let ticked = recording().withEarlierMeeting(transcriptionProgress: 0.31, waiting: 0, sessionStartsOrRecords: true)
+        assertEqual(base.earlierMeetingPercent, 30)
+        assertEqual(NotchIslandPresentation.meetingUpdate(from: base, to: ticked), .liveValuesOnly, "a new percent updates its line in place")
+        let samePercent = recording().withEarlierMeeting(transcriptionProgress: 0.3049, waiting: 0, sessionStartsOrRecords: true)
+        assertEqual(NotchIslandPresentation.meetingUpdate(from: base, to: samePercent), .unchanged, "a step inside the same percent changes nothing on screen")
+        let another = recording().withEarlierMeeting(transcriptionProgress: 0.31, waiting: 1, sessionStartsOrRecords: true)
+        assertEqual(NotchIslandPresentation.meetingUpdate(from: base, to: another), .full, "one more waiting changes what the line says")
+        assertEqual(NotchIslandPresentation.meetingUpdate(from: recording(), to: base), .full, "the earlier meeting appearing adds its layer")
+        assertEqual(NotchIslandPresentation.meetingUpdate(from: base, to: recording()), .full, "and its leaving takes it away")
+    }
+
     runSuite("A meeting tick that only moves the clock skips the full island rebuild") {
         let base = recording()
         var ticked = base
         ticked.duration += 1
         assertEqual(NotchIslandPresentation.meetingUpdate(from: base, to: base), .unchanged, "same snapshot, nothing to do")
-        assertEqual(NotchIslandPresentation.meetingUpdate(from: base, to: ticked), .durationOnly, "a clock tick only refreshes the timer")
+        assertEqual(NotchIslandPresentation.meetingUpdate(from: base, to: ticked), .liveValuesOnly, "a clock tick only refreshes the timer")
         assertEqual(NotchIslandPresentation.meetingUpdate(from: nil, to: nil), .unchanged, "no meeting before or after")
     }
 

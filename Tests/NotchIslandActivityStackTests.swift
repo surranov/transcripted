@@ -8,6 +8,25 @@ import CoreGraphics
 import Foundation
 
 func testNotchIslandActivityStack() {
+    runSuite("A meeting still being transcribed sits under the recording one and keeps its place") {
+        let takes = (0..<3).map { _ in NotchIslandBackgroundTake(id: UUID(), stage: .processing) }
+        let layers = NotchIslandActivityStack.backLayers(takes: takes, topTakeID: nil, meetingBehind: true, transcribingMeetingBehind: true)
+        assertEqual(
+            layers.map(\.key),
+            [takes[2].id.uuidString, "meeting", NotchIslandActivityStack.transcribingMeetingLayer.key],
+            "one take fits; the recording, then the meeting being transcribed at the bottom"
+        )
+        assertEqual(
+            NotchIslandActivityStack.backLayers(takes: [], topTakeID: nil, meetingBehind: false, transcribingMeetingBehind: true),
+            [NotchIslandActivityStack.transcribingMeetingLayer]
+        )
+        let cards = NotchIslandActivityStack.cards(
+            dictation: nil, takes: [], meetingRecording: true, earlierMeeting: NotchIslandEarlierMeeting(moreWaiting: 0)
+        )
+        assertEqual(cards.map(\.kind), [.meeting, .earlierMeeting(NotchIslandEarlierMeeting(moreWaiting: 0))])
+        assertNil(NotchIslandActivityStack.escapeTarget(in: cards), "Esc never reaches a meeting")
+    }
+
     runSuite("The layers behind the island: newest take first, the meeting deepest, three at most") {
         let takes = (0..<4).map { NotchIslandBackgroundTake(id: UUID(), stage: $0 == 3 ? .queued : .processing) }
         let layers = NotchIslandActivityStack.backLayers(takes: takes, topTakeID: nil, meetingBehind: true)

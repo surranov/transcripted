@@ -50,7 +50,8 @@ extension TranscriptionTaskManager {
                         )
                     }
 
-                    let didAlreadyPublish = lastSavedTranscriptId == transcriptId
+                    let didAlreadyPublish = announcedSavedTranscriptIds.contains(transcriptId)
+                        || lastSavedTranscriptId == transcriptId
                         || lastSavedTranscriptURL == currentURL
                     populateSavedMetadata(from: currentURL)
                     return (
@@ -112,6 +113,7 @@ extension TranscriptionTaskManager {
                 }
             }
             if !metadataPublication.didAlreadyPublish {
+                announcedSavedTranscriptIds.insert(transcriptId)
                 publishSpeakerNamesSaved()
                 scheduleStatusReset(delay: 8)
             } else {

@@ -106,6 +106,65 @@ final class TranscriptionTaskManagerMetadataTests: XCTestCase {
         XCTAssertEqual(manager.lastSavedSpeakerCount, 3)
     }
 
+    func testEarlierMeetingsFinishedReviewDoesNotAnnounceItsSaveAgain() throws {
+        // Meetings back to back: A saves, B saves, then A's review finishes.
+        let manager = makeManager()
+        let meetingA = UUID()
+        let meetingB = UUID()
+        let urlA = try writeSavedTranscript(named: "Meeting_A.md", id: meetingA)
+        let urlB = try writeSavedTranscript(named: "Meeting_B.md", id: meetingB)
+        manager.publishTranscriptSaved(from: urlA)
+        manager.publishTranscriptSaved(from: urlB)
+        var announced: [DisplayStatus] = []
+        let subscription = manager.$displayStatus.dropFirst().sink { announced.append($0) }
+        defer { subscription.cancel() }
+
+        let outcome = manager.finishNamingFlow(
+            didFinalizeTranscript: true,
+            updatesCount: 1,
+            transcriptId: meetingA,
+            resolvedURL: urlA,
+            micURL: nil,
+            systemURL: tempDirectory.appendingPathComponent("system.wav")
+        )
+
+        guard case .completed = outcome else { return XCTFail("A's names should save") }
+        XCTAssertFalse(announced.contains(.transcriptSaved), "A was announced when it saved; a second one counts it twice")
+    }
+
+    func testFinishedReviewAnnouncesASaveNobodyHeardAbout() throws {
+        let manager = makeManager()
+        let meeting = UUID()
+        let url = try writeSavedTranscript(named: "Meeting_C.md", id: meeting)
+        manager.displayStatus = .idle
+
+        let outcome = manager.finishNamingFlow(
+            didFinalizeTranscript: true,
+            updatesCount: 1,
+            transcriptId: meeting,
+            resolvedURL: url,
+            micURL: nil,
+            systemURL: tempDirectory.appendingPathComponent("system.wav")
+        )
+
+        guard case .completed = outcome else { return XCTFail("the names should save") }
+        XCTAssertEqual(manager.displayStatus, .transcriptSaved, "a review left from before a relaunch still reports the save")
+    }
+
+    private func writeSavedTranscript(named name: String, id: UUID) throws -> URL {
+        let url = tempDirectory.appendingPathComponent(name)
+        try """
+        ---
+        capture_id: "\(id.uuidString)"
+        transcript_id: "\(id.uuidString)"
+        title: "\(name)"
+        ---
+
+        # Meeting Recording
+        """.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
     func testSavedTranscriptOwnerSurvivesSpeakerReviewRewrite() throws {
         let manager = makeManager()
         let taskId = UUID()

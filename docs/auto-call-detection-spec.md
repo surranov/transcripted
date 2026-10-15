@@ -735,10 +735,23 @@ the title tells them apart.
 |---|---|---|
 | Native app | `kontur.talk` (Electron helpers by family) | `ru.yandex.desktop.telemost` |
 | Meeting links | `*.ktalk.ru` | `telemost.yandex.ru`, `telemost.360.yandex.ru` |
-| In-call title (named call) | `Встреча — Толк` | `Идёт звонок · Яндекс Телемост` |
-| Call site only | `Подключение к встрече — Толк` (pre-join), `Толк` | `Яндекс Телемост` |
+| In-call title (named call) | `<meeting> — Толк` (`Встреча — Толк` when unnamed) | `Идёт звонок · Яндекс Телемост` |
+| Call site only | `Подключение к встрече — Толк` (pre-join), `Толк`, Talk's own pages (`Чаты`, `Артефакты`, `Доски`, `Контакты` `— Толк`) | `Яндекс Телемост` |
 
-Titles were measured in live rooms (Russian UI). A tab in a Chrome tab group
+Titles were measured in live rooms (Russian UI). 2026-10-15: a room joined
+from a calendar event is titled after the meeting ("Гибридка - баги — Толк"),
+so only `Встреча — Толк` counting left every named room muted-joined with no
+prompt until the calendar's one-minute reminder. Any "<page> — Толк" that is
+not one of Talk's own pages is now a room (`BrowserCallEvidence.ktalkPage`),
+but only in the browser's front window: Talk can keep a room's title after the
+call, so from a back window it could be a call long over under a video
+playing (an unnamed `Встреча — Толк` still counts from any window). Chrome's
+Accessibility window title adds its own parts: an ungrouped tab ends
+" - Google Chrome", which the call-site rule used to miss, and a grouped one
+has a no-break space before the dash (`"<tab>"\u00A0– элемент группы "<group>"
+- Google Chrome`), which the group rule used to miss, so grouped call tabs were
+never read. Both measured on Chrome's real AX titles. A Talk chat is
+"Чаты — <chat>", never a room. A tab in a Chrome tab group
 titles its window with the tab title in quotes plus the group (`"Встреча — Толк"
 – элемент группы "Звонки" - Google Chrome`); the quoted tab title is what gets
 matched. Russian mail and calendar

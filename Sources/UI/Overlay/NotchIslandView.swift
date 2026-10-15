@@ -15,6 +15,7 @@ struct NotchIslandLiveValues: Equatable {
     var loadingProgress: Double = 0
     var transcriptionProgress: Double = 0
     var callSecondsLeft: Int = 0
+    var earlierMeetingPercent: Int?
 }
 
 // MARK: - Palette
@@ -320,6 +321,8 @@ final class NotchIslandDropView: NSView {
     private var callLane: NotchIslandBarsView?
     private var promptCountdownLabel: NSTextField?
     private var countdownButton: NotchIslandButton?
+    /// An earlier meeting's progress line and its card, updated in place.
+    var earlierMeetingLine: (label: NSTextField, card: NSView, meeting: NotchIslandEarlierMeeting)?
     /// A dictation message's words and hint. A click on them is someone
     /// reading, so it never reaches the island's click-to-dismiss.
     var readableText: [NSView] = []
@@ -382,9 +385,15 @@ final class NotchIslandDropView: NSView {
         return height
     }
 
-    /// Nothing in the drop-down reads a live value today: the call prompt's
-    /// countdown is the ring around Skip, which runs by itself.
-    func updateLive(_ live: NotchIslandLiveValues) {}
+    /// Only an earlier meeting's progress line reads a live value; the call
+    /// prompt's countdown is the ring around Skip, which runs by itself.
+    func updateLive(_ live: NotchIslandLiveValues) {
+        guard let line = earlierMeetingLine else { return }
+        let status = Self.earlierMeetingStatus(line.meeting, percent: live.earlierMeetingPercent)
+        guard line.label.stringValue != status else { return }
+        line.label.stringValue = status
+        line.card.setAccessibilityLabel(Self.activityAccessibilityLabel(title: Self.earlierMeetingTitle, detail: status))
+    }
 
     /// A meeting prompt that only changed its "Stops in 12s" line is updated
     /// in place, so its buttons are not rebuilt under the pointer each second.
@@ -448,7 +457,8 @@ final class NotchIslandDropView: NSView {
             buildJustInserted(text: text)
         case .meetingPreparing(let title, let detail):
             add(titleBlock(title, detail, wrapsDetail: true))
-        case .meetingControls(let note, let unverified, let showsTranscript):
+        case .meetingControls(let note, let unverified, let showsTranscript, let earlierMeeting):
+            defer { if let earlierMeeting { add(activityCard(NotchIslandActivityCard(kind: .earlierMeeting(earlierMeeting)), live: live)) } }
             let subtitle: String
             if unverified {
                 subtitle = "Can't confirm call audio yet"
@@ -540,7 +550,7 @@ final class NotchIslandDropView: NSView {
                 record,
             ]))
         case .activities(let cards):
-            buildActivities(cards)
+            buildActivities(cards, live: live)
         case .meetingCallAudioAsk:
             add(titleBlock(
                 "Call audio is off",

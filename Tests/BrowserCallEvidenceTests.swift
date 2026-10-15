@@ -70,6 +70,103 @@ func testBrowserCallEvidence() {
         }
     }
 
+    runSuite("BrowserCallEvidence.classify — a joined Talk room titled after its meeting is a Talk call") {
+        // Room titles seen 2026-10-15 in a real Talk account: a room carries
+        // its meeting's name, and Chrome's window title adds its own parts.
+        let rooms = [
+            "Стратегия посутки \u{2014} Толк",
+            "Гибридка - баги \u{2014} Толк",
+            "Владимир / Рафаэль \u{2014} Толк",
+            "Ретро. Посутка \u{2014} Толк",
+            "Синк \u{2014} Толк - Google Chrome",
+            "\"Планирование Discovery \u{2014} Толк\" \u{2013} элемент группы \"Звонки\" - Google Chrome",
+            "(2) Дейлик B2C Посуточной аренды \u{2014} Толк",
+        ]
+        for title in rooms {
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: true)]),
+                .call(provider: .ktalk),
+                "\"\(title)\" in front is a joined room"
+            )
+            assertEqual(
+                BrowserCallEvidence.classify([
+                    BrowserWindowTitle(title: "YouTube", isFocused: true),
+                    BrowserWindowTitle(title: title, isFocused: false),
+                ]),
+                .unknown,
+                "\"\(title)\" in a back window can be a call long over: Talk keeps the title after it"
+            )
+        }
+        assertEqual(
+            BrowserCallEvidence.classify([
+                BrowserWindowTitle(title: "YouTube", isFocused: true),
+                BrowserWindowTitle(title: "Встреча \u{2014} Толк", isFocused: false),
+            ]),
+            .call(provider: .ktalk),
+            "an unnamed room still counts from any window, as before"
+        )
+    }
+
+    runSuite("BrowserCallEvidence.classify — Talk's own pages stay call sites with Chrome's title parts") {
+        // Measured 2026-10-15: Talk's home is "Толк", its sections
+        // "<section> — Толк", a chat "Чаты — <chat>".
+        let ownPages = [
+            "Толк - Google Chrome",
+            "Подключение к встрече \u{2014} Толк - Google Chrome",
+            "Чаты \u{2014} Толк",
+            "Артефакты \u{2014} Толк",
+            "Доски \u{2014} Толк - Google Chrome",
+            "Контакты \u{2014} Толк",
+        ]
+        for title in ownPages {
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: true)]),
+                .callSite(provider: .ktalk),
+                "\"\(title)\" in front is Talk, not a call yet"
+            )
+            assertEqual(
+                BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]),
+                .unknown,
+                "\"\(title)\" left open in the background says nothing"
+            )
+        }
+        assertEqual(
+            BrowserCallEvidence.classify([BrowserWindowTitle(title: "Чаты \u{2014} Сохраненное", isFocused: false)]),
+            .unknown,
+            "an open Talk chat is not a room"
+        )
+    }
+
+    runSuite("BrowserCallEvidence.classify — Chrome's real Russian window titles, read through Accessibility") {
+        // Read 2026-10-15 from Chrome's AX window title: a grouped tab has a
+        // no-break space before the dash, an ungrouped one ends "- Google Chrome".
+        assertEqual(
+            BrowserCallEvidence.classify([BrowserWindowTitle(
+                title: "\"Проверка очереди \u{2014} Толк\"\u{00A0}\u{2013} элемент группы \"Звонки\" - Google Chrome",
+                isFocused: true
+            )]),
+            .call(provider: .ktalk),
+            "a grouped Talk room in front is a call"
+        )
+        assertEqual(
+            BrowserCallEvidence.classify([BrowserWindowTitle(
+                title: "\"Встреча \u{2014} Толк\"\u{00A0}\u{2013} элемент группы \"Звонки\" - Google Chrome",
+                isFocused: false
+            )]),
+            .call(provider: .ktalk),
+            "a grouped unnamed room counts from any window, as the group rule meant"
+        )
+        assertEqual(
+            BrowserCallEvidence.classify([BrowserWindowTitle(title: "Проверка очереди \u{2014} Толк - Google Chrome", isFocused: true)]),
+            .call(provider: .ktalk)
+        )
+        assertEqual(
+            BrowserCallEvidence.classify([BrowserWindowTitle(title: "Подключение к встрече \u{2014} Толк - Google Chrome", isFocused: true)]),
+            .callSite(provider: .ktalk),
+            "the pre-join screen with Chrome's suffix is a call site, which the old ending check missed"
+        )
+    }
+
     runSuite("BrowserCallEvidence.classify — a tab in a tab group is read by its own title") {
         // Chrome quotes the active tab's title when the tab is in a group and
         // appends the group (measured 2026-10-12 in the Russian UI).
@@ -121,7 +218,7 @@ func testBrowserCallEvidence() {
                 "\"\(title)\" left open in the background says nothing"
             )
         }
-        for title in ["Нет толку спорить - Хабр", "Встреча выпускников - Толк и смысл", "Телемосты истории"] {
+        for title in ["Нет толку спорить - Хабр", "Встреча выпускников - Толк и смысл", "Телемосты истории", "Толковый словарь"] {
             assertFalse(
                 BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]) == .call(provider: .ktalk)
                     || BrowserCallEvidence.classify([BrowserWindowTitle(title: title, isFocused: false)]) == .call(provider: .telemost),

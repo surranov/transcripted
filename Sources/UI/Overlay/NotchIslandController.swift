@@ -221,12 +221,14 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         switch NotchIslandPresentation.meetingUpdate(from: meeting, to: content) {
         case .unchanged:
             return
-        case .durationOnly:
-            // The once-a-second clock tick: the layout never reads the
-            // duration, so refresh the timer text instead of rebuilding.
-            // refreshLive still renders if a wing needs room for a digit.
+        case .liveValuesOnly:
+            // The once-a-second clock tick, or an earlier meeting's progress:
+            // the layout reads neither, so refresh their text instead of
+            // rebuilding. refreshLive still renders if a wing needs room for
+            // a digit.
             meeting = content
             live.meetingElapsed = content?.duration ?? 0
+            live.earlierMeetingPercent = content?.earlierMeetingPercent
             // A full render re-reads this each time; keep the Settings
             // switch applying within a tick on this path too.
             if isShown { surfaces.forEach { $0.panel.applyScreenSharingPreference() } }
@@ -241,6 +243,7 @@ final class NotchIslandController: NotchIslandCallPromptPresenting {
         meeting = content
         if !showsTranscript { releaseLiveTranscriptViewIfRecordingEnded() }
         live.meetingElapsed = content?.duration ?? 0
+        live.earlierMeetingPercent = content?.earlierMeetingPercent
         if case .transcribing(let progress, _)? = content?.phase {
             live.transcriptionProgress = progress ?? 0
         }

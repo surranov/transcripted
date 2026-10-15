@@ -1363,6 +1363,52 @@ func testMeetingPromptDetector() async {
         assertNotNil(detector.detectedCallSession, "the muted call counts as a call for the funnel and the missed-call nudge")
     }
 
+    await runSuite("MeetingPromptDetector — a Talk room named after its meeting, joined muted, prompts") {
+        // 2026-10-15: a muted join into "<meeting> — Толк" got no prompt until
+        // the calendar's one-minute reminder; only "Встреча — Толк" counted.
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        detector.browserWindowTitlesProvider = { _ in [
+            BrowserWindowTitle(title: "Jira - Google Chrome", isFocused: false),
+            BrowserWindowTitle(title: "Груминг Посуточной \u{2014} Толк - Google Chrome", isFocused: true),
+        ] }
+        let box = CandidateBox()
+        detector.onPromptRequest = { candidate in
+            box.candidate = candidate
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector, until: { box.promptCount > 0 })
+
+        assertEqual(box.promptCount, 1, "the room's own title proves the call, mic off or not")
+        assertEqual(box.candidate?.id, "mic:ktalk")
+        assertEqual(box.candidate?.callEvidence, .tabTitle)
+    }
+
+    await runSuite("MeetingPromptDetector — a named Talk room left in a back window doesn't turn a video into a call") {
+        let detector = makeIsolatedDetector()
+        detector.isOwnCaptureActive = { false }
+        detector.browserEvidenceTiming = listenBrowserEvidenceTiming
+        detector.browserWindowTitlesProvider = { _ in [
+            BrowserWindowTitle(title: "Lo-fi beats - YouTube - Google Chrome", isFocused: true),
+            BrowserWindowTitle(title: "Груминг Посуточной \u{2014} Толк - Google Chrome", isFocused: false),
+        ] }
+        let box = CandidateBox()
+        detector.onPromptRequest = { _ in
+            box.promptCount += 1
+            return true
+        }
+
+        detector.updateBrowserOutputUsers(["com.google.Chrome.helper"])
+        await waitForPromptEvaluation(detector)
+
+        assertEqual(box.promptCount, 0, "Talk keeps a room's title after the call, so a back window proves nothing")
+        assertNil(detector.detectedCallSession)
+    }
+
     await runSuite("MeetingPromptDetector — a browser playing a video is never a call and leaves no trace") {
         let detector = makeIsolatedDetector()
         detector.isOwnCaptureActive = { false }

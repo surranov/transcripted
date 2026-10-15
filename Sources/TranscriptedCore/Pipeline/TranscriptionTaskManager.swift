@@ -140,6 +140,12 @@ public class TranscriptionTaskManager: ObservableObject {
     @Published public private(set) var lastSpeakerFinalizationFailure: SpeakerFinalizationFailure? = nil
 
     var lastSavedTranscriptId: UUID?
+    /// Transcripts whose save this run already announced with
+    /// `.transcriptSaved`. A finished speaker review announces only a save
+    /// nobody heard about: with meetings back to back, the last saved
+    /// transcript is often another meeting's, and a second announcement
+    /// counted the meeting twice and played its sound again.
+    var announcedSavedTranscriptIds: Set<UUID> = []
     private var savedTranscriptTaskIdsByTranscriptId: [UUID: UUID] = [:]
     private var savedTranscriptTaskIdsByURL: [URL: UUID] = [:]
     var activeTasks: [UUID: Task<Void, Never>] = [:]
@@ -327,6 +333,9 @@ public class TranscriptionTaskManager: ObservableObject {
         // `.transcriptSaved` sees this save's timings, never a previous one's.
         lastPipelineTimings = timings
         populateSavedMetadata(from: transcriptURL, taskId: taskId)
+        if let lastSavedTranscriptId {
+            announcedSavedTranscriptIds.insert(lastSavedTranscriptId)
+        }
         publishNonFailureStatus(.transcriptSaved)
         scheduleStatusReset(delay: 4)
     }

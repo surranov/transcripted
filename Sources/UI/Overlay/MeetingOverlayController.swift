@@ -75,8 +75,8 @@ final class MeetingOverlayController: NSObject {
     private var lastAppliedAudioInactivityWarning: MeetingAudioInactivityWarning?
     private var promptCountdownTask: Task<Void, Never>?
     private var promptSecondsRemaining = 0
-    // Transcription progress for the "Transcribing meeting…" pill. Nil when
-    // the pipeline has no number to show.
+    // Transcription progress for the "Transcribing meeting…" pill, and for an
+    // earlier meeting behind a new recording. Nil when nothing is transcribed.
     private var currentTranscriptionProgress: Double?
     private var currentQueuedTranscriptionCount = 0
     // The transcript the "Saved to Markdown" pill opens. Cleared when a new
@@ -351,8 +351,8 @@ final class MeetingOverlayController: NSObject {
     private func applyDisplayStatus(_ status: MeetingTranscriptionStatus) {
         // `percent(progress:)` already shows nothing for the idle, saved and
         // failed values (0 or 1), so no switch over every case is needed.
-        let previousDetail = finishDetail
-        currentTranscriptionProgress = status.progress
+        let previousContent = islandContent()
+        currentTranscriptionProgress = status.isProcessing ? status.progress : nil
         currentQueuedTranscriptionCount = meetingSession?.queuedTranscriptionCount ?? 0
 
         switch status {
@@ -375,8 +375,8 @@ final class MeetingOverlayController: NSObject {
             break
         }
 
-        // Progress ticks often; only redraw when the text on the pill moves.
-        if state == .transcribing, finishDetail != previousDetail {
+        // Progress ticks often; only redraw when what the island shows moves.
+        if islandContent() != previousContent {
             pushToView()
         }
     }
@@ -1179,7 +1179,7 @@ final class MeetingOverlayController: NSObject {
             callAudioNote: callAudioNote,
             systemAudioUnverified: systemAudioDegradationWarning?.cause == .unverified,
             asksAboutCallAudio: islandCallAudioAskPending
-        )
+        ).withEarlierMeeting(transcriptionProgress: currentTranscriptionProgress, waiting: currentQueuedTranscriptionCount, sessionStartsOrRecords: [.startingRecording, .recording].contains(sessionState))
     }
 
     /// The session raised or dropped the "can't hear the other side" ask.

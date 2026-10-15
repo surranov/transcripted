@@ -122,7 +122,12 @@ extension MeetingSessionController {
             )
             clearDetectedPromptTelemetry()
             Self.runtimeDiagnosticsRecorder?.clearSession(kind: "meeting", outcome: "transcript_saved")
-            AppSoundPlayer.shared.play(.meetingTranscriptComplete)
+            // An earlier meeting can finish while the next one records; a
+            // chime in the middle of that call would sound like it ended. The
+            // island's layer for it going away says it's saved.
+            if !isCaptureSessionActive {
+                AppSoundPlayer.shared.play(.meetingTranscriptComplete)
+            }
             activeQueuedTranscriptionJobID = nil
             activeTranscriptionCaptureDiagnostics = nil
         case .discardedAccidentalStart:

@@ -2,20 +2,36 @@
 // Fork: the dictation queue. The hover over an island with more than one
 // thing going on lists them all, newest first, one card each with its own
 // buttons: the take being spoken (Cancel, Insert), a take being written or
-// finishing behind the island (Don't paste), the recording meeting (Stop).
-// The card Esc acts on wears an "esc" key; the meeting never does.
+// finishing behind the island (Don't paste), the recording meeting (Stop),
+// a meeting still being transcribed behind it (its progress, no buttons).
+// The card Esc acts on wears an "esc" key; a meeting never does.
 
 import AppKit
 
 extension NotchIslandDropView {
-    func buildActivities(_ cards: [NotchIslandActivityCard]) {
+    func buildActivities(_ cards: [NotchIslandActivityCard], live: NotchIslandLiveValues) {
         for card in cards {
-            add(activityCard(card))
+            add(activityCard(card, live: live))
         }
     }
 
-    private func activityCard(_ card: NotchIslandActivityCard) -> NSView {
-        let content = Self.activityContent(card.kind)
+    static let earlierMeetingTitle = "Earlier meeting"
+
+    /// "Transcribing 42%", "Transcribing · 1 more waiting". Text only on
+    /// screen; never logged.
+    static func earlierMeetingStatus(_ meeting: NotchIslandEarlierMeeting, percent: Int?) -> String {
+        MeetingPillFinishPresentation.menuStatus(percent: percent, queuedCount: meeting.moreWaiting)
+    }
+
+    static func activityAccessibilityLabel(title: String, detail: String) -> String {
+        [title, detail].filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
+    func activityCard(_ card: NotchIslandActivityCard, live: NotchIslandLiveValues) -> NSView {
+        var content = Self.activityContent(card.kind)
+        if case .earlierMeeting(let meeting) = card.kind {
+            content.detail = Self.earlierMeetingStatus(meeting, percent: live.earlierMeetingPercent)
+        }
         let title = NotchIslandPalette.label(content.title, font: .systemFont(ofSize: 12.5, weight: .semibold), color: NotchIslandPalette.primaryText)
         title.lineBreakMode = .byTruncatingTail
         var lines: [NSView] = [title]
@@ -62,7 +78,10 @@ extension NotchIslandDropView {
         ])
         box.setAccessibilityElement(true)
         box.setAccessibilityRole(.group)
-        box.setAccessibilityLabel([content.title, content.detail].filter { !$0.isEmpty }.joined(separator: ", "))
+        box.setAccessibilityLabel(Self.activityAccessibilityLabel(title: content.title, detail: content.detail))
+        if case .earlierMeeting(let meeting) = card.kind, let detail = lines.last as? NSTextField {
+            earlierMeetingLine = (detail, box, meeting)
+        }
         return box
     }
 
@@ -110,6 +129,8 @@ extension NotchIslandDropView {
             return ("Meeting", "Recording", [
                 ActivityButton(title: "Stop", style: .destructive, action: .meetingStop, symbol: "stop.fill"),
             ])
+        case .earlierMeeting(let meeting):
+            return (earlierMeetingTitle, earlierMeetingStatus(meeting, percent: nil), [])
         }
     }
 
@@ -127,6 +148,8 @@ extension NotchIslandDropView {
             }
         case .meeting:
             icon = NotchIslandDotView(size: 7, color: NotchIslandPalette.recording, glow: false)
+        case .earlierMeeting:
+            icon = NotchIslandDotsView(frame: .zero)
         }
         // One column wide, so the titles line up.
         let holder = NSView()

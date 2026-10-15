@@ -2,7 +2,8 @@
 // Fork: the dictation queue's pyramid. The island shows the newest thing
 // going on; everything older sits behind it as layers that peek out below,
 // each a step narrower and a shade lighter, newest first, a recording meeting
-// always deepest. A back layer shows only a small animation, never text. The
+// always deepest, and a meeting still being transcribed under it (meetings
+// queue too). A back layer shows only a small animation, never text. The
 // hover lists every one of them as a card with its own buttons. Foundation
 // and CoreGraphics only, so the fast tests cover it.
 
@@ -28,6 +29,38 @@ struct NotchIslandBackgroundTake: Equatable {
     var text: String?
     /// Esc or Don't paste reached it: it is saved, not pasted.
     var declined = false
+}
+
+/// A meeting still being transcribed while the next one starts or records
+/// (Stop hands a recording off to the transcription queue, so the next
+/// meeting can record at once). It sits deepest behind the island and gets a
+/// line in the hover.
+struct NotchIslandEarlierMeeting: Equatable {
+    /// Meetings stopped after it, waiting their turn.
+    var moreWaiting = 0
+}
+
+extension NotchIslandMeetingContent {
+    /// This meeting with the transcription queue's work behind it, while it
+    /// starts or records. `transcriptionProgress` is nil when nothing is
+    /// being transcribed; `waiting` counts the jobs queued behind that one.
+    /// `sessionStartsOrRecords` is the session's own state, read live: the
+    /// overlay's phase lags a step, and right after Stop a meeting's own job
+    /// starts while the island still shows it recording.
+    func withEarlierMeeting(
+        transcriptionProgress: Double?,
+        waiting: Int,
+        sessionStartsOrRecords: Bool
+    ) -> NotchIslandMeetingContent {
+        let isTranscribing = transcriptionProgress != nil
+        guard isStartingOrRecording, sessionStartsOrRecords, isTranscribing || waiting > 0 else { return self }
+        var content = self
+        // Between two queued jobs nothing runs for a moment; the first one
+        // waiting is then the earlier meeting.
+        content.earlierMeeting = NotchIslandEarlierMeeting(moreWaiting: isTranscribing ? waiting : waiting - 1)
+        content.earlierMeetingPercent = MeetingPillFinishPresentation.percent(progress: transcriptionProgress)
+        return content
+    }
 }
 
 /// One layer behind the island.
@@ -57,11 +90,19 @@ struct NotchIslandActivityCard: Equatable {
         case background(NotchIslandBackgroundTake)
         /// The recording meeting: Stop. Esc never reaches it.
         case meeting
+        /// A meeting still being transcribed behind the recording one. No
+        /// buttons; its progress line updates live.
+        case earlierMeeting(NotchIslandEarlierMeeting)
     }
 
     var kind: Kind
     /// What Esc acts on right now (`NotchIslandActivityStack.escapeTarget`).
     var isEscapeTarget = false
+
+    var isEarlierMeeting: Bool {
+        if case .earlierMeeting = kind { return true }
+        return false
+    }
 }
 
 enum NotchIslandActivityStack {
@@ -90,22 +131,32 @@ enum NotchIslandActivityStack {
         dictationOnIsland ? nil : takes.last
     }
 
+    /// A meeting being transcribed while something newer has the island.
+    /// One key whether it sits behind the next meeting, a call prompt or a
+    /// review, so its layer moves along instead of popping in again.
+    static let transcribingMeetingLayer = NotchIslandBackLayer(key: "meeting-transcribing", glyph: .processing)
+
     /// What sits behind the island, top-most first: the earlier takes,
-    /// newest first, then a recording meeting, always deepest. `takes` come
-    /// oldest first (take order). The take shown on the island itself is not
-    /// repeated. At most `maxBackLayers`; the meeting keeps its place.
+    /// newest first, then a recording meeting, then a meeting still being
+    /// transcribed, always deepest. `takes` come oldest first (take order).
+    /// The take shown on the island itself is not repeated. At most
+    /// `maxBackLayers`; the meetings keep their places.
     static func backLayers(
         takes: [NotchIslandBackgroundTake],
         topTakeID: UUID?,
-        meetingBehind: Bool
+        meetingBehind: Bool,
+        transcribingMeetingBehind: Bool = false
     ) -> [NotchIslandBackLayer] {
-        let room = meetingBehind ? maxBackLayers - 1 : maxBackLayers
+        let room = maxBackLayers - (meetingBehind ? 1 : 0) - (transcribingMeetingBehind ? 1 : 0)
         var layers = takes.reversed()
             .filter { $0.id != topTakeID }
             .prefix(room)
             .map { NotchIslandBackLayer(key: $0.id.uuidString, glyph: glyph(for: $0.stage)) }
         if meetingBehind {
             layers.append(NotchIslandBackLayer(key: "meeting", glyph: .meeting))
+        }
+        if transcribingMeetingBehind {
+            layers.append(transcribingMeetingLayer)
         }
         return layers
     }
@@ -154,12 +205,13 @@ enum NotchIslandActivityStack {
     }
 
     /// Every activity as a card, newest first: the take on the island, the
-    /// takes behind it (newest first), then a recording meeting. The card Esc
-    /// acts on is marked.
+    /// takes behind it (newest first), a recording meeting, then a meeting
+    /// still being transcribed. The card Esc acts on is marked.
     static func cards(
         dictation: NotchIslandDictationContent?,
         takes: [NotchIslandBackgroundTake],
-        meetingRecording: Bool
+        meetingRecording: Bool,
+        earlierMeeting: NotchIslandEarlierMeeting? = nil
     ) -> [NotchIslandActivityCard] {
         var cards: [NotchIslandActivityCard] = []
         if let dictation, let kind = cardKind(for: dictation) {
@@ -169,6 +221,9 @@ enum NotchIslandActivityStack {
         if meetingRecording {
             cards.append(NotchIslandActivityCard(kind: .meeting))
         }
+        if let earlierMeeting {
+            cards.append(NotchIslandActivityCard(kind: .earlierMeeting(earlierMeeting)))
+        }
         if let target = escapeTarget(in: cards) {
             cards[target].isEscapeTarget = true
         }
@@ -177,7 +232,7 @@ enum NotchIslandActivityStack {
 
     /// Esc acts on the newest take still being spoken or finishing: the take
     /// on the island first, else the newest take behind it that hasn't
-    /// started pasting or been declined. Never the meeting.
+    /// started pasting or been declined. Never a meeting.
     static func escapeTarget(in cards: [NotchIslandActivityCard]) -> Int? {
         cards.firstIndex { card in
             switch card.kind {
@@ -185,7 +240,7 @@ enum NotchIslandActivityStack {
                 return true
             case .background(let take):
                 return !take.declined && take.stage != .pasting
-            case .meeting:
+            case .meeting, .earlierMeeting:
                 return false
             }
         }

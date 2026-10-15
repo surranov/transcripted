@@ -38,8 +38,13 @@ enum MeetingPillFinishPresentation {
     /// Menubar header status while a meeting transcript is being made:
     /// "Transcribing 42%", "Transcribing · 1 more waiting", or "Transcribing".
     static func menuStatus(progress: Double?, queuedCount: Int) -> String {
+        menuStatus(percent: percent(progress: progress), queuedCount: queuedCount)
+    }
+
+    /// The same text from an already whole percent.
+    static func menuStatus(percent: Int?, queuedCount: Int) -> String {
         var text = "Transcribing"
-        if let percent = percent(progress: progress) {
+        if let percent {
             text += " \(percent)%"
         }
         if let queued = queuedText(queuedCount: queuedCount) {

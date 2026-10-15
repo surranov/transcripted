@@ -245,6 +245,14 @@ enum BrowserCallEvidence {
         }
         let readable = windows.filter { !isMailOrCalendarTitle(normalized($0.title)) }
         guard let focused = readable.first(where: \.isFocused) else { return .unknown }
+        // A Talk room named after its meeting ("Синк — Толк") is a call in
+        // the browser's front window, where it is when someone joins. Talk
+        // can keep that title after the call (its home page still named after
+        // the last meeting, seen 2026-10-15), so from a back window it could
+        // be a call long over, under a video playing.
+        if ktalkPage(normalized(focused.title)) == .namedRoom {
+            return .call(provider: .ktalk)
+        }
         // A call app beats a non-call word in the same title ("Copilot |
         // Microsoft Teams" is Teams).
         if let site = callSite(forTitle: focused.title) {
@@ -282,9 +290,10 @@ enum BrowserCallEvidence {
            teamsInCallPrefixes.contains(where: { title.hasPrefix($0) }) {
             return .teams
         }
-        // Kontur.Talk's room once joined; its pre-join screen is
-        // "Подключение к встрече — Толк", only a call site.
-        if isExactlyOrFollowedBySeparator(title, "встреча - толк") {
+        // An unnamed Kontur.Talk room once joined ("Встреча — Толк"). A room
+        // named after its meeting only counts in front (see `classify`);
+        // Talk's own pages, the pre-join screen included, are call sites.
+        if ktalkPage(title) == .unnamedRoom {
             return .ktalk
         }
         // Telemost while a call is on ("Идёт звонок · Яндекс Телемост"),
@@ -319,7 +328,7 @@ enum BrowserCallEvidence {
         }
         // "Толк" alone is a common Russian word, so only Talk's own title
         // part counts: its home page, a pre-join screen ("... — Толк").
-        if title == "толк" || title.hasSuffix(" - толк") {
+        if ktalkPage(title) == .ownPage {
             return .some(.ktalk)
         }
         if title.contains("телемост") || title.contains("telemost") {
@@ -364,6 +373,63 @@ enum BrowserCallEvidence {
             options: .regularExpression
         ) != nil
     }
+
+    enum KTalkPage: Equatable {
+        /// Talk's home page or one of its sections, the pre-join screen
+        /// included: open all day, so only a call site.
+        case ownPage
+        /// A joined room with no name of its own: "Встреча — Толк".
+        case unnamedRoom
+        /// A joined room titled after its meeting.
+        case namedRoom
+    }
+
+    /// Which Kontur.Talk page `title` (normalized) is, or nil when it isn't
+    /// Talk's. Talk titles a page "<page> — Толк" and its home "Толк";
+    /// Chrome's window title can add its own parts after it (" - Google
+    /// Chrome", the tab group). Measured 2026-10-15 in the Russian UI:
+    /// rooms carry their meeting's name ("Гибридка - баги — Толк"), chats
+    /// are "Чаты — <chat>", never "— Толк".
+    static func ktalkPage(_ title: String) -> KTalkPage? {
+        if isExactlyOrFollowedBySeparator(title, "толк") {
+            return .ownPage
+        }
+        guard let match = ktalkPageTitle.firstMatch(in: title, range: NSRange(title.startIndex..., in: title)),
+              let pageRange = Range(match.range(at: 1), in: title) else {
+            return nil
+        }
+        let page = title[pageRange].trimmingCharacters(in: .whitespaces)
+        if page == "встреча" { return .unnamedRoom }
+        return ktalkOwnPageNames.contains(page) ? .ownPage : .namedRoom
+    }
+
+    /// "<page> - толк", then the end or another title part. "Встреча
+    /// выпускников - Толк и смысл" is not Talk's.
+    private static let ktalkPageTitle = try! NSRegularExpression(pattern: #"^(.+?) - толк(?:$| - | \| )"#)
+
+    /// Talk's own pages, lowercased as `normalized` leaves them. The first
+    /// five were measured 2026-10-15 (with the home page "Толк", that is every
+    /// item in its menu); the rest are guesses at pages not seen yet, kept
+    /// out of the room rule. A meeting named exactly like one of them is only
+    /// a call site (its mic still prompts after the wait).
+    static let ktalkOwnPageNames: Set<String> = [
+        "подключение к встрече",
+        "чаты",
+        "артефакты",
+        "доски",
+        "контакты",
+        "главная",
+        "календарь",
+        "встречи",
+        "звонки",
+        "записи",
+        "файлы",
+        "поиск",
+        "уведомления",
+        "настройки",
+        "профиль",
+        "администрирование",
+    ]
 
     /// Telemost titles while a call is on (measured 2026-10-12 in the
     /// Russian UI; "ё" is often typed as "е").
@@ -467,6 +533,11 @@ enum BrowserCallEvidence {
         let lowered = title
             .replacingOccurrences(of: "\u{2013}", with: "-") // en dash
             .replacingOccurrences(of: "\u{2014}", with: "-") // em dash
+            // Chrome's Russian UI puts a no-break space before the dash of
+            // its tab group part (measured 2026-10-15); without this every
+            // grouped call tab missed the group rule below.
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .replacingOccurrences(of: "\u{202F}", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         // A tab in a Chrome tab group titles its window with the tab's title

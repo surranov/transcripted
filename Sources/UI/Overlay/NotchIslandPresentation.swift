@@ -125,19 +125,33 @@ struct NotchIslandMeetingContent: Equatable {
     /// "Live transcript" is on: the recording drop-down shows the
     /// conversation so far instead of the level lanes.
     var showsLiveTranscript = false
+    /// Fork: an earlier meeting is still being transcribed while this one
+    /// starts or records (`withEarlierMeeting`). Only set in those phases.
+    var earlierMeeting: NotchIslandEarlierMeeting?
+    /// Its whole percent, nil with no number yet. A live value: a new
+    /// percent updates its line in place, never rebuilds the island.
+    var earlierMeetingPercent: Int?
 
     var isRecording: Bool { phase == .recording }
 
-    /// Preparing, recording or transcribing: the meeting owns the island.
-    var isBusy: Bool {
+    var isTranscribing: Bool {
+        if case .transcribing = phase { return true }
+        return false
+    }
+
+    /// Starting or recording: the meeting owns the island. Fork: one that is
+    /// only being transcribed doesn't hold back a call prompt or an earlier
+    /// meeting's review; meetings queue, so the next call can start meanwhile.
+    var isStartingOrRecording: Bool {
         switch phase {
-        case .preparing, .recording, .transcribing:
+        case .preparing, .recording:
             return true
-        case .none, .saved, .error:
+        case .none, .transcribing, .saved, .error:
             return false
         }
     }
 }
+
 
 struct NotchIslandCallPromptContent: Equatable {
     var title: String
@@ -283,7 +297,8 @@ enum NotchIslandDrop: Equatable {
     case dictationMessage(NotchIslandDictationContent.Message)
     case justInserted(text: String, words: Int)
     case meetingPreparing(title: String, detail: String)
-    case meetingControls(callAudioNote: NotchIslandMeetingContent.CallAudioNote?, systemAudioUnverified: Bool, showsTranscript: Bool = false)
+    /// `earlierMeeting`: a line under Stop for a meeting still being transcribed.
+    case meetingControls(callAudioNote: NotchIslandMeetingContent.CallAudioNote?, systemAudioUnverified: Bool, showsTranscript: Bool = false, earlierMeeting: NotchIslandEarlierMeeting? = nil)
     case meetingPrompt(NotchIslandMeetingContent.Prompt)
     case meetingSaved(title: String?)
     case meetingError(title: String, message: String, canOpen: Bool, grantsSystemAudio: Bool = false)
@@ -362,9 +377,10 @@ protocol NotchIslandCallPromptPresenting: AnyObject {
 /// How a new meeting snapshot differs from the one on screen.
 enum NotchIslandMeetingUpdate: Equatable {
     case unchanged
-    /// Only the elapsed time moved. The layout never reads it (the timer
-    /// text comes from the live values), so no rebuild is needed.
-    case durationOnly
+    /// Only live values moved: the elapsed time or an earlier meeting's
+    /// progress. The layout never reads them (their text comes from the live
+    /// values), so no rebuild is needed.
+    case liveValuesOnly
     case full
 }
 
@@ -378,7 +394,8 @@ enum NotchIslandPresentation {
         guard old != new else { return .unchanged }
         guard var old, let new else { return .full }
         old.duration = new.duration
-        return old == new ? .durationOnly : .full
+        old.earlierMeetingPercent = new.earlierMeetingPercent
+        return old == new ? .liveValuesOnly : .full
     }
 
     /// The auto-opened drop-down that is due right now, if any, ignoring
@@ -459,24 +476,34 @@ enum NotchIslandPresentation {
             let cards = NotchIslandActivityStack.cards(
                 dictation: dictation,
                 takes: backgroundTakes,
-                meetingRecording: meetingRecording
+                meetingRecording: meetingRecording,
+                earlierMeeting: meeting?.earlierMeeting
             )
+            let ownCards = cards.filter { !$0.isEarlierMeeting }
             // More than one thing going on, or a take finishing behind the
-            // island: the cards, so each has its own buttons.
-            result.drop = cards.count > 1 || (!backgroundTakes.isEmpty && !cards.isEmpty)
+            // island: the cards, so each has its own buttons. An earlier
+            // meeting alone doesn't make them: the recording's own hover
+            // lists it under Stop.
+            result.drop = ownCards.count > 1 || (!backgroundTakes.isEmpty && !ownCards.isEmpty)
                 ? .activities(cards)
                 : onDemandDrop(dictation: shown, meeting: meeting, recentInsert: recentInsert)
         }
 
         let dropIsOpen = result.drop != nil
+        // Fork: a meeting being transcribed while something newer has the
+        // island sits deepest behind it: the earlier meeting behind the next
+        // one, or the meeting itself behind a call prompt or its review.
+        let meetingStartsOrRecords = meeting?.isStartingOrRecording ?? false
+        let meetingTranscribing = meeting?.isTranscribing ?? false
         if let shown {
             (result.left, result.right) = dictationWings(shown)
             result.backLayers = NotchIslandActivityStack.backLayers(
                 takes: backgroundTakes,
                 topTakeID: NotchIslandActivityStack.topTake(dictationOnIsland: dictation != nil, takes: backgroundTakes)?.id,
-                meetingBehind: meetingRecording
+                meetingBehind: meetingRecording,
+                transcribingMeetingBehind: meeting?.earlierMeeting != nil
             )
-        } else if let callPrompt, !(meeting?.isBusy ?? false) {
+        } else if let callPrompt, !meetingStartsOrRecords {
             result.left = [.symbol(.video, .accent), .text("Call", .title)]
             // Collapsed, an auto-record prompt still shows its seconds: when
             // they run out it records.
@@ -485,11 +512,15 @@ enum NotchIslandPresentation {
                 : callPrompt.autoRecords
                     ? [.live(.callSeconds, .secondary), .chip("Record", .destructive, .callRecord)]
                     : [.chip("Record", .destructive, .callRecord)]
-        } else if let speakerReview, !(meeting?.isBusy ?? false) {
+            result.backLayers = meetingTranscribing ? [NotchIslandActivityStack.transcribingMeetingLayer] : []
+        } else if let speakerReview, !meetingStartsOrRecords {
             result.left = [.symbol(.check, .accent), .text(speakerReview.meetingTitle ?? "Saved", .title)]
             result.right = []
+            result.backLayers = meetingTranscribing ? [NotchIslandActivityStack.transcribingMeetingLayer] : []
         } else if let meeting {
             (result.left, result.right) = meetingWings(meeting, dropIsOpen: dropIsOpen)
+            result.backLayers = meeting.earlierMeeting != nil ? [NotchIslandActivityStack.transcribingMeetingLayer] : []
+            result.showsEdgeProgress = meetingTranscribing && !dropIsOpen
         } else if let recentInsert {
             result.left = [.symbol(.check, .accent), .text(recentInsert.title, .title)]
             let words = recentInsert.words
@@ -503,9 +534,6 @@ enum NotchIslandPresentation {
             result.left = result.left.map(statusOnly)
             result.right = result.right.map(statusOnly)
             result.backLayers = []
-        }
-        if case .transcribing? = meeting?.phase, shown == nil, !dropIsOpen {
-            result.showsEdgeProgress = true
         }
         return result
     }
@@ -559,8 +587,9 @@ enum NotchIslandPresentation {
             return .callPrompt(title: callPrompt.title, detail: callPrompt.detail, autoRecords: callPrompt.autoRecords)
         }
         // Who was on the call asks once the meeting is saved, never while a
-        // new one is starting or recording.
-        if let speakerReview, !(meeting?.isBusy ?? false) {
+        // new one is starting or recording. Fork: a later meeting still being
+        // transcribed doesn't hold back an earlier one's review.
+        if let speakerReview, !(meeting?.isStartingOrRecording ?? false) {
             return .speakerReview(speakerReview)
         }
         if let prompt = meeting?.prompt {
@@ -608,7 +637,8 @@ enum NotchIslandPresentation {
             return .meetingControls(
                 callAudioNote: meeting.callAudioNote,
                 systemAudioUnverified: meeting.systemAudioUnverified,
-                showsTranscript: meeting.showsLiveTranscript
+                showsTranscript: meeting.showsLiveTranscript,
+                earlierMeeting: meeting.earlierMeeting
             )
         case .preparing(let title, let detail):
             return .meetingPreparing(title: title, detail: detail)
