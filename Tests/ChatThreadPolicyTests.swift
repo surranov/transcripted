@@ -103,6 +103,23 @@ func testChatThreadPolicy() {
         assertTrue(changed(claude, from: settled, to: otherChat), "the chat page inside Claude's shell changed")
     }
 
+    runSuite("A take's flag finds its thread's sidebar row by the row's label, only when it can't be another's") {
+        assertTrue(ChatThreadPolicy.sidebarBundleIDs.contains(t3), "T3 Code's sidebar is followed")
+        assertFalse(ChatThreadPolicy.sidebarBundleIDs.contains(codex), "Codex's isn't yet")
+        let labels = ["Fix pagination, web", "Review ADR, No project", "Fix pagination, web", "GVR, search"]
+        assertEqual(ChatThreadPolicy.sidebarRow(labeled: "GVR, search", in: labels), 3, "one row with that label")
+        assertNil(ChatThreadPolicy.sidebarRow(labeled: "Fix pagination, web", in: labels), "two threads share it: not a guess")
+        assertEqual(
+            ChatThreadPolicy.sidebarRow(labeled: "Fix pagination, web", in: labels, remembered: 2), 2,
+            "the very row seen while the thread was open settles it"
+        )
+        assertNil(
+            ChatThreadPolicy.sidebarRow(labeled: "GVR, search", in: labels.filter { $0 != "GVR, search" }, remembered: 1),
+            "a remembered row now labeled otherwise may be another thread's"
+        )
+        assertNil(ChatThreadPolicy.sidebarRow(labeled: "Gone, web", in: labels), "scrolled out of the list's rendered rows")
+    }
+
     runSuite("A chat app whose page can't be read now counts as another thread") {
         assertTrue(ChatThreadPolicy.threadChanged(from: "t3code://app/#/a/b", to: nil), "nothing shows it's still the same thread")
         assertEqual(identity(t3, []), nil, "no page read: no thread to compare, so the take isn't guarded")

@@ -33,6 +33,10 @@ A take dictated into an AI chat goes only into the thread it was dictated into, 
 - Reads run off the main actor (`Task.detached`), each AX call bounded by `messagingTimeout`.
 - In T3 Code the start also keeps the thread as its server names it (`ChatThread.sendTarget`, from the page address `#/<environment>/<thread>`; none for a draft or a window showing two threads): a take that sends goes there through T3 Code's server when the user isn't looking at that thread (`Sources/Support/ChatThreadSendPolicy.swift`, `Sources/Support/ChatThreadSender.swift`).
 
+## Chat sidebar (fork)
+
+`ChatSidebarReader` reads the thread rows of a chat app's sidebar for the Anchored paste markers (`Sources/UI/Overlay/AnchorMarkerController.swift`), off the main actor. T3 Code, measured 2026-10-15: the navigation landmark holds rows with the DOM class `group/sidebar-row`; the open thread's row has `aria-current="page"`; the rows scroll in their parent (`overflow-auto`), which is the visible region; the list is virtualized. A row's accessible label carries the thread's status (Working, Done), so a row is labeled by its title text and project instead. No thread id is exposed. Searches are bounded (400 elements for the landmark, 600 inside it), each AX call 0.3 s.
+
 ## Rules
 
 - **Secure fields are never exposed.** `AXSecureTextField` is rejected as role or subrole (some AppKit hosts report it as a subrole of `AXTextField`). Keep both checks.

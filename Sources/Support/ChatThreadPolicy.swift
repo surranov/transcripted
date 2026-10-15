@@ -84,6 +84,27 @@ enum ChatThreadPolicy {
         "meta.ai",
     ]
 
+    /// Apps whose sidebar lists threads in a form the marker can find:
+    /// there a take's marker sits on its thread's row while another thread
+    /// is open (`AnchorMarkerController`). T3 Code only for now; Codex and
+    /// Claude are meant to follow.
+    static let sidebarBundleIDs: Set<String> = [
+        "com.t3tools.t3code",
+    ]
+
+    /// Which of the sidebar's rows (`labels`, each row's title and project,
+    /// `ChatSidebarReader`) is the thread labeled `label`. Two
+    /// threads may share a title: then only the row remembered from when the
+    /// thread was open (`remembered`, the same element still) counts. A row
+    /// remembered under another label now may be another thread's (a list
+    /// reuses its rows), so it doesn't count alone.
+    static func sidebarRow(labeled label: String, in labels: [String], remembered: Int? = nil) -> Int? {
+        let matches = labels.indices.filter { labels[$0] == label }
+        if matches.count == 1 { return matches[0] }
+        if let remembered, matches.contains(remembered) { return remembered }
+        return nil
+    }
+
     /// Whether the app's pages are read at all when a take starts.
     static func readsPages(bundleID: String?) -> Bool {
         guard let bundleID else { return false }

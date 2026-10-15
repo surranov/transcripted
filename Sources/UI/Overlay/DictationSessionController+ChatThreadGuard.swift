@@ -35,8 +35,11 @@ extension DictationSessionController {
             chatThreadCapture = nil
             return
         }
+        let sessionID = currentDictationSessionID
         chatThreadCapture = Task { @MainActor in
             let thread = await ChatThreadReader.chatThread(in: app)
+            // Fork: the take's flag keeps to its thread (`AnchorMarkerController`).
+            if let thread { self.anchorMarker.follow(thread, for: sessionID) }
             // Fork: a thread its app's server can take (`+ChatThreadSend.swift`)
             // gets that server's session ready while the user speaks, if this
             // app's takes send at all.

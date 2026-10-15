@@ -25,13 +25,15 @@ struct DeferredAnchoredPaste {
     /// The chat the take was dictated into (`ChatThreadPolicy`): Enter after
     /// the paste goes only while it is still open.
     let chatThread: ChatThread?
+    /// The take's flag (`AnchorMarkerController`): its session id.
+    let markerID: UUID
 }
 
 extension DeferredAnchoredPaste {
     func withoutUnconfirmedWrite() -> DeferredAnchoredPaste {
         DeferredAnchoredPaste(
             text: text, anchor: anchor, autoSend: autoSend, takeSequence: takeSequence,
-            deadline: deadline, unconfirmedValueBefore: nil, chatThread: chatThread
+            deadline: deadline, unconfirmedValueBefore: nil, chatThread: chatThread, markerID: markerID
         )
     }
 }
@@ -48,12 +50,10 @@ extension DictationSessionController {
         pasteAnchorTask?.cancel()
         pasteAnchor = nil
         anchoredSend = nil
+        // Other takes' flags stay: each take keeps its own.
         guard AnchoredPastePreferences.isEnabled(),
               let app = sourceApp ?? NSWorkspace.shared.frontmostApplication,
-              app.bundleIdentifier != Bundle.main.bundleIdentifier else {
-            if deferredAnchoredPastes.isEmpty { anchorMarker.hide() }
-            return
-        }
+              app.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
         let sessionID = currentDictationSessionID
         pasteAnchorTask = Task { @MainActor [weak self] in
             let anchor = await AnchoredTextDelivery.captureAnchor(for: app)
@@ -63,32 +63,43 @@ extension DictationSessionController {
                 self.appState?.logger.log(
                     "DICTATION | anchored to \(anchor.appName): field \(anchor.field != nil), window \(anchor.windowID != nil), terminal \(anchor.isTerminal)"
                 )
-                self.anchorMarker.show(for: anchor, phase: .listening, levels: self.appState?.sttRouter.audioLevels.readings)
+                // Listening until the take's stop is admitted: the anchor is
+                // usually read before the island turns to listening. An
+                // anchor read after the stop shows the take processing,
+                // without the meter (it would show the next take's voice).
+                let listening = self.stopFinalizationGate.admittedSessionID != sessionID
+                self.anchorMarker.show(
+                    sessionID,
+                    for: anchor,
+                    phase: listening ? .listening : .working,
+                    levels: listening ? self.appState?.sttRouter.audioLevels.readings : nil
+                )
             }
         }
     }
 
-    /// The marker's stop button does what the island's does: stops the take
-    /// being spoken, and only while it listens.
-    func stopFromAnchorMarker() {
-        guard isDictating, overlayController?.state == .listening else { return }
+    /// A flag's stop button does what the island's does: stops the take
+    /// being spoken (that flag's take), and only while it listens.
+    func stopFromAnchorMarker(_ id: UUID) {
+        guard isDictating, id == currentDictationSessionID, overlayController?.state == .listening else { return }
         stopDictationAndPaste(trigger: .overlayButton)
     }
 
     func markPasteAnchorWorking() {
-        if pasteAnchor != nil { anchorMarker.update(.working) }
+        if pasteAnchor != nil { anchorMarker.update(.working, for: currentDictationSessionID) }
     }
 
     /// Called when `isDictating` turns false: a take that ended without an
-    /// anchored delivery (cancel, no speech, an error) takes its marker along.
+    /// anchored delivery (cancel, no speech, an error) takes its flag along.
+    /// A take handed off to finish in the background keeps it.
     func pasteAnchorSessionEnded() {
         pasteAnchorTask?.cancel()
         pasteAnchorTask = nil
         pasteAnchor = nil
         anchoredSend = nil
-        if deferredAnchoredPastes.isEmpty, anchorMarker.phaseIsInFlight {
-            anchorMarker.hide()
-        }
+        let id = currentDictationSessionID
+        guard !handedOffTakes.contains(where: { $0.sessionID == id }) else { return }
+        anchorMarker.hideIfInFlight(id)
     }
 
     /// Delivers `text` to the anchored field when the user is no longer in
@@ -153,21 +164,22 @@ extension DictationSessionController {
     /// After the regular paste ran for an anchored take (the user was still
     /// there): the marker confirms, or goes when nothing landed.
     func finishPasteAnchorAfterRegularPaste(_ outcome: DictationPasteOutcome) {
-        guard pasteAnchor != nil || anchorMarker.isShowing else { return }
+        let id = currentDictationSessionID
+        guard pasteAnchor != nil || anchorMarker.isShowing(id) else { return }
         switch outcome {
         case .pasted, .likelyPasted:
             updateAnchorMarker(.done)
         case .copied, .failed:
-            if DictationTakeScope.handedOff == nil { anchorMarker.hide() }
+            anchorMarker.hide(id)
         }
     }
 
     func cancelDeferredAnchoredPaste(text: String) {
-        deferredAnchoredPastes.removeAll { $0.text == text }
-        if deferredAnchoredPastes.isEmpty {
-            stopDeferredAnchoredPasteWatch()
-            anchorMarker.hide()
+        for pending in deferredAnchoredPastes where pending.text == text {
+            anchorMarker.hide(pending.markerID)
         }
+        deferredAnchoredPastes.removeAll { $0.text == text }
+        if deferredAnchoredPastes.isEmpty { stopDeferredAnchoredPasteWatch() }
     }
 
     /// Whether this take presses send after its words land: `bundleID`'s
@@ -209,11 +221,9 @@ extension DictationSessionController {
         return AnchoredTextDelivery.fieldContains(text, anchor: anchor)
     }
 
-    /// The marker belongs to the take on the island: a handed-off take
-    /// leaves it alone.
+    /// The flag of the take running this code, handed off or not.
     private func updateAnchorMarker(_ phase: AnchorMarkerController.Phase) {
-        guard DictationTakeScope.handedOff == nil else { return }
-        anchorMarker.update(phase)
+        anchorMarker.update(phase, for: currentDictationSessionID)
     }
 
     // MARK: - Private
@@ -240,7 +250,8 @@ extension DictationSessionController {
             takeSequence: DictationTakeScope.take?.sequence ?? Int.max,
             deadline: Date().addingTimeInterval(AnchoredPastePolicy.deferredPasteLifetime),
             unconfirmedValueBefore: unconfirmedValueBefore,
-            chatThread: chatThread
+            chatThread: chatThread,
+            markerID: currentDictationSessionID
         ))
         updateAnchorMarker(.waiting)
         startDeferredAnchoredPasteWatch()
@@ -267,6 +278,7 @@ extension DictationSessionController {
         let expired = deferredAnchoredPastes.filter { $0.deadline <= now }
         if !expired.isEmpty {
             deferredAnchoredPastes.removeAll { $0.deadline <= now }
+            expired.forEach { anchorMarker.hide($0.markerID) }
             appState?.logger.log("DICTATION | \(expired.count) anchored paste(s) expired; the words are in Dictations")
         }
         // The clipboard is borrowed for the paste: never during another take.
@@ -274,10 +286,7 @@ extension DictationSessionController {
         // left behind in a window they never return to doesn't hold up the rest.
         guard !isDictating, !deferredAnchoredPasteSettling,
               let index = deferredAnchoredPastes.firstIndex(where: { AnchoredTextDelivery.userIsBack(at: $0.anchor) }) else {
-            if deferredAnchoredPastes.isEmpty {
-                stopDeferredAnchoredPasteWatch()
-                if !expired.isEmpty { anchorMarker.hide() }
-            }
+            if deferredAnchoredPastes.isEmpty { stopDeferredAnchoredPasteWatch() }
             return
         }
         let next = deferredAnchoredPastes.remove(at: index)
@@ -317,7 +326,7 @@ extension DictationSessionController {
     /// again; send is pressed if the take asked for it.
     private func finishLandedUnconfirmedWrite(_ pending: DeferredAnchoredPaste) {
         appState?.logger.log("DICTATION | unconfirmed anchored write arrived; not pasting again")
-        anchorMarker.update(.done)
+        anchorMarker.update(.done, for: pending.markerID)
         guard pending.autoSend.expected else {
             overlayController?.showSuccessAndDismiss(title: "Pasted")
             return
@@ -395,7 +404,7 @@ extension DictationSessionController {
                 self.deferredAnchoredPastes.insert(pending.withoutUnconfirmedWrite(), at: 0)
                 self.startDeferredAnchoredPasteWatch()
             } else if changed {
-                self.anchorMarker.hide()
+                self.anchorMarker.hide(pending.markerID)
                 guard let overlayController = self.overlayController else { return }
                 switch self.copyForChangedChat(pending.text, thread: chatThread) {
                 case .copied(let message, reason: let reason):
@@ -417,7 +426,7 @@ extension DictationSessionController {
         appState?.logger.log("DICTATION | deferred anchored paste: \(outcome.diagnosticName)")
         switch outcome {
         case .pasted, .likelyPasted:
-            anchorMarker.update(.done)
+            anchorMarker.update(.done, for: pending.markerID)
             // Auto Enter needs proof the words landed: a confirmed paste, or
             // the anchored field now holding them (Electron apps only ever
             // report a likely paste).
@@ -457,7 +466,7 @@ extension DictationSessionController {
                 self.showDeferredSendResult(pasteOutcome: outcome, sendOutcome: sent)
             }
         case .copied, .failed:
-            anchorMarker.hide()
+            anchorMarker.hide(pending.markerID)
             if let overlayController {
                 showNotPasted(
                     pending.text,

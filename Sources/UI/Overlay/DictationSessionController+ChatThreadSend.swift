@@ -277,8 +277,10 @@ extension DictationSessionController {
             "trigger": currentDictationTrigger.rawValue,
             "word_count_bucket": AnalyticsReporter.wordCountBucket(wordCount),
         ]))
-        if !handedOff, pasteAnchor != nil || anchorMarker.isShowing {
-            if case .sent = end { anchorMarker.update(.done) } else { anchorMarker.hide() }
+        if case .sent = end {
+            anchorMarker.update(.done, for: currentDictationSessionID)
+        } else {
+            anchorMarker.hide(currentDictationSessionID)
         }
         switch end {
         case .sent:

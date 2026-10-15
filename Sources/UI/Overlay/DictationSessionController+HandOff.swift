@@ -189,6 +189,9 @@ extension DictationSessionController {
     /// The take's stop task ended, however it ended (an early return too):
     /// its paste turn passes on, and a handed-off take leaves the list.
     func takeTaskEnded(_ take: DictationFinishingTake) {
+        // A take that ended without its words landing (an error, no speech)
+        // takes its flag along; a landed or waiting one keeps it a while.
+        anchorMarker.hideIfInFlight(take.sessionID)
         take.isDelivering = false
         markDelivered(take.sequence)
         pasteDeclinedSessionIDs.remove(take.sessionID)

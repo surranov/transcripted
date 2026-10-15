@@ -222,7 +222,7 @@ class DictationSessionController: ObservableObject {
     }
     lazy var anchorMarker: AnchorMarkerController = {
         let marker = AnchorMarkerController()
-        marker.onStop = { [weak self] in self?.stopFromAnchorMarker() }
+        marker.onStop = { [weak self] id in self?.stopFromAnchorMarker(id) }
         return marker
     }()
     var deferredAnchoredPastes: [DeferredAnchoredPaste] = []

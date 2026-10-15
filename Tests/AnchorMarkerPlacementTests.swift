@@ -48,4 +48,53 @@ func testAnchorMarkerPlacement() {
             "a box starting above the window: under the title bar"
         )
     }
+
+    runSuite("Several takes' flags over one box sit side by side, left to right") {
+        let start = AnchorMarkerPlacement.Spot(x: 100, top: 50, pinnedRight: false)
+        let row = AnchorMarkerPlacement.row(from: start, widths: [120, 49, 49])
+        let gap = AnchorMarkerPlacement.flagGap
+        assertEqual(row.map(\.x), [100, 100 + 120 + gap, 100 + 120 + gap + 49 + gap], "the newest take's full flag first, then the background ones")
+        assertTrue(row.allSatisfy { $0.top == 50 && !$0.pinnedRight }, "one line, from their left edges")
+        let pinned = AnchorMarkerPlacement.row(from: .init(x: 700, top: 40, pinnedRight: true), widths: [120, 49])
+        assertEqual(pinned.map(\.x), [700, 700 - 120 - gap], "inside a filling box's top-right corner the row grows leftward")
+        assertEqual(AnchorMarkerPlacement.row(from: start, widths: [120]), [start], "one take: one flag, where it always was")
+    }
+
+    runSuite("Over one box the newest take's flag is full and the older takes' are compact") {
+        // Takes in the order they started: "first" now finishes in the background.
+        let two = AnchorMarkerPlacement.boxOrder(["first", "second"])
+        assertEqual(two.map(\.flag), ["second", "first"], "the newest first, then the older one")
+        assertEqual(two.map(\.compact), [false, true], "only the newest is full")
+        let three = AnchorMarkerPlacement.boxOrder(["first", "second", "third"])
+        assertEqual(three.map(\.flag), ["third", "first", "second"], "older ones in the order they started")
+        assertEqual(three.map(\.compact), [false, true, true], "every older one compact")
+        let one = AnchorMarkerPlacement.boxOrder(["only"])
+        assertEqual(one.map(\.compact), [false], "a lone take's flag is full")
+        assertTrue(AnchorMarkerPlacement.boxOrder([String]()).isEmpty, "no takes, no flags")
+    }
+
+    runSuite("On another thread, a flag sits in the bottom-right corner of its thread's sidebar row") {
+        // T3 Code's sidebar, measured: a row 391 x 86 in the scrolled area.
+        let visible = CGRect(x: 1254, y: 1743, width: 409, height: 796)
+        let row = CGRect(x: 1263, y: 2279, width: 391, height: 85)
+        let inset = AnchorMarkerPlacement.rowCornerInset
+        let edge = row.maxX - inset - AnchorMarkerPlacement.rowBadgeWidth
+        let spots = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, widths: [49], flagHeight: 22)
+        assertEqual(spots, [.init(x: edge - 49, top: row.maxY - inset - 22, pinnedRight: false)], "its right end left of the agent badge")
+        // The badge, measured: x 1628...1648, y 2351...2369.
+        assertTrue(edge <= 1628, "clear of the badge")
+        let two = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, widths: [49, 27], flagHeight: 22)
+        assertEqual(two?.map(\.x), [edge - 49, edge - 49 - AnchorMarkerPlacement.flagGap - 27], "two takes into one thread: right to left")
+    }
+
+    runSuite("A flag whose sidebar row can't be seen hides") {
+        let visible = CGRect(x: 1254, y: 1743, width: 409, height: 796)
+        let above = CGRect(x: 1263, y: 1642, width: 391, height: 86)
+        assertNil(AnchorMarkerPlacement.rowCorner(row: above, visible: visible, widths: [49], flagHeight: 22), "scrolled up out of the list")
+        let cut = CGRect(x: 1263, y: 2500, width: 391, height: 86)
+        assertNil(AnchorMarkerPlacement.rowCorner(row: cut, visible: visible, widths: [49], flagHeight: 22), "its corner below the list's bottom edge")
+        let slidOff = CGRect(x: 1263, y: 2000, width: 391, height: 86)
+        assertNil(AnchorMarkerPlacement.rowCorner(row: slidOff, visible: .zero, widths: [49], flagHeight: 22), "a sidebar slid off the window")
+        assertNil(AnchorMarkerPlacement.rowCorner(row: CGRect(x: 0, y: 2000, width: 40, height: 86), visible: visible, widths: [49], flagHeight: 22), "a row too narrow for it")
+    }
 }
