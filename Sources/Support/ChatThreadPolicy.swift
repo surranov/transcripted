@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Measured on 2026-10-14 (macOS 26) through Accessibility, the page
 /// (`AXWebArea`) in the app's focused window names the open thread:
-/// - T3 Code: its address, `t3code://app/#/<project>/<thread>` (a thread not
+/// - T3 Code: its address, `t3code://app/#/<environment>/<thread>` (a thread not
 ///   sent yet is `#/draft/<id>`). Its window and page titles never change, and
 ///   one composer can serve every thread, so a focused field proves nothing.
 /// - Codex (`com.openai.codex`, the app is named ChatGPT): the address is

@@ -1,7 +1,7 @@
 import AppKit
 
 /// Fork: a new chat a take's own send started, and the thread the app moved
-/// it to (T3 Code: `#/draft/<id>` becomes `#/<project>/<thread>`). A take
+/// it to (T3 Code: `#/draft/<id>` becomes `#/<environment>/<thread>`). A take
 /// queued behind it on the new chat still belongs there.
 struct ChatThreadMove {
     let pid: pid_t
@@ -35,7 +35,20 @@ extension DictationSessionController {
             chatThreadCapture = nil
             return
         }
-        chatThreadCapture = Task { @MainActor in await ChatThreadReader.chatThread(in: app) }
+        chatThreadCapture = Task { @MainActor in
+            let thread = await ChatThreadReader.chatThread(in: app)
+            // Fork: a thread its app's server can take (`+ChatThreadSend.swift`)
+            // gets that server's session ready while the user speaks, if this
+            // app's takes send at all.
+            if let target = thread?.sendTarget, DictationSendSettings.behavior(
+                for: thread?.bundleID,
+                defaultBehavior: DictationSendSettings.defaultBehavior(),
+                overrides: DictationSendSettings.overrides()
+            ).behavior != .dontSend {
+                Task.detached(priority: .utility) { _ = await ChatThreadSender.prepare(target) }
+            }
+            return thread
+        }
     }
 
     /// The chat the take was dictated into, once read; nil when it isn't one.

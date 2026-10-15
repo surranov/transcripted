@@ -14,6 +14,10 @@ struct ChatThread: Equatable {
     /// When the take started: only a send after it may move its new chat
     /// (`ChatThreadMove.sentAt`).
     let capturedAt: Date
+    /// The thread as its app's server names it, where the take is sent when
+    /// the user isn't looking at it (`ChatThreadSendPolicy`); nil when the
+    /// app has no server to send through or the chat isn't started.
+    var sendTarget: ChatThreadSendTarget? = nil
 }
 
 /// Fork: reads which chat thread an app shows, from the pages (`AXWebArea`)
@@ -66,7 +70,8 @@ enum ChatThreadReader {
             appName: app.localizedName ?? "the app",
             identity: identity,
             isNewChat: ChatThreadPolicy.isNewChat(bundleID: bundleID, pages: pages),
-            capturedAt: Date()
+            capturedAt: Date(),
+            sendTarget: ChatThreadSendPolicy.sendTarget(bundleID: bundleID, pages: pages)
         )
     }
 

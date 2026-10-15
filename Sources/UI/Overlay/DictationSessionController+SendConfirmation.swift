@@ -19,7 +19,10 @@ struct DictationSendConfirmationArm: Equatable {
 struct PendingSendConfirmation {
     let id = UUID()
     let key: DictationAutoSendKey
-    let anchor: DictationPasteAnchor
+    /// The box the words went into; nil for a take whose words went nowhere
+    /// yet, sent to its chat thread through the app's server once confirmed
+    /// (`ChatThreadSendPolicy`).
+    let anchor: DictationPasteAnchor?
     let text: String
     /// The box read the words back when they landed, so reading empty later
     /// means they were sent or cleared, not that the app hides its value.
@@ -71,6 +74,26 @@ extension DictationSessionController {
         }
     }
 
+    /// Asks, in turn as `askToSend` does, before sending a take to its chat
+    /// thread through the app's server (`+ChatThreadSend.swift`); its words
+    /// went nowhere yet, so the island says where they'd go.
+    func askToSendToThread(text: String, chatThread: ChatThread, order: Int, takeOwnsIsland: Bool) {
+        sendConfirmations.add(PendingSendConfirmation(
+            key: DictationAutoSendPreferences.sendKey(),
+            anchor: nil,
+            text: text,
+            boxWasReadable: false,
+            chatThread: chatThread
+        ), order: order)
+        guard takeOwnsIsland else {
+            showNextSendConfirmationWhenIslandIsFree()
+            return
+        }
+        if !showNextSendConfirmation() {
+            overlayController?.showSuccessAndDismiss(title: "Saved")
+        }
+    }
+
     /// Shows the next send waiting, now. A send whose box reads empty (the
     /// user sent or cleared it meanwhile) is passed over. True when a prompt
     /// is up.
@@ -79,19 +102,24 @@ extension DictationSessionController {
         guard let overlayController else { return false }
         if sendConfirmations.shown != nil { return true }
         while let next = sendConfirmations.next {
-            if next.boxWasReadable, AnchoredTextDelivery.anchoredFieldIsEmpty(next.anchor) {
+            if let anchor = next.anchor, next.boxWasReadable, AnchoredTextDelivery.anchoredFieldIsEmpty(anchor) {
                 sendConfirmations.dropNext()
-                appState?.logger.log("DICTATION | send not asked: the box in \(next.anchor.appName) is empty now")
+                appState?.logger.log("DICTATION | send not asked: the box in \(anchor.appName) is empty now")
                 continue
             }
             let confirmKey = DictationAutoSendPreferences.confirmKey()
             let seconds = DictationAutoSendPreferences.confirmSeconds()
+            let waitingAfter = sendConfirmations.waiting.count - 1
             overlayController.showActionNotice(
-                DictationAutoSendPolicy.confirmationPrompt(
+                next.anchor.map { anchor in
+                    DictationAutoSendPolicy.confirmationPrompt(
+                        confirmKey: confirmKey, appName: anchor.appName, text: next.text, waitingAfter: waitingAfter
+                    )
+                } ?? ChatThreadSendPolicy.confirmationPrompt(
                     confirmKey: confirmKey,
-                    appName: next.anchor.appName,
+                    appName: next.chatThread?.appName ?? "the app",
                     text: next.text,
-                    waitingAfter: sendConfirmations.waiting.count - 1
+                    waitingAfter: waitingAfter
                 ),
                 actionTitle: "Send",
                 action: { [weak self] in self?.confirmPendingSend(fromKey: false) }
@@ -111,7 +139,12 @@ extension DictationSessionController {
                 self.sendConfirmations.takeShown()
                 self.disarmSendConfirmation()
                 self.appState?.logger.log("DICTATION | send confirmation ended: timed_out")
-                self.overlayController?.dismissError()
+                if next.anchor == nil {
+                    // Its words went nowhere: they stay on the island with Paste.
+                    self.showUnconfirmedChatThreadSend(next)
+                } else {
+                    self.overlayController?.dismissError()
+                }
                 self.showNextSendConfirmationWhenIslandIsFree()
             }
             appState?.logger.log("DICTATION | send waits for \(confirmKey.rawValue) for \(seconds)s (\(sendConfirmations.count) waiting)")
@@ -155,6 +188,18 @@ extension DictationSessionController {
         appState?.logger.log("DICTATION | send confirmation ended: \(fromKey ? "confirmed_key" : "confirmed_island")")
         Task { @MainActor [weak self] in
             guard let self else { return }
+            guard pending.anchor != nil else {
+                // Fork: words that went nowhere yet go to their chat thread
+                // through the app's server (`+ChatThreadSend.swift`).
+                // The key isn't given back when it didn't go: the server may
+                // answer seconds later, when Return would land in whatever
+                // the user types by then. The island shows the words instead.
+                let result = await self.sendConfirmedToChatThread(pending)
+                self.appState?.logger.log("DICTATION | confirmed send to its thread: \(result.diagnosticName)")
+                self.showConfirmedChatThreadSend(result, pending: pending)
+                self.showNextSendConfirmationWhenIslandIsFree()
+                return
+            }
             let outcome = await self.pressConfirmedSend(pending)
             self.appState?.logger.log("DICTATION | confirmed send: \(outcome.diagnosticName)")
             if fromKey, outcome != .sent(pending.key) {
@@ -215,7 +260,7 @@ extension DictationSessionController {
         for _ in 0..<10 where Self.chordModifiersHeld() {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        let anchor = pending.anchor
+        guard let anchor = pending.anchor else { return .disabled }
         // Fork: never into another thread of the chat the take was dictated
         // into; the anchored window is where the send goes (`+ChatThreadGuard.swift`).
         if await chatChanged(pending.chatThread, in: anchor.pid, window: anchor.window) {

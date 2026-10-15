@@ -683,15 +683,19 @@ enum BoundedProcessRunner {
         }
     }
 
+    /// `environment`, when given, replaces the inherited one: a child that
+    /// shouldn't see Transcripted's own variables gets only these.
     static func run(
         executable: URL,
         arguments: [String],
         timeout: TimeInterval,
+        environment: [String: String]? = nil,
         pipeDrainTimeout: TimeInterval = defaultPipeDrainTimeout
     ) throws -> Output {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        if let environment { process.environment = environment }
 
         let stdout = Pipe()
         let stderr = Pipe()

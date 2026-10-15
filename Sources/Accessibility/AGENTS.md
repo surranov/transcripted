@@ -31,6 +31,7 @@ A take dictated into an AI chat goes only into the thread it was dictated into, 
 - A new chat (T3 Code's `#/draft/<id>`, claude.ai/new, Codex's start page: `ChatThreadPolicy.isNewChat`) moves to a thread of its own when its first message is sent. After the take's own send, `followNewChat` watches for that move for 2 s (`ChatThreadMove`), so a take queued on the new chat still pastes into its thread; a check waits for a move under way first, since a queued take pastes about 50 ms after the earlier send. Only a take started before that send follows it (`sentAt >= capturedAt`): every new chat's page looks the same. A move by hand is never followed.
 - The read stops after 1.5 s with what it found (a hung app answers each call only at its timeout). In a browser with no page in its tree, `AXManualAccessibility` is set too, as Anchored paste does: without it the guard can't see the chat; Chrome then keeps its accessibility tree on until it quits.
 - Reads run off the main actor (`Task.detached`), each AX call bounded by `messagingTimeout`.
+- In T3 Code the start also keeps the thread as its server names it (`ChatThread.sendTarget`, from the page address `#/<environment>/<thread>`; none for a draft or a window showing two threads): a take that sends goes there through T3 Code's server when the user isn't looking at that thread (`Sources/Support/ChatThreadSendPolicy.swift`, `Sources/Support/ChatThreadSender.swift`).
 
 ## Rules
 

@@ -507,6 +507,15 @@ extension DictationSessionController {
                 appState.logger.log("DICTATION | pasting \(text.count) chars")
                 lastCompletedText = text
                 stopTiming.pasteStartedAt = CFAbsoluteTimeGetCurrent()
+                // Fork: to the chat thread it was dictated into through the
+                // app's server while the user looks elsewhere, else the usual
+                // way (`+ChatThreadSend.swift`).
+                if await self.finishedByChatThreadSend(
+                    text, take: take, sessionID: taskSessionID, versions: textVersions,
+                    appState: appState, overlayController: overlayController
+                ) {
+                    return
+                }
                 let modelWaitSeconds = (stopTiming.modelReadyAt ?? 0) - (stopTiming.modelWaitStartedAt ?? 0)
                 // Fork: Anchored paste delivers to the field focused at the start
                 // when the user has moved on, or waits for them to come back.

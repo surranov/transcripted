@@ -350,7 +350,9 @@ Details:
   keep window or the user switched to Don't keep: readers must treat a missing
   file as normal and never resolve the path outside `dictations/audio/`.
   Additive within `format_version: 1`; older readers skip the line.
-- `Delivery` values: `pasted`, `copied`, `failed`, `saved_without_paste`.
+- `Delivery` values: `pasted`, `copied`, `failed`, `saved_without_paste`, and (fork)
+  `sent_to_thread`: sent to the AI chat thread it was dictated into through
+  the app's own server, unpasted. Older readers treat an unknown value as `failed`.
 - The dictated text follows after a blank line and runs to the next `## `
   heading or end of file.
 

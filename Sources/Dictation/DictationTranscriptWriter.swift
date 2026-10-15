@@ -21,6 +21,10 @@ enum DictationDelivery: String, Sendable {
     /// The session was finalized and saved without pasting into the focused app
     /// — used when the session cap recovers a walked-away dictation.
     case savedWithoutPaste = "saved_without_paste"
+    /// Fork: sent to the chat thread it was dictated into through the app's
+    /// server, unseen (`ChatThreadSendPolicy`). An older build reads it as
+    /// failed ("Saved only").
+    case sentToThread = "sent_to_thread"
 
     var summaryText: String {
         switch self {
@@ -28,6 +32,7 @@ enum DictationDelivery: String, Sendable {
         case .copied: return "Copied to clipboard"
         case .failed: return "Saved only"
         case .savedWithoutPaste: return "Saved only"
+        case .sentToThread: return "Sent to its thread"
         }
     }
 }

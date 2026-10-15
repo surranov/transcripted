@@ -102,7 +102,7 @@ enum DictationCardFormatting {
     /// take was only saved here.
     static func deliveryProblem(_ delivery: DictationDelivery) -> String? {
         switch delivery {
-        case .pasted:
+        case .pasted, .sentToThread:
             return nil
         case .copied:
             return "copied, not pasted"
