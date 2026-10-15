@@ -100,6 +100,24 @@ func testAnchorMarkerPlacement() {
         assertTrue(spot.x >= row.minX + 6, "inside the row")
     }
 
+    runSuite("In Claude's sidebar a flag sits left of the row's status, clear of its options button") {
+        // Claude 2.42304.0, measured 2026-10-15: a session row 298 x 34, its
+        // options button at x 568...598 on hover; the list scrolls in 293...607.
+        let visible = CGRect(x: 293, y: 316, width: 314, height: 801)
+        let row = CGRect(x: 298, y: 758, width: 298, height: 34)
+        guard let spot = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, badgeWidth: 28, widths: [49], flagHeight: 22)?.first else {
+            return assertTrue(false, "a spot in a visible row")
+        }
+        assertTrue(spot.x + 49 <= 568 - 4, "4 pt clear of the options button")
+        assertTrue(spot.top >= row.minY && spot.top + 22 <= row.maxY, "within a one-line row")
+        let described = CGRect(x: 298, y: 830, width: 298, height: 58)
+        assertEqual(
+            AnchorMarkerPlacement.rowCorner(row: described, visible: visible, badgeWidth: 28, widths: [49], flagHeight: 22)?.first?.top,
+            described.maxY - AnchorMarkerPlacement.rowCornerInset - 22,
+            "a row with its project under its name: beside the project, at the bottom"
+        )
+    }
+
     runSuite("A flag whose sidebar row can't be seen hides") {
         let visible = CGRect(x: 1254, y: 1743, width: 409, height: 796)
         func corner(_ row: CGRect, in visible: CGRect) -> [AnchorMarkerPlacement.Spot]? {

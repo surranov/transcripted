@@ -19,12 +19,13 @@ import SwiftUI
 /// takes' compact ones (dots or glyph only), in the order they started.
 ///
 /// In an app whose sidebar lists threads (`ChatThreadPolicy.sidebarBundleIDs`:
-/// T3 Code, Codex), a flag sits over the box only while the window shows its
-/// take's thread. With another thread open it flies, compact, to the bottom-right
-/// corner of its thread's row in the sidebar (`ChatSidebarReader`), and hides
-/// while that row can't be seen (the sidebar hidden, the row scrolled away),
-/// coming back with it. The row is the one the app marked current while the
-/// take's thread was open, found again by its label.
+/// T3 Code, Codex, Claude), a flag sits over the box only while the window
+/// shows its take's thread. With another thread open it flies, compact, to the
+/// bottom-right corner of its thread's row in the sidebar (`ChatSidebarReader`),
+/// and hides while that row can't be seen (the sidebar hidden, the row
+/// scrolled away), coming back with it. The row is the one the app marked
+/// current while the take's thread was open (in Claude's Code sessions, the
+/// one named as the open page), found again by its label.
 ///
 /// Boxes, the open thread and the sidebar are read off the main thread
 /// about four times a second, and a flag flies to a new spot: a composer
@@ -368,10 +369,15 @@ private final class AnchorThreadWatch {
         if readsRows { readsSinceRows = 0 }
         let (window, pid, bundleID, windowID, known) = (UncheckedElement(element: window), pid, bundleID, windowID, landmark)
         Task.detached(priority: .utility) { [weak self] in
-            let identity = ChatThreadReader.identityNow(pid: pid, bundleID: bundleID, window: window.element)
+            let pages = ChatThreadReader.pagesNow(pid: pid, window: window.element)
+            let identity = ChatThreadPolicy.threadIdentity(bundleID: bundleID, pages: pages)
             var reading = Reading(identity: identity, readsRows: false, sidebar: nil, landmark: nil, identityAfterRows: nil, windowFrame: nil)
             if readsRows {
-                let found = ChatSidebarReader.read(window: window.element, landmark: known?.element)
+                let found = ChatSidebarReader.read(
+                    window: window.element,
+                    landmark: known?.element,
+                    openThreadName: ChatThreadPolicy.openThreadName(bundleID: bundleID, pages: pages)
+                )
                 reading = Reading(
                     identity: identity,
                     readsRows: true,

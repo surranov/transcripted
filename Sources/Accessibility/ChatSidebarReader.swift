@@ -36,6 +36,23 @@ import ApplicationServices
 ///   right edge, vertically centered; pin and archive buttons show there
 ///   on hover only.
 ///
+/// Claude (2.42304.0), measured on 2026-10-15, alike for its Code sessions
+/// and its chats:
+/// - The sidebar is a complementary landmark ("Боковая панель" in Russian),
+///   not a navigation one.
+/// - A thread row is the button with the class `hit-row-main` inside a group
+///   with the class `df-drag-shiftable` (the menu's own rows, New among them,
+///   aren't in one). Its accessible label starts with its status ("Inactive")
+///   in chats, so a row is told by its name, its first text (in the group
+///   with the class `dframe-fade-label`). No thread id is exposed.
+/// - A chat's row has `aria-current="page"` while it's open; a Code
+///   session's row has nothing to tell it. The open page is titled
+///   "<name> - Claude Code" (a chat's "<name> - Claude"), so the open
+///   session's row is the one with that name (`ChatThreadPolicy.openThreadName`).
+/// - The rows scroll inside a group with the class `overflow-y-auto`.
+/// - A status (an alert, a spinner) and, on hover, an options button sit up
+///   to 30 pt from a row's right edge.
+///
 /// Holds Accessibility elements read off the main actor; AX calls are thread-safe.
 struct ChatSidebar: @unchecked Sendable {
     struct Row {
@@ -49,11 +66,21 @@ struct ChatSidebar: @unchecked Sendable {
         let isUnderProject: Bool
     }
 
+    /// Which rows are the open thread's: those the app marks; when it marks
+    /// none, the one row labeled `openThreadName` (a Claude Code session,
+    /// `ChatThreadPolicy.openThreadName`), if only one is.
+    static func currentRows(marked: [Bool], labels: [String], openThreadName: String?) -> [Bool] {
+        guard !marked.contains(true), let openThreadName else { return marked }
+        let named = labels.indices.filter { labels[$0] == openThreadName }
+        return marked.indices.map { named.count == 1 && $0 == named[0] }
+    }
+
     let rows: [Row]
     /// Where rows can be seen: the sidebar's scrolled area, same coordinates.
     let visible: CGRect
     /// What the app draws at a row's right end (T3 Code's agent badge, Codex's
-    /// unread dot or status), with its margin: the flags sit to its left.
+    /// unread dot or status, Claude's status), with its margin: the flags sit
+    /// to its left.
     let rowBadgeWidth: CGFloat
 
     /// The open thread's row. Of two (a Codex thread just started), the one
@@ -65,9 +92,10 @@ struct ChatSidebar: @unchecked Sendable {
 
 enum ChatSidebarReader {
     private static let messagingTimeout: Float = 0.3
-    /// The landmark sits 5 or 6 deep in T3 Code's window and 15 in Codex's,
-    /// under the page; rows up to 6 (T3 Code) or 11 (Codex, under a project)
-    /// more inside it. Nothing inside a row or the thread is read.
+    /// The landmark sits 5 or 6 deep in T3 Code's window, 12 in Claude's and
+    /// 15 in Codex's, under the page; rows up to 6 (T3 Code, Claude) or 11
+    /// (Codex, under a project) more inside it. Nothing inside a row (but
+    /// Claude's name) or the thread is read.
     private static let landmarkSearchLimit = 400
     private static let landmarkMaxDepth = 17
     private static let rowSearchLimit = 600
@@ -77,12 +105,17 @@ enum ChatSidebarReader {
     private enum Style {
         case t3Code
         case codex
+        case claude
 
-        init?(classes: [String]) {
+        /// `inThreadItem`: inside a group with the class `df-drag-shiftable`,
+        /// where Claude keeps a thread's row.
+        init?(classes: [String], inThreadItem: Bool) {
             if classes.contains("group/sidebar-row") {
                 self = .t3Code
             } else if classes.contains("data-[app-action-sidebar-thread-selected=true]:bg-primary-ghost-hover") {
                 self = .codex
+            } else if inThreadItem, classes.contains("hit-row-main") {
+                self = .claude
             } else {
                 return nil
             }
@@ -90,11 +123,13 @@ enum ChatSidebarReader {
 
         /// T3 Code's agent badge: 20 pt wide, 6 pt from the edges. Codex's dot
         /// or status: 25 pt wide, 10 pt from the edge, so 29 past the flags'
-        /// corner inset, plus a 4 pt gap.
+        /// corner inset, plus a 4 pt gap. Claude's status and options: 30 pt
+        /// from the edge, so 24 past the inset, plus the gap.
         var rowBadgeWidth: CGFloat {
             switch self {
             case .t3Code: 26
             case .codex: 33
+            case .claude: 28
             }
         }
     }
@@ -105,33 +140,42 @@ enum ChatSidebarReader {
 
     /// The sidebar in `window`; nil when none shows (hidden, or not read).
     /// `landmark`: the one found last time, tried first. Returns the landmark
-    /// the rows were found in, to pass next time. Call off the main actor.
-    static func read(window: AXUIElement, landmark known: AXUIElement?) -> (sidebar: ChatSidebar?, landmark: AXUIElement?) {
+    /// the rows were found in, to pass next time. `openThreadName`: the open
+    /// thread's name, for a sidebar that doesn't mark its row
+    /// (`ChatSidebar.currentRows`). Call off the main actor.
+    static func read(
+        window: AXUIElement,
+        landmark known: AXUIElement?,
+        openThreadName: String? = nil
+    ) -> (sidebar: ChatSidebar?, landmark: AXUIElement?) {
         let deadline = Date().addingTimeInterval(readDeadline)
-        if let known, let sidebar = rows(in: known, deadline: deadline) { return (sidebar, known) }
+        if let known, let sidebar = rows(in: known, openThreadName: openThreadName, deadline: deadline) { return (sidebar, known) }
         // The thread list is the landmark that holds rows: an app may have
         // another navigation landmark before it.
-        for landmark in navigationLandmarks(in: window, deadline: deadline) {
-            if let sidebar = rows(in: landmark, deadline: deadline) { return (sidebar, landmark) }
+        for landmark in sidebarLandmarks(in: window, deadline: deadline) {
+            if let sidebar = rows(in: landmark, openThreadName: openThreadName, deadline: deadline) { return (sidebar, landmark) }
         }
         return (nil, nil)
     }
 
-    private static func rows(in landmark: AXUIElement, deadline: Date) -> ChatSidebar? {
+    private static func rows(in landmark: AXUIElement, openThreadName: String?, deadline: Date) -> ChatSidebar? {
         AXUIElementSetMessagingTimeout(landmark, messagingTimeout)
         guard let landmarkFrame = frame(of: landmark) else { return nil }
         var rows: [ChatSidebar.Row] = []
         var style: Style?
         var scrollArea: CGRect?
-        // Each element with the scrolling group and the Codex project it's in.
-        var queue: [(element: AXUIElement, depth: Int, scrollArea: CGRect?, project: String?)] = [(landmark, 0, nil, nil)]
+        // Each element with the scrolling group and the Codex project it's
+        // in, and whether it's inside a Claude thread's item.
+        var queue: [(element: AXUIElement, depth: Int, scrollArea: CGRect?, project: String?, inThreadItem: Bool)] = [
+            (landmark, 0, nil, nil, false),
+        ]
         var index = 0
         while index < queue.count, index < rowSearchLimit, Date() < deadline {
-            let (node, depth, nodeScrollArea, project) = queue[index]
+            let (node, depth, nodeScrollArea, project, inThreadItem) = queue[index]
             index += 1
             AXUIElementSetMessagingTimeout(node, messagingTimeout)
             let nodeClasses = classes(of: node)
-            if let rowStyle = Style(classes: nodeClasses) {
+            if let rowStyle = Style(classes: nodeClasses, inThreadItem: inThreadItem) {
                 if let rowFrame = frame(of: node), let label = label(of: node, style: rowStyle, project: project) {
                     rows.append(.init(
                         element: node,
@@ -151,16 +195,25 @@ enum ChatSidebarReader {
             let scrolls = nodeClasses.contains("overflow-auto") || nodeClasses.contains("overflow-y-auto")
             let innerScrollArea = scrolls ? frame(of: node) ?? nodeScrollArea : nodeScrollArea
             let innerProject = nodeClasses.contains("group/cwd") ? string(of: node, kAXTitleAttribute) ?? project : project
-            queue += children(of: node).map { ($0, depth + 1, innerScrollArea, innerProject) }
+            let innerInThreadItem = inThreadItem || nodeClasses.contains("df-drag-shiftable")
+            queue += children(of: node).map { ($0, depth + 1, innerScrollArea, innerProject, innerInThreadItem) }
         }
         guard !rows.isEmpty, let style else { return nil }
+        let current = ChatSidebar.currentRows(marked: rows.map(\.isCurrent), labels: rows.map(\.label), openThreadName: openThreadName)
         let visible = (scrollArea ?? landmarkFrame).intersection(landmarkFrame)
-        return ChatSidebar(rows: rows, visible: visible.isNull ? .zero : visible, rowBadgeWidth: style.rowBadgeWidth)
+        return ChatSidebar(
+            rows: zip(rows, current).map { row, isCurrent in
+                .init(element: row.element, label: row.label, frame: row.frame, isCurrent: isCurrent, isUnderProject: row.isUnderProject)
+            },
+            visible: visible.isNull ? .zero : visible,
+            rowBadgeWidth: style.rowBadgeWidth
+        )
     }
 
     /// T3 Code: "Title\nProject" from the row's texts; its accessible label
     /// when those can't be read. Codex: "Name\nProject" from its accessible
     /// label and the project it's listed under; the name alone in Recent.
+    /// Claude: its name, the first text of its name group.
     private static func label(of row: AXUIElement, style: Style, project: String?) -> String? {
         switch style {
         case .t3Code:
@@ -174,25 +227,45 @@ enum ChatSidebarReader {
         case .codex:
             guard let name = string(of: row, kAXDescriptionAttribute), !name.isEmpty else { return nil }
             return [name, project].compactMap { $0 }.joined(separator: "\n")
+        case .claude:
+            // Row > name group > text, a level deeper beside a status mark.
+            var level = children(of: row)
+            for _ in 0..<2 {
+                if let group = level.first(where: { classes(of: $0).contains("dframe-fade-label") }) {
+                    let text = children(of: group).first { string(of: $0, kAXRoleAttribute) == "AXStaticText" }
+                    return text.flatMap { string(of: $0, kAXValueAttribute) }.flatMap { $0.isEmpty ? nil : $0 }
+                }
+                level = level.flatMap(children(of:))
+            }
+            return nil
         }
     }
 
-    private static func navigationLandmarks(in window: AXUIElement, deadline: Date) -> [AXUIElement] {
-        var found: [AXUIElement] = []
+    /// Navigation landmarks (T3 Code, Codex), then complementary ones
+    /// (Claude's sidebar; Codex's holds its navigation landmarks, so it's
+    /// searched inside too).
+    private static func sidebarLandmarks(in window: AXUIElement, deadline: Date) -> [AXUIElement] {
+        var navigation: [AXUIElement] = []
+        var complementary: [AXUIElement] = []
         var queue: [(element: AXUIElement, depth: Int)] = [(window, 0)]
         var index = 0
         while index < queue.count, index < landmarkSearchLimit, Date() < deadline {
             let (node, depth) = queue[index]
             index += 1
             if index > 1 { AXUIElementSetMessagingTimeout(node, messagingTimeout) }
-            if string(of: node, kAXSubroleAttribute) == "AXLandmarkNavigation" {
-                found.append(node)
+            switch string(of: node, kAXSubroleAttribute) {
+            case "AXLandmarkNavigation":
+                navigation.append(node)
                 continue
+            case "AXLandmarkComplementary":
+                complementary.append(node)
+            default:
+                break
             }
             guard depth < landmarkMaxDepth else { continue }
             queue += children(of: node).map { ($0, depth + 1) }
         }
-        return found
+        return navigation + complementary
     }
 
     private static func children(of element: AXUIElement) -> [AXUIElement] {

@@ -106,7 +106,8 @@ func testChatThreadPolicy() {
     runSuite("A take's flag finds its thread's sidebar row by the row's label, only when it can't be another's") {
         assertTrue(ChatThreadPolicy.sidebarBundleIDs.contains(t3), "T3 Code's sidebar is followed")
         assertTrue(ChatThreadPolicy.sidebarBundleIDs.contains(codex), "Codex's too")
-        assertFalse(ChatThreadPolicy.sidebarBundleIDs.contains("com.anthropic.claudefordesktop"), "Claude's isn't yet")
+        assertTrue(ChatThreadPolicy.sidebarBundleIDs.contains("com.anthropic.claudefordesktop"), "and Claude's")
+        assertFalse(ChatThreadPolicy.sidebarBundleIDs.contains("com.google.Chrome"), "not a browser's")
         let labels = ["Fix pagination, web", "Review ADR, No project", "Fix pagination, web", "GVR, search"]
         assertEqual(ChatThreadPolicy.sidebarRow(labeled: "GVR, search", in: labels), 3, "one row with that label")
         assertNil(ChatThreadPolicy.sidebarRow(labeled: "Fix pagination, web", in: labels), "two threads share it: not a guess")
@@ -147,6 +148,34 @@ func testChatThreadPolicy() {
         assertNil(
             ChatThreadPolicy.sidebarRow(labeled: "Исследовать баг CD-273310\ndailyrent-search-frontend", in: Array(labels[3...])),
             "Projects collapsed: no project row, and the bare name in Recent isn't taken for it"
+        )
+    }
+
+    runSuite("Claude's open page names the session or chat whose sidebar row it is") {
+        // Claude 2.42304.0, read 2026-10-15: its shell page and its claude.ai page.
+        let claudeApp = "com.anthropic.claudefordesktop"
+        let shell = Page(url: "file:///Applications/Claude.app/Contents/Resources/app.asar/.vite/renderer/main_window/index.html", title: "")
+        func name(_ url: String, _ title: String?) -> String? {
+            ChatThreadPolicy.openThreadName(bundleID: claudeApp, pages: [shell, Page(url: url, title: title)])
+        }
+        assertEqual(
+            name("https://claude.ai/epitaxy/local_46cdd4a8-9cf0-4bb8-9a90-a122549feba9", "Отключение атрибуции в настройках - Claude Code"),
+            "Отключение атрибуции в настройках",
+            "a Code session"
+        )
+        assertEqual(name("https://claude.ai/chat/8f0c41b4-1e1e-44a1-855d-b6e288fd606b", "Greeting - Claude"), "Greeting", "a chat")
+        assertEqual(
+            name("https://claude.ai/chat/8f0c41b4", "Проверка - Claude Code - Claude"),
+            "Проверка - Claude Code",
+            "only the app's own suffix comes off"
+        )
+        assertNil(name("https://claude.ai/epitaxy", "Claude"), "Code's start page: no session yet")
+        assertNil(name("https://claude.ai/new", "Новая задача - Claude"), "a new chat")
+        assertNil(name("https://claude.ai/chat/8f0c41b4", nil), "no title read")
+        assertNil(name("https://claude.ai/chat/8f0c41b4", " - Claude"), "a title with no name")
+        assertNil(
+            ChatThreadPolicy.openThreadName(bundleID: codex, pages: [Page(url: "app://-/index.html", title: "Подтвердить проверку Transcripted")]),
+            "Codex marks its rows itself"
         )
     }
 

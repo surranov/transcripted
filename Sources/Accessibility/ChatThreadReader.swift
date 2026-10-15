@@ -101,6 +101,11 @@ enum ChatThreadReader {
         ChatThreadPolicy.threadIdentity(bundleID: bundleID, pages: readPages(pid: pid, window: window))
     }
 
+    /// The pages `window` of app `pid` shows, read on the caller's thread.
+    nonisolated static func pagesNow(pid: pid_t, window: AXUIElement) -> [ChatThreadPolicy.Page] {
+        readPages(pid: pid, window: window)
+    }
+
     private static func pages(pid: pid_t, window: AXUIElement?) async -> [ChatThreadPolicy.Page] {
         let window = window.map(Window.init)
         return await Task.detached(priority: .userInitiated) { readPages(pid: pid, window: window?.element) }.value

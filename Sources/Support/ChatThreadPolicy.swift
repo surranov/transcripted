@@ -86,11 +86,31 @@ enum ChatThreadPolicy {
 
     /// Apps whose sidebar lists threads in a form the marker can find:
     /// there a take's marker sits on its thread's row while another thread
-    /// is open (`AnchorMarkerController`). Claude is meant to follow.
+    /// is open (`AnchorMarkerController`).
     static let sidebarBundleIDs: Set<String> = [
         "com.t3tools.t3code",
         "com.openai.codex",
+        "com.anthropic.claudefordesktop",
     ]
+
+    /// The open thread's name as its sidebar row shows it, for an app whose
+    /// sidebar doesn't mark the open thread's row: Claude marks it among its
+    /// chats, not among its Code sessions (measured 2026-10-15, 2.42304.0).
+    /// Its claude.ai page is titled "<name> - Claude Code" for a session and
+    /// "<name> - Claude" for a chat. Nil for another app, a new chat, or a
+    /// page with no such title.
+    static func openThreadName(bundleID: String?, pages: [Page]) -> String? {
+        guard bundleID == "com.anthropic.claudefordesktop", !isNewChat(bundleID: bundleID, pages: pages) else { return nil }
+        let titles = pages.compactMap { page -> String? in
+            guard chatSiteURL(page.url) != nil, let title = page.title else { return nil }
+            for suffix in [" - Claude Code", " - Claude"] where title.hasSuffix(suffix) {
+                let name = String(title.dropLast(suffix.count))
+                return name.isEmpty ? nil : name
+            }
+            return nil
+        }
+        return titles.count == 1 ? titles[0] : nil
+    }
 
     /// Which of the sidebar's rows (`labels`, each row's title and project,
     /// `ChatSidebarReader`) is the thread labeled `label`. Two

@@ -32,4 +32,27 @@ func testChatSidebar() {
         let none = ChatSidebar(rows: [row("Найти причину сбоев macOS", current: false, underProject: false)], visible: .zero, rowBadgeWidth: 33)
         assertNil(none.currentRow, "opened by search: no row to learn")
     }
+
+    runSuite("A Claude Code session's row, which nothing marks, is the one named as the open page") {
+        // Claude 2.42304.0's Code sessions, read 2026-10-15.
+        let labels = ["CD-290518 Просмотренность", "Отключение атрибуции в настройках", "Второй экземпляр приложения"]
+        let unmarked = [false, false, false]
+        assertEqual(
+            ChatSidebar.currentRows(marked: unmarked, labels: labels, openThreadName: "Отключение атрибуции в настройках"),
+            [false, true, false],
+            "the one row with the open session's name"
+        )
+        assertEqual(
+            ChatSidebar.currentRows(marked: unmarked + [false], labels: labels + ["Второй экземпляр приложения"], openThreadName: "Второй экземпляр приложения"),
+            [false, false, false, false],
+            "two sessions share the name: neither is taken for it"
+        )
+        assertEqual(ChatSidebar.currentRows(marked: unmarked, labels: labels, openThreadName: "Без названия"), unmarked, "not listed (scrolled out, or under Show more)")
+        assertEqual(ChatSidebar.currentRows(marked: unmarked, labels: labels, openThreadName: nil), unmarked, "no name to go by: Code's start page")
+        assertEqual(
+            ChatSidebar.currentRows(marked: [false, false, true], labels: labels, openThreadName: "Отключение атрибуции в настройках"),
+            [false, false, true],
+            "a row the app marks (a chat's) wins over a name"
+        )
+    }
 }
