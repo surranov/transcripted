@@ -80,16 +80,20 @@ extension ParakeetEngine {
     ) -> (AVAudioPCMBuffer) -> Void {
         // Meters every buffer of this start for the island's waveform.
         let levelWindow = DictationAudioLevelWindow()
+        // Read once per start; the pinned recorder does the same.
+        let autoGain = DictationMicAutoGainPreferences.isEnabled() ? DictationMicAutoGain() : nil
         return { [weak self] buffer in
             guard let self,
-                  let monoSamples = self.extractMonoSamples(from: buffer) else { return }
+                  var monoSamples = self.extractMonoSamples(from: buffer) else { return }
             let frameLength = monoSamples.count
             guard frameLength > 0 else { return }
             let bufferFormat = Self.audioFormatSummary(buffer.format)
             let effectiveSampleRate = ParakeetTapSampleRatePolicy.effectiveSampleRate(
                 bufferSampleRate: bufferFormat.sampleRate
             )
+            // Judged on what the mic sent: the boost must not hide a dead mic.
             let hasNonZeroSignal = ParakeetSampleSignalPolicy.hasNonZeroSignal(monoSamples)
+            autoGain?.process(&monoSamples, sampleRate: effectiveSampleRate)
             let sampleArrivalTime = CFAbsoluteTimeGetCurrent()
             let admitted = self.pendingSamplesLock.withLock { () -> (firstSample: Bool, droppedSeconds: Double)? in
                 // Recheck admission after acquiring the buffer lock: a cancelled
@@ -157,8 +161,9 @@ extension ParakeetEngine {
             }
 
             // Every buffer counts toward the waveform; a reading comes about
-            // 25 times a second and takes one hop to the main actor.
-            guard let reading = levelWindow.add(buffer) else { return }
+            // 25 times a second and takes one hop to the main actor. It meters
+            // the samples the transcriber gets, boosted or not.
+            guard let reading = levelWindow.add(monoSamples, sampleRate: effectiveSampleRate) else { return }
             Task { @MainActor [weak self] in
                 guard lease.canDeliverSamples else { return }
                 self?.audioLevels.update(reading)

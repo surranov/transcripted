@@ -186,6 +186,7 @@ extension TranscriptedSettingsView {
         pinnedMicrophoneRecorderOn = PinnedMicrophoneCapturePreferences.isEnabled()
         microphoneChoice = MicrophoneChoicePreferences.choice()
         keepRecommendedMicrophoneActive = DictationPersistentInputPreferences.isEnabled()
+        dictationMicAutoGainEnabled = DictationMicAutoGainPreferences.isEnabled()
         splitLocalSpeakersEnabled = LocalSpeakerPreferences.isEnabled()
         dictationShortcutsEnabled = HotkeyPreferences.dictationShortcutsEnabled()
         dictationKeyBehavior = HotkeyPreferences.dictationKeyBehavior()

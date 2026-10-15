@@ -28,6 +28,9 @@ final class ParakeetPinnedDictationRecording: @unchecked Sendable {
     let delivery = ParakeetAudioStartCancellationState()
     /// Meters every buffer of this recording for the island's waveform.
     let levelWindow = DictationAudioLevelWindow()
+    /// Automatic mic level for this recording; nil when it's off. Read once
+    /// at the start, like the engine tap's.
+    let autoGain = DictationMicAutoGainPreferences.isEnabled() ? DictationMicAutoGain() : nil
     let channelCount: Int
     let sampleRate: Double
     /// Reset once the capture's start returns, so waiting for the start
@@ -228,10 +231,11 @@ extension ParakeetEngine {
         )
         let delivery = recording.delivery
         let levelWindow = recording.levelWindow
+        let autoGain = recording.autoGain
         // Both closures are formed here, on the main actor, like the engine
         // tap's; the capture calls them from its own queue.
         let bufferCallback: (AVAudioPCMBuffer) -> Void = { [weak self] buffer in
-            self?.admitPinnedDictationBuffer(buffer, delivery: delivery, levelWindow: levelWindow)
+            self?.admitPinnedDictationBuffer(buffer, delivery: delivery, levelWindow: levelWindow, autoGain: autoGain)
         }
         let eventHandler: (PinnedMicrophoneCaptureEvent) -> Void = { [weak self, weak recording] event in
             Task { @MainActor in
@@ -384,21 +388,25 @@ extension ParakeetEngine {
 
     /// Runs on the capture's queue. Same admission as the engine tap in
     /// `installTapAndStartEngine`: rate-aware append, capacity trim, first
-    /// sample and truncation events, and level metering of every buffer.
+    /// sample and truncation events, Automatic mic level, and level metering
+    /// of every buffer.
     func admitPinnedDictationBuffer(
         _ buffer: AVAudioPCMBuffer,
         delivery: ParakeetAudioStartCancellationState,
-        levelWindow: DictationAudioLevelWindow
+        levelWindow: DictationAudioLevelWindow,
+        autoGain: DictationMicAutoGain?
     ) {
         guard delivery.canDeliverSamples,
-              let monoSamples = MicrophoneDownmix.monoSamples(from: buffer) else { return }
+              var monoSamples = MicrophoneDownmix.monoSamples(from: buffer) else { return }
         let frameLength = monoSamples.count
         guard frameLength > 0 else { return }
         let channelCount = buffer.format.channelCount
         let effectiveSampleRate = ParakeetTapSampleRatePolicy.effectiveSampleRate(
             bufferSampleRate: buffer.format.sampleRate
         )
+        // Judged on what the mic sent: the boost must not hide a dead mic.
         let hasNonZeroSignal = ParakeetSampleSignalPolicy.hasNonZeroSignal(monoSamples)
+        autoGain?.process(&monoSamples, sampleRate: effectiveSampleRate)
         let sampleArrivalTime = CFAbsoluteTimeGetCurrent()
         let admitted = pendingSamplesLock.withLock { () -> (firstSample: Bool, droppedSeconds: Double)? in
             guard delivery.canDeliverSamples else { return nil }
@@ -463,8 +471,9 @@ extension ParakeetEngine {
         }
 
         // Every buffer counts toward the waveform; a reading comes about 25
-        // times a second and takes one hop to the main actor.
-        guard let reading = levelWindow.add(buffer) else { return }
+        // times a second and takes one hop to the main actor. It meters the
+        // samples the transcriber gets, boosted or not.
+        guard let reading = levelWindow.add(monoSamples, sampleRate: effectiveSampleRate) else { return }
         Task { @MainActor [weak self] in
             guard delivery.canDeliverSamples else { return }
             self?.audioLevels.update(reading)

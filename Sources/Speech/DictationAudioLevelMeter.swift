@@ -122,19 +122,23 @@ final class DictationAudioLevelWindow: @unchecked Sendable {
         self.windowSeconds = windowSeconds
     }
 
-    /// Adds one buffer. Returns a reading once the buffers since the last
-    /// reading hold at least `windowSeconds` of audio, else nil. An empty
-    /// buffer adds nothing.
-    func add(_ buffer: AVAudioPCMBuffer) -> DictationAudioLevel? {
-        let frameCount = Int(buffer.frameLength)
-        let sampleRate = buffer.format.sampleRate
-        guard frameCount > 0, sampleRate > 0,
-              let energy = DictationAudioLevelMeter.energy(of: buffer, frames: 0..<frameCount) else { return nil }
-        let bufferMeanSquare = energy.sumOfSquares / Float(energy.sampleCount)
+    /// Adds one buffer of a take's mono samples: what the transcriber gets,
+    /// so the waveform shows the level after Automatic mic level, and a
+    /// multichannel mic reads as the channel the downmix kept. Returns a
+    /// reading once the buffers since the last reading hold at least
+    /// `windowSeconds` of audio, else nil. An empty buffer or an unusable
+    /// rate adds nothing.
+    func add(_ samples: [Float], sampleRate: Double) -> DictationAudioLevel? {
+        guard !samples.isEmpty, sampleRate.isFinite, sampleRate > 0 else { return nil }
+        var bufferSumOfSquares: Float = 0
+        for sample in samples {
+            bufferSumOfSquares += sample * sample
+        }
+        let bufferMeanSquare = bufferSumOfSquares / Float(samples.count)
         return lock.withLock { () -> DictationAudioLevel? in
-            seconds += Double(frameCount) / sampleRate
-            sumOfSquares += Double(energy.sumOfSquares)
-            sampleCount += energy.sampleCount
+            seconds += Double(samples.count) / sampleRate
+            sumOfSquares += Double(bufferSumOfSquares)
+            sampleCount += samples.count
             loudestMeanSquare = max(loudestMeanSquare, bufferMeanSquare)
             // A hair of slack, so a window that's exactly full isn't held back
             // a buffer by rounding.

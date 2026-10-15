@@ -1,5 +1,8 @@
 import AVFoundation
 import Foundation
+#if canImport(TranscriptedCore)
+import TranscriptedCore
+#endif
 
 // Expected values come from the existing per-buffer meter run over one buffer
 // that holds the same samples, never from the window itself.
@@ -55,9 +58,16 @@ private func assertClose(_ actual: Float?, _ expected: Float, _ message: String,
     assertTrue(abs(actual - expected) <= windowTestTolerance, "\(message): expected \(expected), got \(actual)", file: file, line: line)
 }
 
+/// Adds one buffer the way both capture paths do: downmixed to the take's
+/// mono samples first.
+private func add(_ buffer: AVAudioPCMBuffer, to window: DictationAudioLevelWindow) -> DictationAudioLevel? {
+    guard let samples = MicrophoneDownmix.monoSamples(from: buffer) else { return nil }
+    return window.add(samples, sampleRate: buffer.format.sampleRate)
+}
+
 /// Feeds every buffer and returns what each add returned.
 private func feed(_ window: DictationAudioLevelWindow, _ buffers: [AVAudioPCMBuffer]) -> [DictationAudioLevel?] {
-    buffers.map { window.add($0) }
+    buffers.map { add($0, to: window) }
 }
 
 func testDictationAudioLevelWindow() {
@@ -144,13 +154,13 @@ func testDictationAudioLevelWindow() {
 
         let window = DictationAudioLevelWindow()
         let empty = makeWindowTestBuffer([[]], capacity: 4_800)
-        assertNil(window.add(empty), "an empty buffer should not produce a reading")
+        assertNil(add(empty, to: window), "an empty buffer should not produce a reading")
         let firstThree = feed(window, [0.05, 0.1, 0.2].map { monoBuffer($0) })
         assertTrue(firstThree.allSatisfy { $0 == nil }, "30 ms of audio is not a full reading yet")
         for _ in 0..<20 {
-            assertNil(window.add(empty), "empty buffers should not push the window to a reading")
+            assertNil(add(empty, to: window), "empty buffers should not push the window to a reading")
         }
-        let reading = window.add(monoBuffer(0.4))
+        let reading = add(monoBuffer(0.4), to: window)
         assertClose(reading?.level, monoMeterLevel([0.05, 0.1, 0.2, 0.4]), "empty buffers should add no samples to the reading")
         assertClose(reading?.peak, monoMeterLevel([0.4]), "empty buffers should not change the peak")
     }
@@ -163,5 +173,25 @@ func testDictationAudioLevelWindow() {
 
         assertTrue((reading?.level ?? 0) > 0.5, "opposite-phase stereo should still read loud")
         assertClose(reading?.level, meterLevel(ofConcatenated: Array(repeating: [left, right], count: 4)), "stereo level should match the per-buffer meter")
+    }
+
+    runSuite("A dead channel doesn't pull the waveform down") {
+        // The meter reads the take's mono samples, which keep the live
+        // channel, so a stereo interface with one mic plugged in reads as
+        // that mic (the per-channel average read 3 dB low).
+        let live = toneSamples(0.1)
+        let silent = [Float](repeating: 0, count: live.count)
+        let reading = feed(DictationAudioLevelWindow(), (0..<4).map { _ in makeWindowTestBuffer([silent, live]) })[3]
+        assertClose(reading?.level, monoMeterLevel([0.1]), "one live channel should read like that mic alone")
+    }
+
+    runSuite("Unusable mono input adds nothing") {
+        let window = DictationAudioLevelWindow()
+        for rate in [0.0, -48_000, .nan, .infinity] {
+            assertNil(window.add(toneSamples(0.1, frames: 4_800), sampleRate: rate), "an unusable rate \(rate) adds nothing")
+        }
+        assertNil(window.add([], sampleRate: windowTestSampleRate), "no samples add nothing")
+        let reading = window.add(toneSamples(0.1, frames: 1_600), sampleRate: windowTestSampleRate)
+        assertClose(reading?.level, monoMeterLevel([0.1]), "ignored calls should leave nothing behind in the reading")
     }
 }

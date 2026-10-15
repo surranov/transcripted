@@ -433,6 +433,7 @@ APP_SOURCES=(
     "Sources/Support/MicrophoneChoicePreferences.swift"
     "Sources/Support/DictationCleanupPreferences.swift"
     "Sources/Support/DictationMufflePreferences.swift"
+    "Sources/Support/DictationMicAutoGainPreferences.swift"
     "Sources/Support/NotchIslandPreferences.swift"
     "Sources/Support/DictationFillerCleanupPolicy.swift"
     "Sources/Accessibility/AccessibilityBridge.swift"
@@ -523,6 +524,10 @@ APP_SOURCES=(
     "Sources/Speech/SharedMeetingMicClaim.swift"
     "Sources/Speech/DictationAudioLevelMeter.swift"
     "Sources/Speech/DictationAudioLevels.swift"
+    "Sources/Speech/DictationMicAutoGain.swift"
+    # The downmix both dictation capture paths run before metering, so the
+    # level window's tests feed it the same way.
+    "Sources/TranscriptedCore/Audio/MicrophoneDownmix.swift"
     # SupersessionEpoch.swift now arrives via SHARED_PASTEBACK_SUPPORT_SOURCES
     "Sources/Speech/TranscriptionModelWarmupOwnership.swift"
     "Sources/Speech/DefaultInputDeviceMonitorSupport.swift"

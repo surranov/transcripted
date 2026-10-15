@@ -183,23 +183,44 @@ extension TranscriptedSettingsView {
         )
     }
 
-    @ViewBuilder
     private var generalBluetoothMicEditor: some View {
         let rows = microphoneSettingsRows
-        if rows.showsMicrophoneChoicePicker {
-            VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
+            if rows.showsMicrophoneChoicePicker {
                 generalMicrophoneChoiceEditor
+                Divider()
                 // Apple voice processing keeps dictation off the recorder, so
                 // this toggle's Mac-wide switch is still what keeps it off
                 // AirPods (`DictationPersistentInputPreferences.recorderReplacesToggle`).
+                // It draws its own divider below.
                 if rows.showsFasterBluetoothDictationToggle {
-                    Divider()
                     generalFasterBluetoothDictationToggle
                 }
+            } else {
+                generalFasterBluetoothDictationEditor
+                Divider()
             }
-        } else {
-            generalFasterBluetoothDictationEditor
+            // Under whichever mic picker shows: it applies to either.
+            generalDictationMicAutoGainToggle
         }
+    }
+
+    private var generalDictationMicAutoGainToggle: some View {
+        GeneralToggleRow(
+            title: "Automatic mic level",
+            isOn: persistedSettingsBinding(
+                $dictationMicAutoGainEnabled,
+                persist: { DictationMicAutoGainPreferences.setEnabled($0) },
+                track: { trackSettingsToggle("dictation_mic_auto_gain", enabled: $0, page: .general) }
+            ),
+            help: dictationMicAutoGainEnabled ? "A quiet mic is raised for dictation, without clipping." : "Dictation uses your mic's level as is.",
+            info: GeneralInfo(
+                title: "Automatic mic level",
+                message: "While you dictate, Transcripted tells your voice from the room's noise and raises quiet speech to a clear, steady level. Peaks are capped so nothing clips, hiss between words stays low, and a mic that's already loud is left alone. The waveform shows the raised level. Meetings use Mic processing instead. Applies to the next dictation."
+            ),
+            automationIdentifier: "transcripted.settings.general.dictation-mic-auto-gain",
+            showsDivider: false
+        )
     }
 
     /// The one mic setting for dictation and meetings, shown while the Mac
