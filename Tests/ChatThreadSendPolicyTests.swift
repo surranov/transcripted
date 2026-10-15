@@ -67,8 +67,8 @@ func testChatThreadSendPolicy() {
             "two threads in one window: which one is unknown"
         )
         assertNil(
-            ChatThreadSendPolicy.sendTarget(bundleID: "com.openai.codex", pages: [threadPage]),
-            "Codex and Claude have no server to send through (yet)"
+            ChatThreadSendPolicy.sendTarget(bundleID: "com.anthropic.claudefordesktop", pages: [threadPage]),
+            "Claude has no way to send through"
         )
         assertNil(ChatThreadSendPolicy.sendTarget(bundleID: t3, pages: []), "no page read")
     }

@@ -46,10 +46,6 @@ enum AnchorMarkerPlacement {
     static let flagGap: CGFloat = 4
     /// Between a flag and the corner of a sidebar row it sits in.
     static let rowCornerInset: CGFloat = 6
-    /// T3 Code draws the thread's agent badge in that corner (20 pt wide,
-    /// 6 pt from the edges, measured 2026-10-15): the flags sit to its left,
-    /// level with it.
-    static let rowBadgeWidth: CGFloat = 26
 
     /// Flags sharing one box, left to right: the newest take's full flag
     /// first, then the older ones compact, in the order they started.
@@ -70,21 +66,28 @@ enum AnchorMarkerPlacement {
         }
     }
 
-    /// Flags of `widths` in the bottom-right corner of a sidebar row, beside
-    /// its badge, right to left; each spot is a left edge (pinned left, as
-    /// over a box, so a flag flying between the two doesn't jump inside its
-    /// panel). Nil when that spot isn't in sight (`visible`: the
-    /// sidebar's scrolled area within the window): a row scrolled away, or
-    /// a sidebar slid off.
-    static func rowCorner(row: CGRect, visible: CGRect, widths: [CGFloat], flagHeight: CGFloat) -> [Spot]? {
+    /// Flags of `widths` in the bottom-right corner of a sidebar row, left of
+    /// what the app draws there (`badgeWidth` past the corner inset: T3 Code's
+    /// agent badge, Codex's unread dot or status, `ChatSidebar.rowBadgeWidth`),
+    /// right to left; each spot is a left edge (pinned left, as over a box,
+    /// so a flag flying between the two doesn't jump inside its panel). Nil
+    /// when that spot isn't in sight (`visible`: the sidebar's scrolled area
+    /// within the window): a row scrolled away, or a sidebar slid off. Also
+    /// nil for a row too short to hold the flags: Codex reports a row out of
+    /// view squeezed to the list's edge, and one half in view cut to its part,
+    /// so its corner isn't where the row is.
+    static func rowCorner(row: CGRect, visible: CGRect, badgeWidth: CGFloat, widths: [CGFloat], flagHeight: CGFloat) -> [Spot]? {
         let total = widths.reduce(0, +) + flagGap * CGFloat(max(widths.count - 1, 0))
         let flags = CGRect(
-            x: row.maxX - rowCornerInset - rowBadgeWidth - total,
+            x: row.maxX - rowCornerInset - badgeWidth - total,
             y: row.maxY - rowCornerInset - flagHeight,
             width: total,
             height: flagHeight
         )
-        guard !widths.isEmpty, row.width >= total + 2 * rowCornerInset + rowBadgeWidth, visible.contains(flags) else { return nil }
+        guard !widths.isEmpty,
+              row.width >= total + 2 * rowCornerInset + badgeWidth,
+              row.height >= flagHeight + rowCornerInset,
+              visible.contains(flags) else { return nil }
         var edge = flags.maxX
         return widths.map { width in
             edge -= width

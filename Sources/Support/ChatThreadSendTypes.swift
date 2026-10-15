@@ -6,6 +6,8 @@ import Foundation
 enum ChatThreadSendTarget: Equatable {
     /// T3 Code's server environment and the thread's id (`T3CodeServer`).
     case t3Code(environmentID: String, threadID: String)
+    /// A Codex thread's id (`CodexThreads`).
+    case codex(threadID: String)
 }
 
 /// Fork: what sending a take to its thread through the app's server came to.

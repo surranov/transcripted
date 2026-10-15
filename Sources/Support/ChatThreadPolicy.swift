@@ -86,10 +86,10 @@ enum ChatThreadPolicy {
 
     /// Apps whose sidebar lists threads in a form the marker can find:
     /// there a take's marker sits on its thread's row while another thread
-    /// is open (`AnchorMarkerController`). T3 Code only for now; Codex and
-    /// Claude are meant to follow.
+    /// is open (`AnchorMarkerController`). Claude is meant to follow.
     static let sidebarBundleIDs: Set<String> = [
         "com.t3tools.t3code",
+        "com.openai.codex",
     ]
 
     /// Which of the sidebar's rows (`labels`, each row's title and project,

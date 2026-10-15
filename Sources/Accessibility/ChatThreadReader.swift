@@ -14,9 +14,10 @@ struct ChatThread: Equatable {
     /// When the take started: only a send after it may move its new chat
     /// (`ChatThreadMove.sentAt`).
     let capturedAt: Date
-    /// The thread as its app's server names it, where the take is sent when
+    /// The thread as its app names it for a send, where the take goes when
     /// the user isn't looking at it (`ChatThreadSendPolicy`); nil when the
-    /// app has no server to send through or the chat isn't started.
+    /// app can't be sent to, the chat isn't started, or (Codex) its name is
+    /// another thread's too.
     var sendTarget: ChatThreadSendTarget? = nil
 }
 
@@ -64,6 +65,11 @@ enum ChatThreadReader {
         }
         guard ChatThreadPolicy.isChat(bundleID: bundleID, pages: pages),
               let identity = ChatThreadPolicy.threadIdentity(bundleID: bundleID, pages: pages) else { return nil }
+        // Codex's threads are looked up by name in its state file: off the
+        // main actor.
+        let sendTarget = await Task.detached(priority: .userInitiated) {
+            ChatThreadSendPolicy.sendTarget(bundleID: bundleID, pages: pages) { CodexThreads.ids(named: $0) }
+        }.value
         return ChatThread(
             pid: pid,
             bundleID: bundleID,
@@ -71,7 +77,7 @@ enum ChatThreadReader {
             identity: identity,
             isNewChat: ChatThreadPolicy.isNewChat(bundleID: bundleID, pages: pages),
             capturedAt: Date(),
-            sendTarget: ChatThreadSendPolicy.sendTarget(bundleID: bundleID, pages: pages)
+            sendTarget: sendTarget
         )
     }
 

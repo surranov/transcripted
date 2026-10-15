@@ -105,7 +105,8 @@ func testChatThreadPolicy() {
 
     runSuite("A take's flag finds its thread's sidebar row by the row's label, only when it can't be another's") {
         assertTrue(ChatThreadPolicy.sidebarBundleIDs.contains(t3), "T3 Code's sidebar is followed")
-        assertFalse(ChatThreadPolicy.sidebarBundleIDs.contains(codex), "Codex's isn't yet")
+        assertTrue(ChatThreadPolicy.sidebarBundleIDs.contains(codex), "Codex's too")
+        assertFalse(ChatThreadPolicy.sidebarBundleIDs.contains("com.anthropic.claudefordesktop"), "Claude's isn't yet")
         let labels = ["Fix pagination, web", "Review ADR, No project", "Fix pagination, web", "GVR, search"]
         assertEqual(ChatThreadPolicy.sidebarRow(labeled: "GVR, search", in: labels), 3, "one row with that label")
         assertNil(ChatThreadPolicy.sidebarRow(labeled: "Fix pagination, web", in: labels), "two threads share it: not a guess")
@@ -118,6 +119,35 @@ func testChatThreadPolicy() {
             "a remembered row now labeled otherwise may be another thread's"
         )
         assertNil(ChatThreadPolicy.sidebarRow(labeled: "Gone, web", in: labels), "scrolled out of the list's rendered rows")
+    }
+
+    runSuite("In Codex a thread listed under its project and in Recent keeps to the project's row") {
+        // Codex's sidebar, read 2026-10-15: "Name\nProject" under Projects,
+        // the name alone under Recent; the open thread's project row is current.
+        let labels = [
+            "Исследовать баг CD-273310\ndailyrent-search-frontend",
+            "Запиши журнал за вчера\nObsidian",
+            "Запиши журнал за вчера\nObsidian-old",
+            "Установить watermark remover hook",
+            "Запиши журнал за вчера",
+            "Исследовать баг CD-273310",
+        ]
+        assertEqual(
+            ChatThreadPolicy.sidebarRow(labeled: "Исследовать баг CD-273310\ndailyrent-search-frontend", in: labels), 0,
+            "its Recent row doesn't make the project's row ambiguous"
+        )
+        assertEqual(
+            ChatThreadPolicy.sidebarRow(labeled: "Запиши журнал за вчера\nObsidian", in: labels), 1,
+            "one name in two projects: two threads, told by their project"
+        )
+        assertEqual(
+            ChatThreadPolicy.sidebarRow(labeled: "Установить watermark remover hook", in: labels), 3,
+            "a thread with no project: its Recent row"
+        )
+        assertNil(
+            ChatThreadPolicy.sidebarRow(labeled: "Исследовать баг CD-273310\ndailyrent-search-frontend", in: Array(labels[3...])),
+            "Projects collapsed: no project row, and the bare name in Recent isn't taken for it"
+        )
     }
 
     runSuite("A chat app whose page can't be read now counts as another thread") {

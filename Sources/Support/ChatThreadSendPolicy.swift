@@ -1,11 +1,11 @@
 import Foundation
 
-/// Fork: a take dictated into an AI chat thread whose app has a server to
-/// send through (T3 Code; `sendTarget`) goes to that thread unseen when the
-/// user isn't looking at it: the app is in front showing another thread
-/// (the chat thread guard would keep the words out), or, with Anchored
-/// paste on, another app is in front (the words would wait for the user to
-/// come back). Only a take that sends: Send and With Dictate & send key send
+/// Fork: a take dictated into an AI chat thread whose app can be sent to
+/// unseen (T3 Code through its server, Codex through its CLI's queue;
+/// `sendTarget`) goes to that thread when the user isn't looking at it: the
+/// app is in front showing another thread (the chat thread guard would keep
+/// the words out), or, with Anchored paste on, another app is in front (the
+/// words would wait for the user to come back). Only a take that sends: Send and With Dictate & send key send
 /// it at once, After I confirm asks first. Don't send goes the usual way.
 ///
 /// Words that already landed in the app's box are never sent this way: the
@@ -31,9 +31,22 @@ enum ChatThreadSendPolicy {
         threadAppIsFrontmost ? showsAnotherThread : anchoredPasteEnabled
     }
 
-    /// Where the pages of a take's start send to; nil for an app without a
-    /// server to send through, a new chat, or a window showing two threads.
-    static func sendTarget(bundleID: String?, pages: [ChatThreadPolicy.Page]) -> ChatThreadSendTarget? {
+    /// Where the pages of a take's start send to; nil for an app that can't
+    /// be sent to, a new chat, or a window showing two threads. Codex names
+    /// the thread only by its page title: `codexThreadIDs` gives the threads
+    /// with that name (`CodexThreads.ids`), and one must have it.
+    static func sendTarget(
+        bundleID: String?,
+        pages: [ChatThreadPolicy.Page],
+        codexThreadIDs: (String) -> [String] = { _ in [] }
+    ) -> ChatThreadSendTarget? {
+        if bundleID == CodexThreads.bundleID {
+            let names = Set(pages.compactMap(\.title).filter { !$0.isEmpty })
+            guard !ChatThreadPolicy.isNewChat(bundleID: bundleID, pages: pages),
+                  names.count == 1, let name = names.first else { return nil }
+            let ids = codexThreadIDs(name)
+            return ids.count == 1 ? .codex(threadID: ids[0]) : nil
+        }
         guard bundleID == T3CodeServer.bundleID else { return nil }
         let threads = pages.compactMap { $0.url.flatMap(T3CodeServer.threadAddress(pageURL:)) }
         guard let first = threads.first,

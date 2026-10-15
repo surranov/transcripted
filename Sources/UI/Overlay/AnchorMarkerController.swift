@@ -19,8 +19,8 @@ import SwiftUI
 /// takes' compact ones (dots or glyph only), in the order they started.
 ///
 /// In an app whose sidebar lists threads (`ChatThreadPolicy.sidebarBundleIDs`:
-/// T3 Code), a flag sits over the box only while the window shows its take's
-/// thread. With another thread open it flies, compact, to the bottom-right
+/// T3 Code, Codex), a flag sits over the box only while the window shows its
+/// take's thread. With another thread open it flies, compact, to the bottom-right
 /// corner of its thread's row in the sidebar (`ChatSidebarReader`), and hides
 /// while that row can't be seen (the sidebar hidden, the row scrolled away),
 /// coming back with it. The row is the one the app marked current while the
@@ -178,7 +178,7 @@ final class AnchorMarkerController {
         let animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         var windowFrames: [CGWindowID: CGRect] = [:]
         var boxGroups: [(box: CGRect, window: CGRect, markers: [AnchorMarker])] = []
-        var rowGroups: [(row: CGRect, visible: CGRect, markers: [AnchorMarker])] = []
+        var rowGroups: [(row: CGRect, visible: CGRect, badgeWidth: CGFloat, markers: [AnchorMarker])] = []
         var readWindows: Set<CGWindowID> = []
         // A window's rows are read on every read while a flag there is away
         // from its thread or doesn't know its row yet; else now and then.
@@ -212,11 +212,11 @@ final class AnchorMarkerController {
                 } else {
                     boxGroups.append((box, window, [marker]))
                 }
-            case let .row(row, visible):
+            case let .row(row, visible, badgeWidth):
                 if let index = rowGroups.firstIndex(where: { $0.row == row }) {
                     rowGroups[index].markers.append(marker)
                 } else {
-                    rowGroups.append((row, visible, [marker]))
+                    rowGroups.append((row, visible, badgeWidth, [marker]))
                 }
             case .nowhere:
                 marker.conceal()
@@ -242,7 +242,11 @@ final class AnchorMarkerController {
         for group in rowGroups {
             let widths = group.markers.map { $0.flagWidth(compact: true) }
             guard let spots = AnchorMarkerPlacement.rowCorner(
-                row: group.row, visible: group.visible, widths: widths, flagHeight: AnchorMarkerLayout.flagHeight
+                row: group.row,
+                visible: group.visible,
+                badgeWidth: group.badgeWidth,
+                widths: widths,
+                flagHeight: AnchorMarkerLayout.flagHeight
             ) else {
                 group.markers.forEach { $0.conceal() }
                 continue
@@ -260,7 +264,7 @@ final class AnchorMarkerController {
 
     private enum Location {
         case box(CGRect)
-        case row(CGRect, visible: CGRect)
+        case row(CGRect, visible: CGRect, badgeWidth: CGFloat)
         case nowhere
     }
 
@@ -292,7 +296,7 @@ final class AnchorMarkerController {
         let moved = watch.windowFrameAtRead.map { CGPoint(x: window.minX - $0.minX, y: window.minY - $0.minY) } ?? .zero
         let row = sidebar.rows[index].frame.offsetBy(dx: moved.x, dy: moved.y)
         let visible = sidebar.visible.offsetBy(dx: moved.x, dy: moved.y).intersection(window)
-        return visible.isNull ? .nowhere : .row(row, visible: visible)
+        return visible.isNull ? .nowhere : .row(row, visible: visible, badgeWidth: sidebar.rowBadgeWidth)
     }
 
     private func watch(for marker: AnchorMarker) -> AnchorThreadWatch? {

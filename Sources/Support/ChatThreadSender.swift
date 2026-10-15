@@ -1,8 +1,8 @@
 import Foundation
 
-/// Fork: sends a take to the chat thread it was dictated into through the
-/// app's own server, unseen (`ChatThreadSendPolicy`). T3 Code is the one app
-/// with such a server for now (`T3CodeServer`).
+/// Fork: sends a take to the chat thread it was dictated into, unseen
+/// (`ChatThreadSendPolicy`): through T3 Code's own server (`T3CodeServer`),
+/// or into a Codex thread's queue with Codex's CLI (`CodexThreads`).
 enum ChatThreadSender {
     /// Whether a send can go now: the server runs, is the one the thread
     /// lives on, and a session is ready (issued here when there's none).
@@ -15,6 +15,8 @@ enum ChatThreadSender {
             guard let runtime = T3CodeConnection.runningServer(home: home, environmentID: environmentID),
                   await T3CodeConnection.serves(runtime) else { return false }
             return await T3CodeSession.shared.token(home: home) != nil
+        case .codex:
+            return CodexThreads.runningCLI() != nil
         }
     }
 
@@ -23,6 +25,10 @@ enum ChatThreadSender {
         case let .t3Code(environmentID, threadID):
             return await SendOrder.shared.enqueue {
                 await T3CodeConnection.send(text, environmentID: environmentID, threadID: threadID)
+            }.value
+        case let .codex(threadID):
+            return await SendOrder.shared.enqueue {
+                await CodexThreads.queue(text, threadID: threadID)
             }.value
         }
     }

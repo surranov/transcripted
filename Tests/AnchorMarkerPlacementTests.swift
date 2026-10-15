@@ -78,23 +78,50 @@ func testAnchorMarkerPlacement() {
         let visible = CGRect(x: 1254, y: 1743, width: 409, height: 796)
         let row = CGRect(x: 1263, y: 2279, width: 391, height: 85)
         let inset = AnchorMarkerPlacement.rowCornerInset
-        let edge = row.maxX - inset - AnchorMarkerPlacement.rowBadgeWidth
-        let spots = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, widths: [49], flagHeight: 22)
+        let badge: CGFloat = 26
+        let edge = row.maxX - inset - badge
+        let spots = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, badgeWidth: badge, widths: [49], flagHeight: 22)
         assertEqual(spots, [.init(x: edge - 49, top: row.maxY - inset - 22, pinnedRight: false)], "its right end left of the agent badge")
         // The badge, measured: x 1628...1648, y 2351...2369.
         assertTrue(edge <= 1628, "clear of the badge")
-        let two = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, widths: [49, 27], flagHeight: 22)
+        let two = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, badgeWidth: badge, widths: [49, 27], flagHeight: 22)
         assertEqual(two?.map(\.x), [edge - 49, edge - 49 - AnchorMarkerPlacement.flagGap - 27], "two takes into one thread: right to left")
+    }
+
+    runSuite("In Codex's sidebar a flag sits left of the row's unread dot, inside the row") {
+        // Codex's sidebar, measured 2026-10-15: a row 257 x 37, its dot or
+        // status at x 947...972, y 403...428; the list scrolls in 716...1002.
+        let visible = CGRect(x: 716, y: 199, width: 286, height: 970)
+        let row = CGRect(x: 725, y: 397, width: 257, height: 37)
+        let spots = AnchorMarkerPlacement.rowCorner(row: row, visible: visible, badgeWidth: 33, widths: [49], flagHeight: 22)
+        guard let spot = spots?.first else { return assertTrue(false, "a spot in a visible row") }
+        assertTrue(spot.x + 49 <= 947 - 4, "4 pt clear of the dot")
+        assertTrue(spot.top >= row.minY && spot.top + 22 <= row.maxY, "within the row's height, level with the dot")
+        assertTrue(spot.x >= row.minX + 6, "inside the row")
     }
 
     runSuite("A flag whose sidebar row can't be seen hides") {
         let visible = CGRect(x: 1254, y: 1743, width: 409, height: 796)
-        let above = CGRect(x: 1263, y: 1642, width: 391, height: 86)
-        assertNil(AnchorMarkerPlacement.rowCorner(row: above, visible: visible, widths: [49], flagHeight: 22), "scrolled up out of the list")
-        let cut = CGRect(x: 1263, y: 2500, width: 391, height: 86)
-        assertNil(AnchorMarkerPlacement.rowCorner(row: cut, visible: visible, widths: [49], flagHeight: 22), "its corner below the list's bottom edge")
-        let slidOff = CGRect(x: 1263, y: 2000, width: 391, height: 86)
-        assertNil(AnchorMarkerPlacement.rowCorner(row: slidOff, visible: .zero, widths: [49], flagHeight: 22), "a sidebar slid off the window")
-        assertNil(AnchorMarkerPlacement.rowCorner(row: CGRect(x: 0, y: 2000, width: 40, height: 86), visible: visible, widths: [49], flagHeight: 22), "a row too narrow for it")
+        func corner(_ row: CGRect, in visible: CGRect) -> [AnchorMarkerPlacement.Spot]? {
+            AnchorMarkerPlacement.rowCorner(row: row, visible: visible, badgeWidth: 26, widths: [49], flagHeight: 22)
+        }
+        assertNil(corner(CGRect(x: 1263, y: 1642, width: 391, height: 86), in: visible), "scrolled up out of the list")
+        assertNil(corner(CGRect(x: 1263, y: 2500, width: 391, height: 86), in: visible), "its corner below the list's bottom edge")
+        assertNil(corner(CGRect(x: 1263, y: 2000, width: 391, height: 86), in: .zero), "a sidebar slid off the window")
+        assertNil(corner(CGRect(x: 0, y: 2000, width: 40, height: 86), in: visible), "a row too narrow for it")
+        // Codex squeezes a row out of view to the list's edge.
+        let codexList = CGRect(x: 716, y: 200, width: 286, height: 965)
+        func codexCorner(_ row: CGRect) -> [AnchorMarkerPlacement.Spot]? {
+            AnchorMarkerPlacement.rowCorner(row: row, visible: codexList, badgeWidth: 33, widths: [49], flagHeight: 22)
+        }
+        assertNil(codexCorner(CGRect(x: 726, y: 1164, width: 267, height: 1)), "a Codex row below the list, read 1 pt high at its bottom edge")
+        assertNil(codexCorner(CGRect(x: 726, y: 1150, width: 267, height: 15)), "a Codex row half under the edge, read as its part in view")
+        assertTrue(codexCorner(CGRect(x: 726, y: 1112, width: 267, height: 37)) != nil, "the last whole row above it")
+        // Codex's list runs past the window's bottom: the window cuts it.
+        let codexVisible = CGRect(x: 716, y: 199, width: 286, height: 1406).intersection(CGRect(x: 654, y: 39, width: 1146, height: 1130))
+        assertNil(
+            AnchorMarkerPlacement.rowCorner(row: CGRect(x: 725, y: 1372, width: 257, height: 37), visible: codexVisible, badgeWidth: 33, widths: [49], flagHeight: 22),
+            "a Codex row below the window's bottom edge"
+        )
     }
 }

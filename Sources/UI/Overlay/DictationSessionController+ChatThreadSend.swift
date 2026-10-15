@@ -8,13 +8,13 @@ struct ChatThreadSendInstead {
     let plan: ChatThreadSendPolicy.Plan
 }
 
-/// Fork: a take dictated into a T3 Code thread goes to that thread through
-/// T3 Code's server (`ChatThreadSender`) when the user isn't looking at it:
-/// T3 Code shows another thread, or, with Anchored paste on, another app is
-/// in front. Send and With Dictate & send key send it at once; After I
-/// confirm asks on the island first. When the server can't take it, the
-/// take goes the usual way: the chat thread guard's "Not pasted", or
-/// Anchored paste's routes.
+/// Fork: a take dictated into a T3 Code or Codex thread goes to that thread
+/// (`ChatThreadSender`: T3 Code's server, the Codex thread's queue) when the
+/// user isn't looking at it: the app shows another thread, or, with Anchored
+/// paste on, another app is in front. Send and With Dictate & send key send
+/// it at once; After I confirm asks on the island first. When the app can't
+/// take it, the take goes the usual way: the chat thread guard's "Not
+/// pasted", or Anchored paste's routes.
 extension DictationSessionController {
     /// How the take goes to its thread instead; nil when it is pasted as
     /// usual: no thread its app can be sent to, a take that doesn't send, or
