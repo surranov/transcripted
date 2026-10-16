@@ -1,8 +1,9 @@
 import Foundation
 
 /// Fork: sends a take to the chat thread it was dictated into, unseen
-/// (`ChatThreadSendPolicy`): through T3 Code's own server (`T3CodeServer`),
-/// or into a Codex thread's queue with Codex's CLI (`CodexThreads`).
+/// (`ChatThreadSendPolicy`): through T3 Code's own server (`T3CodeServer`;
+/// a new chat's first send starts its thread there, `T3CodeDrafts`), or
+/// into a Codex thread's queue with Codex's CLI (`CodexThreads`).
 enum ChatThreadSender {
     /// Whether a send can go now: the server runs, is the one the thread
     /// lives on, and a session is ready (issued here when there's none).
@@ -11,10 +12,10 @@ enum ChatThreadSender {
     static func prepare(_ target: ChatThreadSendTarget) async -> Bool {
         switch target {
         case let .t3Code(environmentID, _):
-            let home = T3CodeServer.homeDirectory()
-            guard let runtime = T3CodeConnection.runningServer(home: home, environmentID: environmentID),
-                  await T3CodeConnection.serves(runtime) else { return false }
-            return await T3CodeSession.shared.token(home: home) != nil
+            return await T3CodeConnection.ready(environmentID: environmentID)
+        case let .t3CodeDraft(draftID):
+            guard let draft = T3CodeDrafts.read(draftID) else { return false }
+            return await T3CodeConnection.ready(environmentID: draft.promotedTo?.environmentID ?? draft.environmentID)
         case .codex:
             return CodexThreads.runningCLI() != nil
         }
@@ -25,6 +26,10 @@ enum ChatThreadSender {
         case let .t3Code(environmentID, threadID):
             return await SendOrder.shared.enqueue {
                 await T3CodeConnection.send(text, environmentID: environmentID, threadID: threadID)
+            }.value
+        case let .t3CodeDraft(draftID):
+            return await SendOrder.shared.enqueue {
+                await T3CodeConnection.send(text, draftID: draftID)
             }.value
         case let .codex(threadID):
             return await SendOrder.shared.enqueue {
@@ -57,6 +62,100 @@ enum ChatThreadSender {
 /// Fork: one send to T3 Code's server: which server, the session, and the
 /// retries that can't deliver twice.
 private enum T3CodeConnection {
+    /// Whether a send to `environmentID` can go now: its server runs, is
+    /// that environment's, and a session is ready (issued here when there's
+    /// none).
+    static func ready(environmentID: String) async -> Bool {
+        let home = T3CodeServer.homeDirectory()
+        guard let runtime = runningServer(home: home, environmentID: environmentID),
+              await serves(runtime) else { return false }
+        return await T3CodeSession.shared.token(home: home) != nil
+    }
+
+    /// The threads drafts started here, by draft: a second take into the
+    /// same new chat goes to the thread the first one started (the window
+    /// marks the draft sent only while it shows it).
+    private actor StartedThreads {
+        struct Thread: Sendable {
+            let environmentID: String
+            let threadID: String
+        }
+
+        static let shared = StartedThreads()
+        private var byDraft: [String: Thread] = [:]
+
+        func thread(of draftID: String) -> Thread? { byDraft[draftID] }
+
+        func started(_ thread: Thread, by draftID: String) { byDraft[draftID] = thread }
+    }
+
+    /// A take into new chat `draftID`: starts its thread with the take's
+    /// words, as the composer's first send would. A draft already sent (here
+    /// or by the window) gets them in its thread instead.
+    static func send(_ text: String, draftID: String) async -> ChatThreadSendResult {
+        if let started = await StartedThreads.shared.thread(of: draftID) {
+            return await send(text, environmentID: started.environmentID, threadID: started.threadID)
+        }
+        guard let draft = T3CodeDrafts.read(draftID) else { return .notSent(reason: "draft_not_found") }
+        if let promoted = draft.promotedTo {
+            return await send(text, environmentID: promoted.environmentID, threadID: promoted.threadID)
+        }
+        let home = T3CodeServer.homeDirectory()
+        guard let runtime = runningServer(home: home, environmentID: draft.environmentID) else {
+            return .notSent(reason: "server_not_running")
+        }
+        guard await serves(runtime) else { return .notSent(reason: "not_t3_code") }
+        let userdata = home.appendingPathComponent("userdata", isDirectory: true)
+        guard let launch = T3CodeDrafts.launch(
+            text,
+            from: draft,
+            serverSettingsJSON: try? Data(contentsOf: userdata.appendingPathComponent("settings.json")),
+            clientSettingsJSON: try? Data(contentsOf: userdata.appendingPathComponent("client-settings.json"))
+        ) else { return .notSent(reason: "draft_not_sendable") }
+        guard let token = await T3CodeSession.shared.token(home: home) else { return .notSent(reason: "no_session") }
+        var result = await launchThread(launch, runtime: runtime, token: token)
+        if result == .notSent(reason: T3CodeSocket.unauthorized) {
+            await T3CodeSession.shared.refused(token)
+            guard let fresh = await T3CodeSession.shared.token(home: home) else { return .notSent(reason: "no_session") }
+            result = await launchThread(launch, runtime: runtime, token: fresh)
+        }
+        if case .notSent(let reason) = result, !T3CodeSocket.undeliveredReasons.contains(reason) {
+            // The server refused it, so nothing ran: the draft's thread may
+            // exist already (sent from the window a moment ago); then the
+            // words go there, and a server without it refuses them too.
+            return await send(text, environmentID: draft.environmentID, threadID: draft.threadID)
+        }
+        if result != .notSent(reason: T3CodeSocket.unauthorized) {
+            // Unanswered counts too: it may have started, and a second launch
+            // of the same thread would only be refused.
+            await StartedThreads.shared.started(.init(environmentID: draft.environmentID, threadID: draft.threadID), by: draftID)
+        }
+        return result
+    }
+
+    /// The launch, once more when unanswered: its `commandId` is kept once,
+    /// so a repeat answers as the first did without starting a second thread.
+    private static func launchThread(
+        _ launch: T3CodeDrafts.Launch,
+        runtime: T3CodeServer.Runtime,
+        token: String
+    ) async -> ChatThreadSendResult {
+        guard let frame = T3CodeDrafts.launchRequest(
+            requestID: T3CodeSocket.requestID, launch: launch, commandID: UUID(), messageID: UUID()
+        ) else { return .notSent(reason: "bad_request") }
+        switch await T3CodeSocket.exchange(frame, runtime: runtime, token: token) {
+        case .notDelivered(let reason):
+            return .notSent(reason: reason)
+        case .reply(let result) where result != .unconfirmed:
+            return result
+        case .reply, .noAnswer:
+            guard case .reply(.sent) = await T3CodeSocket.exchange(frame, runtime: runtime, token: token) else {
+                return .unconfirmed
+            }
+            return .sent
+        }
+    }
+
     static func send(_ text: String, environmentID: String, threadID: String) async -> ChatThreadSendResult {
         let home = T3CodeServer.homeDirectory()
         guard let runtime = runningServer(home: home, environmentID: environmentID) else {
@@ -282,6 +381,9 @@ actor T3CodeSession {
 /// Fork: one request over T3 Code's WebSocket, on loopback only.
 private enum T3CodeSocket {
     static let unauthorized = "unauthorized"
+    static let cannotConnect = "cannot_connect"
+    /// Reasons the request never reached the server, or never left.
+    static let undeliveredReasons: Set<String> = [unauthorized, cannotConnect, "bad_address", "bad_request"]
     static let requestID = "1"
     /// For the server to answer once the request went out.
     static let replyTimeout: UInt64 = 8_000_000_000
@@ -320,7 +422,7 @@ private enum T3CodeSocket {
             try await socket.send(.string(String(decoding: frame, as: UTF8.self)))
         } catch {
             let status = (socket.response as? HTTPURLResponse)?.statusCode
-            return .notDelivered(reason: status == 401 ? unauthorized : "cannot_connect")
+            return .notDelivered(reason: status == 401 ? unauthorized : cannotConnect)
         }
         let reply = await withTaskGroup(of: ChatThreadSendResult?.self) { group in
             group.addTask { await receiveReply(socket) }

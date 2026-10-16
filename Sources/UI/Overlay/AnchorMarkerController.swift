@@ -337,6 +337,8 @@ private final class AnchorThreadWatch {
     private var readsSinceRows = 0
     private var readInFlight = false
     private var ticksUntilRead = 0
+    /// Whether the app was asked for its full tree yet (`ChatSidebarReader.askForFullTree`).
+    private var askedForFullTree = false
 
     private static let rowMissesKept = 2
     /// While every flag here shows its thread and knows its row, the rows
@@ -368,7 +370,10 @@ private final class AnchorThreadWatch {
         let readsRows = rowsWanted || sidebar == nil || readsSinceRows >= Self.idleRowReadEvery
         if readsRows { readsSinceRows = 0 }
         let (window, pid, bundleID, windowID, known) = (UncheckedElement(element: window), pid, bundleID, windowID, landmark)
+        let asksForFullTree = !askedForFullTree
+        askedForFullTree = true
         Task.detached(priority: .utility) { [weak self] in
+            if asksForFullTree { ChatSidebarReader.askForFullTree(pid: pid) }
             let pages = ChatThreadReader.pagesNow(pid: pid, window: window.element)
             let identity = ChatThreadPolicy.threadIdentity(bundleID: bundleID, pages: pages)
             var reading = Reading(identity: identity, readsRows: false, sidebar: nil, landmark: nil, identityAfterRows: nil, windowFrame: nil)

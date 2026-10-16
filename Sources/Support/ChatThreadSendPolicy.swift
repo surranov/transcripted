@@ -32,7 +32,8 @@ enum ChatThreadSendPolicy {
     }
 
     /// Where the pages of a take's start send to; nil for an app that can't
-    /// be sent to, a new chat, or a window showing two threads. Codex names
+    /// be sent to, a new chat (but T3 Code's, which starts its thread as its
+    /// composer would), or a window showing two threads. Codex names
     /// the thread only by its page title: `codexThreadIDs` gives the threads
     /// with that name (`CodexThreads.ids`), and one must have it.
     static func sendTarget(
@@ -49,7 +50,9 @@ enum ChatThreadSendPolicy {
         }
         guard bundleID == T3CodeServer.bundleID else { return nil }
         let threads = pages.compactMap { $0.url.flatMap(T3CodeServer.threadAddress(pageURL:)) }
-        guard let first = threads.first,
+        let drafts = Set(pages.compactMap { $0.url.flatMap(T3CodeDrafts.draftID(pageURL:)) })
+        if threads.isEmpty, drafts.count == 1, let draftID = drafts.first { return .t3CodeDraft(draftID: draftID) }
+        guard drafts.isEmpty, let first = threads.first,
               threads.allSatisfy({ $0.environmentID == first.environmentID && $0.threadID == first.threadID }) else { return nil }
         return .t3Code(environmentID: first.environmentID, threadID: first.threadID)
     }

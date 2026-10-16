@@ -58,9 +58,10 @@ func testChatThreadSendPolicy() {
             .t3Code(environmentID: environment, threadID: thread),
             "a site previewed beside the thread doesn't count"
         )
-        assertNil(
+        assertEqual(
             ChatThreadSendPolicy.sendTarget(bundleID: t3, pages: [Page(url: "t3code://app/#/draft/9be71f5c", title: nil)]),
-            "a new chat: its first message goes the usual way"
+            .t3CodeDraft(draftID: "9be71f5c"),
+            "a new chat: its first message starts its thread (T3CodeDraftsTests)"
         )
         assertNil(
             ChatThreadSendPolicy.sendTarget(bundleID: t3, pages: [threadPage, Page(url: "t3code://app/#/\(environment)/other", title: nil)]),

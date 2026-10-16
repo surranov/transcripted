@@ -86,16 +86,23 @@ extension DictationSessionController {
     /// same chat.
     func chatChanged(_ thread: ChatThread?, in pid: pid_t?, window: AXUIElement? = nil) async -> Bool {
         guard let thread, thread.pid == pid else { return false }
-        // A move under way is waited for first: the words go into the
-        // thread the new chat became, not the draft it is leaving (a queued
-        // take pastes about 50 ms after the earlier one's send).
+        let sameChat = await identitiesOfSameChat(thread)
+        guard let current = await ChatThreadReader.currentIdentity(of: thread, window: window) else { return true }
+        return !sameChat.contains(current)
+    }
+
+    /// What the app may show while it still shows `thread`'s chat: the
+    /// thread itself, and the thread a new chat became when this app's own
+    /// send moved it. A move under way is waited for first: the words go
+    /// into the thread the new chat became, not the draft it is leaving (a
+    /// queued take pastes about 50 ms after the earlier one's send).
+    func identitiesOfSameChat(_ thread: ChatThread) async -> Set<String> {
         var sameChat: Set<String> = [thread.identity]
         for move in chatThreadMoves
         where move.pid == thread.pid && move.from == thread.identity && move.sentAt >= thread.capturedAt {
             if let moved = await move.to.value { sameChat.insert(moved) }
         }
-        guard let current = await ChatThreadReader.currentIdentity(of: thread, window: window) else { return true }
-        return !sameChat.contains(current)
+        return sameChat
     }
 
     /// Why send can't be pressed in the app `pid`: it shows another thread

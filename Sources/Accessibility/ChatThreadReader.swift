@@ -16,7 +16,8 @@ struct ChatThread: Equatable {
     let capturedAt: Date
     /// The thread as its app names it for a send, where the take goes when
     /// the user isn't looking at it (`ChatThreadSendPolicy`); nil when the
-    /// app can't be sent to, the chat isn't started, or (Codex) its name is
+    /// app can't be sent to, the chat isn't started (but in T3 Code, whose
+    /// new chat's first send starts its thread), or (Codex) its name is
     /// another thread's too.
     var sendTarget: ChatThreadSendTarget? = nil
 }

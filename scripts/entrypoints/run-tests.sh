@@ -447,6 +447,8 @@ APP_SOURCES=(
     "Sources/Support/ChatThreadSendTypes.swift"
     "Sources/Support/ChatThreadSendPolicy.swift"
     "Sources/Support/T3CodeServer.swift"
+    "Sources/Support/T3CodeDrafts.swift"
+    "Sources/Support/ChromiumLocalStorage.swift"
     "Sources/Support/CodexThreads.swift"
     "Sources/Support/AnchoredPastePreferences.swift"
     "Sources/Dictation/DictationTextRefiner.swift"

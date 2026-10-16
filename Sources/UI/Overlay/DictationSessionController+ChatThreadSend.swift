@@ -10,7 +10,8 @@ struct ChatThreadSendInstead {
 
 /// Fork: a take dictated into a T3 Code or Codex thread goes to that thread
 /// (`ChatThreadSender`: T3 Code's server, the Codex thread's queue) when the
-/// user isn't looking at it: the app shows another thread, or, with Anchored
+/// user isn't looking at it, a T3 Code new chat's to the thread its first
+/// send starts there: the app shows another thread, or, with Anchored
 /// paste on, another app is in front. Send and With Dictate & send key send
 /// it at once; After I confirm asks on the island first. When the app can't
 /// take it, the take goes the usual way: the chat thread guard's "Not
@@ -27,10 +28,11 @@ extension DictationSessionController {
         if threadAppIsFrontmost {
             // Only another thread read on screen: a page that can't be read
             // keeps the guard's safe "Not pasted", never a send that can't
-            // be taken back. (A new chat, which its send moves, has no
-            // target, so `chatChanged`'s moves don't apply.)
+            // be taken back. A T3 Code new chat that an earlier take's own
+            // send moved to its thread still shows the chat: the take pastes
+            // there, as the guard lets it.
             guard let current = await ChatThreadReader.currentIdentity(of: thread) else { return nil }
-            showsAnotherThread = current != thread.identity
+            showsAnotherThread = !(await identitiesOfSameChat(thread)).contains(current)
         }
         guard ChatThreadSendPolicy.userIsAway(
             threadAppIsFrontmost: threadAppIsFrontmost,

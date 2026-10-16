@@ -138,6 +138,21 @@ enum ChatSidebarReader {
     /// each call only at its timeout.
     private static let readDeadline: TimeInterval = 0.5
 
+    /// Asks app `pid` for its full web accessibility tree, once a window is
+    /// watched: what marks the open thread's row (`aria-current`) is only in
+    /// it. Without `AXManualAccessibility`, which is off after every launch,
+    /// an Electron app serves a partial tree (T3 Code relaunched by its
+    /// update, measured 2026-10-16, Electron 44): pages, classes, labels and
+    /// the focused field, so the page and composer reads never ask, but no
+    /// `AXARIACurrent`, so no row read as the open thread's and no flag
+    /// learned its row. The app keeps the full tree on until it quits. Call
+    /// off the main actor.
+    static func askForFullTree(pid: pid_t) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    }
+
     /// The sidebar in `window`; nil when none shows (hidden, or not read).
     /// `landmark`: the one found last time, tried first. Returns the landmark
     /// the rows were found in, to pass next time. `openThreadName`: the open

@@ -6,6 +6,9 @@ import Foundation
 enum ChatThreadSendTarget: Equatable {
     /// T3 Code's server environment and the thread's id (`T3CodeServer`).
     case t3Code(environmentID: String, threadID: String)
+    /// A T3 Code new chat not sent yet (`#/draft/<id>`): its first send
+    /// starts its thread as the composer would (`T3CodeDrafts`).
+    case t3CodeDraft(draftID: String)
     /// A Codex thread's id (`CodexThreads`).
     case codex(threadID: String)
 }
